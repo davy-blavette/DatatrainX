@@ -3,61 +3,59 @@
 [![GitHub release](https://img.shields.io/static/v1?label=Release&message=v1.0-alpha&color=blue)](https://github.com/gitshanks/fer2013/releases)
 [![PyPI pyversions](https://img.shields.io/static/v1?label=Python&message=3.6&color=green)](https://pypi.python.org/pypi/ansicolortags/)
 
+Reconnaissance des émotions faciales sur l'ensemble de données FER2013 à l'aide d'un réseau neuronal convolutif (CNN).
 
+Ratio 80-10-10 pour les ensembles d'entraînement-validation-test.
+
+Gagnant - 71 % de précision
+Ce modèle - 65 % de précision
+
+![emotions](https://user-images.githubusercontent.com/3437490/160833721-3ded7d22-458b-426c-866a-949e09cfa0cf.png)
+
+
+## Commencer
+
+Ces instructions permettront à ce modèle d'être opérationnel. Suivez-les pour utiliser le fichier `train.py` afin de reconnaître les émotions faciales à l'aide d'images personnalisées. Ce modèle peut également être utilisé dans le cadre de projets de reconnaissance des émotions faciales avec des applications plus larges
+
+### Bibliothèques
+
+```
+ pip install tensorflow 2.1, Tensorflow-gpu 2.1 
+ pip install keras 2.3.1
+ pip install numpy 1.19
+ pip install pandas
+ pip install sklearn (Matrice de confusion)
+```
+
+
+### Utilisation : Construire à partir de zéro
+Clone ce dépot en utilisant :
+```
+git clone https://github.com/davy-blavette/DatatrainX/tree/main/dataset/fer2013
+```
+Téléchargez et extrayez l'ensemble de données à partir du lien Kaggle ci-dessous.
 Kaggle Challenge - https://www.kaggle.com/c/challenges-in-representation-learning-facial-expression-recognition-challenge/data
 
-Facial Emotion Recognition on FER2013 Dataset Using a Convolutional Neural Network. 
+## Fonction preprocessing() :
 
-80-10-10 ratio for training-validation-test sets.
+Exécutez le fichier `train.py`, qui générera les fichiers `fadataX.npy` et `flabels.npy` pour vous dans le dossier preprocessing.
 
-Winner - 71.161% accuracy
+## Fonction train() :
 
-This Model -  66.369% accuracy
+Exécutez le fichier `train.py`, cela prendrait un certain temps en fonction de votre processeur et de votre gpu. A pris environ 40 minutes avec un processeur Intel Core i7-4790 3,60 GHz et un GPU Nvidia GeForce RTX 2060 6 Go, avec tensorflow fonctionnant sur le support GPU. Cela créerait les fichiers `modXtest.npy`, `modytest,npy`, `fer.json` et `fer.h5` pour vous, dans les dossiers respectifs accuracy et weights.
 
-![emotions](https://user-images.githubusercontent.com/28602282/48102098-ab737b80-e1e6-11e8-8541-517de2be0064.png)
+## Fonction accuracy() :
 
-## Getting Started
+Vous pouvez tester la précision du classificateur formé à l'aide de `modXtest.npy` et `modytest.npy` en exécutant le fichier `fertest.py`. Cela vous donnerait la précision en % du classificateur récemment formé.
 
-These instructions will get this model up and running. Follow them to make use of the `fertestcusstom.py` file to recognize facial emotions using custom images. This model can also be used as facial emotion recognition part of projects with broader applications
+## Fonction matrix() :
 
-### Prerequisites
-Install these prerequisites before proceeding-
-```
- pip3 install tensorflow
- pip3 install keras
- pip3 install numpy
- pip3 install sklearn
- pip3 install pandas
- pip3 install opencv-python
-```
-
-### Method 1 : Using the built model 
-
-If you don't want to train the classifier from scratch, you can make the use of `fertestcustom.py` directly as the the repository already has `fer.json` (trained model) and `fer.h5` (parameters) which can be used to predict emotion on any test image present in the folder. You can modify `fertestcustom.py` according to your requirements and use it to predict fatial emotion in any use case.
-
-### Method 2 : Build from scratch
-Clone this repository using-
-```
-git clone https://github.com/gitshanks/fer2013.git
-```
-Download and extract the dataset from Kaggle link above.
-
-Run the `preprocessing.py` file, which would generate `fadataX.npy` and `flabels.npy` files for you.
-
-Run the `fertrain.py` file,  this would take sometime depending on your processor and gpu. Took around 1 hour for with an Intel Core i7-7700K 4.20GHz processor and an Nvidia GeForce GTX 1060 6GB gpu, with tensorflow running on gpu support. This would create `modXtest.npy`, `modytest,npy`, `fer.json` and `fer.h5` file for you.
-
-## Running the tests (Optional)
-
-You can test the accuracy of trained classifier using `modXtest.npy` and `modytest.npy` by running `fertest.py` file. This would give youy the accuracy in % of the recently trained classifier.
-
-## Getting the Confusion Matrix (Optional)
-
-You can get the confusion matrix for this model by running `confmatrix.py` file. This would evaluate the most confused expressions and generate a `confusionmatrix.png` file for your trained model, which would look something like this.
+Vous pouvez obtenir la matrice de confusion pour ce modèle en exécutant la fonction matrix(), ce qui génére une un fichier `fer_best.png` pour votre modèle entraîné, qui ressemblerait à ceci.
 
 ![confusionmatrix](https://github.com/davy-blavette/DatatrainX/blob/main/dataset/fer2013/v1/accuracy/fer_best.png?raw=true)
 
-# Model Summary
+# Résumé du modèle
 
-The layers in the Convolution Neural Network used in implementing this classifier can be summarized as follows. You can git a similar summary by decommenting the `model.summar()` function before executing `fertrain.py` file.
+Les couches du réseau de neurones à convolution utilisées dans la mise en œuvre de ce classificateur peuvent être résumées comme suit. Vous pouvez obtenir un résumé similaire en décommentant la fonction `model.summar()` avant d'exécuter la fonction train().
 
 ![layers](https://user-images.githubusercontent.com/28602282/48034278-f5435f80-e11b-11e8-8390-585e34fc18ae.png)
