@@ -1,6 +1,6 @@
 # DataTrainX FER2013 
 
-[![GitHub release](https://img.shields.io/static/v1?label=Release&message=v0.1.0-alpha&color=blue)](https://github.com/gitshanks/fer2013/releases)
+[![GitHub release](https://img.shields.io/static/v1?label=Release&message=v1.0-alpha&color=blue)](https://github.com/gitshanks/fer2013/releases)
 [![PyPI pyversions](https://img.shields.io/static/v1?label=Python&message=3.6&color=green)](https://pypi.python.org/pypi/ansicolortags/)
 
 
