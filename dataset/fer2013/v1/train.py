@@ -82,9 +82,10 @@ def train():
         [X_train, X_valid, y_train, y_valid] = train_test_split(X_train, y_train, test_size=0.1, random_state=41)
 
         # saving the test samples to be used later
-        np.save(f'./accuracy/{filename}_modXtest', X_test)
-        np.save(f'./accuracy/{filename}_modYtest', y_test)
-
+        np.save(f'./accuracy/archives/{filename}_modXtest', X_test)
+        np.save(f'./accuracy/archives/{filename}_modYtest', y_test)
+        np.save(f'./accuracy/modXtest', X_test)
+        np.save(f'./accuracy/modYtest', y_test)
         # designing the CNN
         model = Sequential()
 
@@ -127,7 +128,7 @@ def train():
 
         model.add(Dense(num_labels, activation='softmax'))
 
-        # model.summary()
+        model.summary()
 
         # Compiling the model with adam optimizer and categorical cross entropy loss
         model.compile(loss=categorical_crossentropy,
@@ -148,11 +149,13 @@ def train():
         timer = int(end - start)
 
         fer_json = model.to_json()
-        with open(f"./weights/{filename}_fer.json", "w") as json_file:
+        with open(f"./weights/fer.json", "w") as json_file:
             json_file.write(fer_json)
 
-        model.save_weights(f"./weights/{filename}_fer_weights.h5")
-        model.save(f"./weights/{filename}_fer_best.h5")
+        model.save_weights(f"./weights/fer_weights.h5")
+        model.save(f"./weights/fer_best.h5")
+        model.save_weights(f"./weights/archives/{filename}_fer_weights.h5")
+        model.save(f"./weights/archives/{filename}_fer_best.h5")
 
         print("Saved model to disk")
         # total time taken
@@ -161,18 +164,18 @@ def train():
 
 # accuracy
 def accuracy():
-    json_file = open(f'./weights/{filename}_fer.json', 'r')
+    json_file = open(f'./weights/fer.json', 'r')
     loaded_model_json = json_file.read()
     json_file.close()
     loaded_model = model_from_json(loaded_model_json)
     # load weights into new model
-    loaded_model.load_weights(f"./weights/{filename}_fer_best.h5")
+    loaded_model.load_weights(f"./weights/fer_best.h5")
     print("Loaded model from disk")
 
     truey = []
     predy = []
-    x = np.load(f'./accuracy/{filename}_modXtest.npy')
-    y = np.load(f'./accuracy/{filename}_modytest.npy')
+    x = np.load(f'./accuracy/modXtest.npy')
+    y = np.load(f'./accuracy/modytest.npy')
 
     yhat = loaded_model.predict(x)
     yh = yhat.tolist()
@@ -190,8 +193,10 @@ def accuracy():
     acc = (count / len(y)) * 100
 
     # saving values for confusion matrix and analysis
-    np.save(f'./accuracy/{filename}_truey', truey)
-    np.save(f'./accuracy/{filename}_predy', predy)
+    np.save(f'./accuracy/archives/{filename}_truey', truey)
+    np.save(f'./accuracy/archives/{filename}_predy', predy)
+    np.save(f'./accuracy/truey', truey)
+    np.save(f'./accuracy/predy', predy)
     print("Predicted and true label values saved")
     print("Accuracy on test set :" + str(acc) + "%")
     return acc
@@ -199,8 +204,8 @@ def accuracy():
 
 # matrix
 def matrix():
-    y_true = np.load(f'./accuracy/{filename}_truey.npy')
-    y_pred = np.load(f'./accuracy/{filename}_predy.npy')
+    y_true = np.load(f'./accuracy/truey.npy')
+    y_pred = np.load(f'./accuracy/predy.npy')
 
     cm = confusion_matrix(y_true, y_pred)
     labels = ['Colère', 'Dégoût', 'Peur', 'Joyeux', 'Triste', 'Surprise', 'Neutre']
@@ -215,7 +220,8 @@ def matrix():
     plt.xlabel('Prédiction')
     print(cm)
 
-    plt.savefig(f'./accuracy/{filename}_fer_best.png')
+    plt.savefig(f'./accuracy/archives/{filename}_fer_best.png')
+    plt.savefig(f'./accuracy/fer_best.png')
 
     plt.show()
 
