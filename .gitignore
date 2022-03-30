@@ -1,1 +1,10 @@
 *.csv
+/dataset/fer2013/data/shape_predictor_68_face_landmarks.dat
+/dataset/fer2013/data/fer2013.csv
+/dataset/fer2013/v1/preprocessing
+/dataset/fer2013/v1/weights/archives
+/dataset/fer2013/v1/accuracy/modYtest.npy
+/dataset/fer2013/v1/accuracy/accuracy_log
+/dataset/fer2013/v1/accuracy/modXtest.npy
+/dataset/fer2013/v1/weights/fer_best.h5
+/dataset/fer2013/v1/accuracy/archives

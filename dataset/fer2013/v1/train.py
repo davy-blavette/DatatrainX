@@ -226,10 +226,9 @@ def matrix():
     plt.show()
 
 
-# filename = strftime("%Y%m%d_%H%M", gmtime())
-filename = "20220304_1750"
+filename = strftime("%Y%m%d_%H%M", gmtime())
 
 # preprocessing()
-# train()
+train()
 acc = round(accuracy(), 2)
 matrix()
