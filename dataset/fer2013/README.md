@@ -58,4 +58,4 @@ Vous pouvez obtenir la matrice de confusion pour ce modèle en exécutant la fon
 
 Les couches du réseau de neurones à convolution utilisées dans la mise en œuvre de ce classificateur peuvent être résumées comme suit. Vous pouvez obtenir un résumé similaire en décommentant la fonction `model.summar()` avant d'exécuter la fonction train().
 
-![layers](https://user-images.githubusercontent.com/28602282/48034278-f5435f80-e11b-11e8-8390-585e34fc18ae.png)
+![layers](https://user-images.githubusercontent.com/3437490/160842085-53e6683f-9c98-46af-9592-630dfe972c76.png)
