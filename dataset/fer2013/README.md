@@ -1,4 +1,4 @@
-# FER2013 
+# DataTrainX FER2013 
 
 [![GitHub release](https://img.shields.io/static/v1?label=Release&message=v0.1.0-alpha&color=blue)](https://github.com/gitshanks/fer2013/releases)
 [![PyPI pyversions](https://img.shields.io/static/v1?label=Python&message=3.6&color=green)](https://pypi.python.org/pypi/ansicolortags/)
@@ -54,7 +54,7 @@ You can test the accuracy of trained classifier using `modXtest.npy` and `modyte
 
 You can get the confusion matrix for this model by running `confmatrix.py` file. This would evaluate the most confused expressions and generate a `confusionmatrix.png` file for your trained model, which would look something like this.
 
-![confusionmatrix](https://user-images.githubusercontent.com/28602282/47956084-d8186080-df64-11e8-9d07-c7eda5cf6697.png)
+![confusionmatrix](https://github.com/davy-blavette/DatatrainX/blob/main/dataset/fer2013/v1/accuracy/fer_best.png?raw=true)
 
 # Model Summary
 
