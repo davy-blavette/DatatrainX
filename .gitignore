@@ -12,3 +12,7 @@
 /dataset/fer2013/weights
 /dataset/fer2013/accuracy/truey.npy
 /dataset/fer2013/accuracy/predy.npy
+/dataset/fer2013/models/__pycache__
+/public/assets/data/test2
+/public/assets/data/ferme
+/tiny-vgg
