@@ -12,7 +12,7 @@ Ratio 80-10-10 pour les ensembles d'entraînement-validation-test.
 Gagnant - 71 % de précision
 Ce modèle - 67 % de précision
 
-(![image](https://user-images.githubusercontent.com/3437490/163332198-f46c7fba-9609-4c6d-b93c-69f7078d2b76.png))
+(![image](https://user-images.githubusercontent.com/3437490/163332198-f46c7fba-9609-4c6d-b93c-69f7078d2b76.png)
 
 
 ## Commencer
