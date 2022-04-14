@@ -1,4 +1,4 @@
-# DatatrainX
+# DataTrainX
 Outil de recherche des singularités cognitives d’un étudiant, basé sur le deep-learning en vue d’améliorer la neuropédagogie
 
 An interactive visualization system designed to help non-experts learn about Convolutional Neural Networks (CNNs)
