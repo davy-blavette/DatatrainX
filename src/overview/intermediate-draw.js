@@ -98,12 +98,15 @@ const drawIntermidiateImage = (image, range, colorScale, length,
     let pixeIndex = Math.floor(i / 4);
     let row = Math.floor(pixeIndex / imageLength);
     let column = pixeIndex % imageLength;
-    let color = d3.rgb(colorScale((dataMatrix[row][column] + range / 2) / range));
 
-    imageSingleArray[i] = color.r;
-    imageSingleArray[i + 1] = color.g;
-    imageSingleArray[i + 2] = color.b;
-    imageSingleArray[i + 3] = 255;
+    imageSingleArray[i] = 255;
+    if(overviewConfig.modeImg > 1){
+      let color = d3.rgb(colorScale((dataMatrix[row][column] + range / 2) / range));
+      imageSingleArray[i] = color.r;
+      imageSingleArray[i + 1] = color.g;
+      imageSingleArray[i + 2] = color.b;
+      imageSingleArray[i + 3] = 255;
+    }
   }
 
   // canvas.toDataURL() only exports image in 96 DPI, so we can hack it to have
@@ -866,15 +869,16 @@ const drawIntermediateLayerAnnotation = (arg) => {
     arrowSY = nodeCoordinate[curLayerIndex - 1][0].y + nodeLength +
       kernelRectLength * 3 + 5;
     dr = 20;
-
-    sliderX2 = leftX;
+    if(overviewConfig.modeImg > 1) {
+      sliderX2 = leftX;
       sliderY2 = nodeCoordinate[curLayerIndex - 1][1].y + nodeLength +
-    kernelRectLength * 3;
-    arrowSX2 = leftX - kernelRectLength * 3;
-    arrowSY2 = nodeCoordinate[curLayerIndex - 1][1].y + nodeLength + 15;
-    arrowTX2 = leftX - 13;
-    arrowTY2 =  nodeCoordinate[curLayerIndex - 1][1].y + 15;
-    dr2 = 35;
+          kernelRectLength * 3;
+      arrowSX2 = leftX - kernelRectLength * 3;
+      arrowSY2 = nodeCoordinate[curLayerIndex - 1][1].y + nodeLength + 15;
+      arrowTX2 = leftX - 13;
+      arrowTY2 = nodeCoordinate[curLayerIndex - 1][1].y + 15;
+      dr2 = 35;
+    }
   } else {
     sliderX = leftX - 3 * kernelRectLength * 3;
     sliderY = nodeCoordinate[curLayerIndex - 1][0].y + nodeLength / 3;
@@ -1013,7 +1017,7 @@ const drawIntermediateLayerAnnotation = (arg) => {
     .attr('dy', '1em')
     .style('dominant-baseline', 'hanging')
     .text('results and then add bias');
-  
+
   if (i === 9) {
     drawArrow({
       group: group,
@@ -1284,34 +1288,34 @@ export const drawConv1 = (curLayerIndex, d, i, width, height,
     y: svgPaddings.top + vSpaceAroundGap * (10) + vSpaceAroundGap + 
       nodeLength * 10 - 25
   });
+  if(overviewConfig.modeImg > 1) {
+    drawIntermediateLayerLegend({
+      legendHeight: 5,
+      curLayerIndex: curLayerIndex,
+      range: range,
+      minMax: finalMinMax,
+      group: intermediateLayer,
+      width: 2 * nodeLength + intermediateGap,
+      x: nodeCoordinate[curLayerIndex - 1][2].x,
+      y: svgPaddings.top + vSpaceAroundGap * (10) + vSpaceAroundGap +
+          nodeLength * 10
+    });
 
-  drawIntermediateLayerLegend({
-    legendHeight: 5,
-    curLayerIndex: curLayerIndex,
-    range: range,
-    minMax: finalMinMax,
-    group: intermediateLayer,
-    width: 2 * nodeLength + intermediateGap,
-    x: nodeCoordinate[curLayerIndex - 1][2].x,
-    y: svgPaddings.top + vSpaceAroundGap * (10) + vSpaceAroundGap + 
-      nodeLength * 10
-  });
-
-  drawIntermediateLayerLegend({
-    legendHeight: 5,
-    curLayerIndex: curLayerIndex,
-    range: kernelRange,
-    minMax: kernelMinMax,
-    group: intermediateLayer,
-    width: 2 * nodeLength + intermediateGap,
-    x: targetX + nodeLength - (2 * nodeLength + intermediateGap),
-    y: svgPaddings.top + vSpaceAroundGap * (10) + vSpaceAroundGap + 
-      nodeLength * 10,
-    gradientAppendingName: 'kernelColorGradient',
-    colorScale: layerColorScales.weight,
-    gradientGap: 0.2
-  });
-
+    drawIntermediateLayerLegend({
+      legendHeight: 5,
+      curLayerIndex: curLayerIndex,
+      range: kernelRange,
+      minMax: kernelMinMax,
+      group: intermediateLayer,
+      width: 2 * nodeLength + intermediateGap,
+      x: targetX + nodeLength - (2 * nodeLength + intermediateGap),
+      y: svgPaddings.top + vSpaceAroundGap * (10) + vSpaceAroundGap +
+          nodeLength * 10,
+      gradientAppendingName: 'kernelColorGradient',
+      colorScale: layerColorScales.weight,
+      gradientGap: 0.2
+    });
+  }
   // Show everything
   svg.selectAll('g.intermediate-layer, g.intermediate-layer-annotation')
     .transition()

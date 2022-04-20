@@ -5,6 +5,7 @@ import tensorflow as tf
 import time
 import matplotlib.pyplot as plt
 import seaborn as sns
+import tensorflowjs as tfjs
 
 from sklearn.model_selection import train_test_split
 from keras.models import model_from_json
@@ -51,10 +52,12 @@ def train():
         start = time.time()
 
         # Load model, custom or Keras
+
         try:
-            model = getattr(models.Models(), modelName)(width=width,height=height,num_features=num_features,num_labels=num_labels)
+            model = getattr(models.Models(), modelName)(width=width, height=height, filters=filters,
+                                                        num_labels=num_labels)
         except:
-            model = models.Models().load(modelName=modelName, width=width,height=height,num_labels=num_labels)
+            model = models.Models().load(modelName=modelName, width=width, height=height, filters=filters)
 
         model.summary()
 
@@ -140,33 +143,41 @@ def matrix(path):
     plt.show()
 
 
+def convertModel():
+    model = models.Models().loadH5(path="./weights/fer_" + modelName + "_best.h5")
+    # export to tf.js layer
+    tfjs.converters.save_keras_model(model, f"./weights/tfjs/fer_{modelName}")
+
+
 def main():
-    global log, modelName, width, height, num_features, num_labels, batch_size, epochs, labels
+    global log, modelName, width, height, filters, num_labels, batch_size, epochs, labels
 
     # train, choose your model
-    modelName = "deep"
-    # model config epoch, batch_size
-    model = {"cnn": [300, 256],
-             "dcnn": [300, 256],
-             "ednn" : [1000, 256],
-             "deep": [300, 256],
-             "VGG19": [100, 256],
-             "ResNet152V2": [100, 256],
-             "NASNetLarge": [100, 64]}
+    modelName = "tinyVGG"
+    # model config epoch, batch_size, filters
+    model = {"cnn": [300, 256, 64],
+             "dcnn": [300, 256, 64],
+             "ednn": [1000, 256, 32],
+             "deep": [300, 256, 64],
+             "tinyVGG": [1000, 32, 10],
+             "VGG19": [100, 256, 64],
+             "ResNet152V2": [100, 256, 64],
+             "NASNetLarge": [100, 64, 64]}
     # taille des images
     width, height = 48, 48
-    num_features = 64
     labels = ['Colère', 'Dégoût', 'Peur', 'Joyeux', 'Triste', 'Surprise', 'Neutre']
 
     log = strftime("%Y%m%d_%H%M", gmtime())
     num_labels = len(labels)
     batch_size = model[modelName][1]
     epochs = model[modelName][0]
+    filters = model[modelName][2]
 
     # first step preprocessing
     # preprocessing()
     train()
-    matrix('../v1/weights/')
+    matrix('./weights/')
+    convertModel()
 
 
 if __name__ == '__main__':

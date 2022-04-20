@@ -1,13 +1,15 @@
 <script>
   // Svelte functions
   import { onMount } from 'svelte';
+
+
   import {
     cnnStore, svgStore, vSpaceAroundGapStore, hSpaceAroundGapStore,
     nodeCoordinateStore, selectedScaleLevelStore, cnnLayerRangesStore,
     needRedrawStore, cnnLayerMinMaxStore, detailedModeStore,
     shouldIntermediateAnimateStore, isInSoftmaxStore, softmaxDetailViewStore,
     hoverInfoStore, allowsSoftmaxAnimationStore, modalStore,
-    intermediateLayerPositionStore
+    intermediateLayerPositionStore, leftStartStore
   } from '../stores.js';
 
   // Svelte views
@@ -19,6 +21,9 @@
   import Article from '../article/Article.svelte';
 
   // Overview functions
+
+
+
   import { loadTrainedModel, constructCNN } from '../utils/cnn-tf.js';
   import { overviewConfig } from '../config.js';
 
@@ -38,6 +43,10 @@
     drawOutput, drawCNN, updateCNN, updateCNNLayerRanges, drawCustomImage
   } from './overview-draw.js';
 
+  // DataTrainX
+  function afficheStart() {
+    leftStartStore.update(n => 0);
+  }
 
   // View bindings
   let overviewComponent;
@@ -169,15 +178,14 @@
   }
 
   let imageOptions = [
-    {file: 'cnn.jpg', class: 'colere'},
-    {file: 'degout_3.jpg', class: 'degout'},
-    {file: 'joie_3.jpg', class: 'joie'},
-    {file: 'neutre_2.jpg', class: 'neutre'},
-    {file: 'peur_3.jpg', class: 'peur'},
-    {file: 'surprise_2.jpg', class: 'surprise'},
-    {file: 'tristesse_2.jpg', class: 'tristesse'},
-    {file: 'panda_1.jpeg', class: 'tristesse'},
-	{file: 'happy_1.jpeg', class: 'joyeux'}
+    {file: 'colere.jpg', class: 'Colère'},
+    {file: 'degout.jpg', class: 'Dégoût'},
+    {file: 'peur.jpg', class: 'Peur'},
+    {file: 'joyeux.jpg', class: 'Joyeux'},
+    {file: 'triste.jpg', class: 'Triste'},
+    {file: 'surprise.jpg', class: 'Surprise'},
+    {file: 'neutre.jpg', class: 'Neutre'}
+
   ];
   let selectedImage = imageOptions[0].file;
 
@@ -1113,7 +1121,7 @@
       .attr("d", "M-5,-10L10,0L-5,10");
 
     console.time('Construct cnn');
-    model = await loadTrainedModel('PUBLIC_URL/assets/data/test2/model.json');
+    model = await loadTrainedModel('PUBLIC_URL/assets/data/fer_tinyVGG/model.json');
     cnn = await constructCNN(`PUBLIC_URL/assets/img/${selectedImage}`, model);
     console.timeEnd('Construct cnn');
     cnnStore.set(cnn);
@@ -1290,7 +1298,7 @@
   }
 
   .control > .select > #level-select {
-    padding-left: 2em;
+    padding-left: 4em;
     padding-right: 2em;
   }
 
@@ -1313,18 +1321,22 @@
     font-size: 12px;
   }
 
-  #detailed-button {
+  .blue-button {
     margin-right: 10px;
     color: #dbdbdb;
     transition: border-color 300ms ease-in-out, color 200ms ease-in-out;
   }
 
-  #detailed-button.is-activated, #detailed-button.is-activated:hover {
+  .is-success{
+    margin-right: 10px;
+  }
+
+  .blue-button.is-activated, .blue-button.is-activated:hover {
     color: #3273dc;
     border-color: #3273dc;
   }
 
-  #detailed-button:hover {
+  .blue-button:hover {
     color: #b5b5b5;
   }
 
@@ -1532,7 +1544,17 @@
 
     <div class="right-control">
 
-      <button class="button is-very-small"
+        <button class="button is-success is-very-small is-activated" on:click={afficheStart}>
+        <span class="icon">
+          <i class="fa-solid fa-address-card"></i>
+        </span>
+            <span>
+          Faire le test
+        </span>
+        </button>
+
+
+        <button class="button blue-button is-very-small"
         id="detailed-button"
         disabled={disableControl}
         class:is-activated={detailedMode}
@@ -1541,7 +1563,7 @@
           <i class="fas fa-eye"></i>
         </span>
         <span id="hover-label-text">
-          Show detail
+          Détail
         </span>
       </button>
 

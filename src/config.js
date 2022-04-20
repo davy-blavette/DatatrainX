@@ -26,7 +26,7 @@ export const overviewConfig = {
   svgPaddings: {top: 25, bottom: 25, left: 50, right: 50},
   kernelRectLength: 8/3,
   gapRatio: 4,
+  modeImg: 1, // 1 for gray or 3 rgb
   overlayRectOffset: 12,
-  classLists: ['Colere', 'Degout', 'Joie', 'Neutre', 'Peur',
-    'Surprise', 'Tristesse']
+  classLists: ['Colère', 'Dégoût', 'Peur', 'Joyeux', 'Triste', 'Surprise', 'Neutre']
 };

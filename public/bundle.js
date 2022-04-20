@@ -1,5 +1,3 @@
-
-(function(l, r) { if (l.getElementById('livereloadscript')) return; r = l.createElement('script'); r.async = 1; r.src = '//' + (window.location.host || 'localhost').split(':')[0] + ':35729/livereload.js?snipver=1'; r.id = 'livereloadscript'; l.getElementsByTagName('head')[0].appendChild(r) })(window.document);
 var app = (function () {
     'use strict';
 
@@ -34,6 +32,21 @@ var app = (function () {
     }
     function is_empty(obj) {
         return Object.keys(obj).length === 0;
+    }
+    function validate_store(store, name) {
+        if (store != null && typeof store.subscribe !== 'function') {
+            throw new Error(`'${name}' is not a store with a 'subscribe' method`);
+        }
+    }
+    function subscribe(store, ...callbacks) {
+        if (store == null) {
+            return noop;
+        }
+        const unsub = store.subscribe(...callbacks);
+        return unsub.unsubscribe ? () => unsub.unsubscribe() : unsub;
+    }
+    function component_subscribe(component, store, callback) {
+        component.$$.on_destroy.push(subscribe(store, callback));
     }
     function append(target, node) {
         target.appendChild(node);
@@ -85,7 +98,12 @@ var app = (function () {
         input.value = value == null ? '' : value;
     }
     function set_style(node, key, value, important) {
-        node.style.setProperty(key, value, important ? 'important' : '');
+        if (value === null) {
+            node.style.removeProperty(key);
+        }
+        else {
+            node.style.setProperty(key, value, important ? 'important' : '');
+        }
     }
     function select_option(select, value) {
         for (let i = 0; i < select.options.length; i += 1) {
@@ -167,22 +185,40 @@ var app = (function () {
     function add_render_callback(fn) {
         render_callbacks.push(fn);
     }
-    let flushing = false;
+    // flush() calls callbacks in this order:
+    // 1. All beforeUpdate callbacks, in order: parents before children
+    // 2. All bind:this callbacks, in reverse order: children before parents.
+    // 3. All afterUpdate callbacks, in order: parents before children. EXCEPT
+    //    for afterUpdates called during the initial onMount, which are called in
+    //    reverse order: children before parents.
+    // Since callbacks might update component values, which could trigger another
+    // call to flush(), the following steps guard against this:
+    // 1. During beforeUpdate, any updated components will be added to the
+    //    dirty_components array and will cause a reentrant call to flush(). Because
+    //    the flush index is kept outside the function, the reentrant call will pick
+    //    up where the earlier call left off and go through all dirty components. The
+    //    current_component value is saved and restored so that the reentrant call will
+    //    not interfere with the "parent" flush() call.
+    // 2. bind:this callbacks cannot trigger new flush() calls.
+    // 3. During afterUpdate, any updated components will NOT have their afterUpdate
+    //    callback called a second time; the seen_callbacks set, outside the flush()
+    //    function, guarantees this behavior.
     const seen_callbacks = new Set();
+    let flushidx = 0; // Do *not* move this inside the flush() function
     function flush() {
-        if (flushing)
-            return;
-        flushing = true;
+        const saved_component = current_component;
         do {
             // first, call beforeUpdate functions
             // and update components
-            for (let i = 0; i < dirty_components.length; i += 1) {
-                const component = dirty_components[i];
+            while (flushidx < dirty_components.length) {
+                const component = dirty_components[flushidx];
+                flushidx++;
                 set_current_component(component);
                 update(component.$$);
             }
             set_current_component(null);
             dirty_components.length = 0;
+            flushidx = 0;
             while (binding_callbacks.length)
                 binding_callbacks.pop()();
             // then, once components are updated, call
@@ -202,8 +238,8 @@ var app = (function () {
             flush_callbacks.pop()();
         }
         update_scheduled = false;
-        flushing = false;
         seen_callbacks.clear();
+        set_current_component(saved_component);
     }
     function update($$) {
         if ($$.fragment !== null) {
@@ -388,7 +424,7 @@ var app = (function () {
     }
 
     function dispatch_dev(type, detail) {
-        document.dispatchEvent(custom_event(type, Object.assign({ version: '3.44.2' }, detail), true));
+        document.dispatchEvent(custom_event(type, Object.assign({ version: '3.47.0' }, detail), true));
     }
     function append_dev(target, node) {
         dispatch_dev('SvelteDOMInsert', { target, node });
@@ -471,6 +507,16 @@ var app = (function () {
 
     const subscriber_queue = [];
     /**
+     * Creates a `Readable` store that allows reading by subscription.
+     * @param value initial value
+     * @param {StartStopNotifier}start start and stop notifications for subscriptions
+     */
+    function readable(value, start) {
+        return {
+            subscribe: writable(value, start).subscribe
+        };
+    }
+    /**
      * Create a `Writable` store that allows both updating and reading by subscription.
      * @param {*=}value initial value
      * @param {StartStopNotifier=}start start and stop notifications for subscriptions
@@ -516,6 +562,47 @@ var app = (function () {
         }
         return { set, update, subscribe };
     }
+    function derived(stores, fn, initial_value) {
+        const single = !Array.isArray(stores);
+        const stores_array = single
+            ? [stores]
+            : stores;
+        const auto = fn.length < 2;
+        return readable(initial_value, (set) => {
+            let inited = false;
+            const values = [];
+            let pending = 0;
+            let cleanup = noop;
+            const sync = () => {
+                if (pending) {
+                    return;
+                }
+                cleanup();
+                const result = fn(single ? values[0] : values, set);
+                if (auto) {
+                    set(result);
+                }
+                else {
+                    cleanup = is_function(result) ? result : noop;
+                }
+            };
+            const unsubscribers = stores_array.map((store, i) => subscribe(store, (value) => {
+                values[i] = value;
+                pending &= ~(1 << i);
+                if (inited) {
+                    sync();
+                }
+            }, () => {
+                pending |= (1 << i);
+            }));
+            inited = true;
+            sync();
+            return function stop() {
+                run_all(unsubscribers);
+                cleanup();
+            };
+        });
+    }
 
     const cnnStore = writable([]);
     const svgStore = writable(undefined);
@@ -544,6 +631,8 @@ var app = (function () {
     const modalStore = writable({});
 
     const intermediateLayerPositionStore = writable({});
+
+    const leftStartStore = writable(0);
 
     // Enum of node types
 
@@ -778,7 +867,7 @@ var app = (function () {
       return data;
     }
 
-    /* src\detail-view\Dataview.svelte generated by Svelte v3.44.2 */
+    /* src\detail-view\Dataview.svelte generated by Svelte v3.47.0 */
     const file = "src\\detail-view\\Dataview.svelte";
 
     function create_fragment(ctx) {
@@ -1147,7 +1236,7 @@ var app = (function () {
     	}
     }
 
-    /* src\detail-view\KernelMathView.svelte generated by Svelte v3.44.2 */
+    /* src\detail-view\KernelMathView.svelte generated by Svelte v3.47.0 */
     const file$1 = "src\\detail-view\\KernelMathView.svelte";
 
     function create_fragment$1(ctx) {
@@ -1695,7 +1784,7 @@ var app = (function () {
     	}
     }
 
-    /* src\detail-view\ConvolutionAnimator.svelte generated by Svelte v3.44.2 */
+    /* src\detail-view\ConvolutionAnimator.svelte generated by Svelte v3.47.0 */
     const file$2 = "src\\detail-view\\ConvolutionAnimator.svelte";
 
     function create_fragment$2(ctx) {
@@ -2277,7 +2366,7 @@ var app = (function () {
     	}
     }
 
-    /* src\detail-view\Convolutionview.svelte generated by Svelte v3.44.2 */
+    /* src\detail-view\Convolutionview.svelte generated by Svelte v3.47.0 */
 
     const { console: console_1 } = globals;
     const file$3 = "src\\detail-view\\Convolutionview.svelte";
@@ -2749,7 +2838,7 @@ var app = (function () {
     	}
     }
 
-    /* src\detail-view\ActivationAnimator.svelte generated by Svelte v3.44.2 */
+    /* src\detail-view\ActivationAnimator.svelte generated by Svelte v3.47.0 */
     const file$4 = "src\\detail-view\\ActivationAnimator.svelte";
 
     function create_fragment$4(ctx) {
@@ -3231,7 +3320,7 @@ var app = (function () {
     	}
     }
 
-    /* src\detail-view\Activationview.svelte generated by Svelte v3.44.2 */
+    /* src\detail-view\Activationview.svelte generated by Svelte v3.47.0 */
     const file$5 = "src\\detail-view\\Activationview.svelte";
 
     // (95:0) {#if !isExited}
@@ -3640,7 +3729,7 @@ var app = (function () {
     	}
     }
 
-    /* src\detail-view\PoolAnimator.svelte generated by Svelte v3.44.2 */
+    /* src\detail-view\PoolAnimator.svelte generated by Svelte v3.47.0 */
     const file$6 = "src\\detail-view\\PoolAnimator.svelte";
 
     function create_fragment$6(ctx) {
@@ -4179,7 +4268,7 @@ var app = (function () {
     	}
     }
 
-    /* src\detail-view\Poolview.svelte generated by Svelte v3.44.2 */
+    /* src\detail-view\Poolview.svelte generated by Svelte v3.47.0 */
 
     const { console: console_1$1 } = globals;
     const file$7 = "src\\detail-view\\Poolview.svelte";
@@ -4625,7 +4714,7 @@ var app = (function () {
     	}
     }
 
-    /* src\detail-view\Softmaxview.svelte generated by Svelte v3.44.2 */
+    /* src\detail-view\Softmaxview.svelte generated by Svelte v3.47.0 */
     const file$8 = "src\\detail-view\\Softmaxview.svelte";
 
     function create_fragment$8(ctx) {
@@ -5091,7 +5180,7 @@ var app = (function () {
     	}
     }
 
-    /* src\overview\Modal.svelte generated by Svelte v3.44.2 */
+    /* src\overview\Modal.svelte generated by Svelte v3.47.0 */
     const file$9 = "src\\overview\\Modal.svelte";
 
     function create_fragment$9(ctx) {
@@ -5553,7 +5642,7 @@ var app = (function () {
     	}
     }
 
-    /* src\detail-view\HyperparameterDataview.svelte generated by Svelte v3.44.2 */
+    /* src\detail-view\HyperparameterDataview.svelte generated by Svelte v3.47.0 */
     const file$a = "src\\detail-view\\HyperparameterDataview.svelte";
 
     function create_fragment$a(ctx) {
@@ -5875,7 +5964,7 @@ var app = (function () {
     	}
     }
 
-    /* src\detail-view\HyperparameterAnimator.svelte generated by Svelte v3.44.2 */
+    /* src\detail-view\HyperparameterAnimator.svelte generated by Svelte v3.47.0 */
     const file$b = "src\\detail-view\\HyperparameterAnimator.svelte";
 
     function create_fragment$b(ctx) {
@@ -6379,7 +6468,7 @@ var app = (function () {
     	}
     }
 
-    /* src\detail-view\Hyperparameterview.svelte generated by Svelte v3.44.2 */
+    /* src\detail-view\Hyperparameterview.svelte generated by Svelte v3.47.0 */
 
     const { console: console_1$2 } = globals;
     const file$c = "src\\detail-view\\Hyperparameterview.svelte";
@@ -7026,7 +7115,7 @@ var app = (function () {
     	}
     }
 
-    /* src\article\Youtube.svelte generated by Svelte v3.44.2 */
+    /* src\article\Youtube.svelte generated by Svelte v3.47.0 */
     const file$d = "src\\article\\Youtube.svelte";
 
     function create_fragment$d(ctx) {
@@ -7185,1465 +7274,54 @@ var app = (function () {
     	}
     }
 
-    /* src\article\Article.svelte generated by Svelte v3.44.2 */
+    /* src\article\Article.svelte generated by Svelte v3.47.0 */
     const file$e = "src\\article\\Article.svelte";
 
     function create_fragment$e(ctx) {
     	let body;
-    	let div9;
-    	let h20;
+    	let div;
+    	let h2;
     	let t1;
     	let p0;
-    	let t2;
-    	let em0;
-    	let t4;
-    	let em1;
-    	let t6;
-    	let t7;
+    	let t3;
     	let p1;
-    	let t9;
-    	let ol0;
-    	let li0;
-    	let t10;
-    	let strong0;
-    	let t12;
-    	let t13;
-    	let li1;
-    	let t14;
-    	let strong1;
-    	let t16;
-    	let span0;
-    	let t18;
-    	let span1;
-    	let t20;
-    	let strong2;
-    	let t22;
-    	let t23;
-    	let li2;
-    	let t24;
-    	let strong3;
-    	let t26;
-    	let t27;
-    	let li3;
-    	let strong4;
-    	let t29;
-    	let span2;
-    	let t31;
-    	let span3;
-    	let t33;
-    	let em2;
-    	let t35;
-    	let em3;
-    	let t37;
-    	let t38;
-    	let li4;
-    	let t39;
-    	let strong5;
-    	let t41;
-    	let strong6;
-    	let t43;
-    	let t44;
-    	let p2;
-    	let t45;
-    	let a0;
-    	let t47;
-    	let t48;
-    	let p3;
-    	let t49;
-    	let a1;
-    	let t51;
-    	let t52;
-    	let h21;
-    	let t54;
-    	let p4;
-    	let t56;
-    	let h40;
-    	let t58;
-    	let p5;
-    	let t59;
-    	let img0;
-    	let img0_src_value;
-    	let t60;
-    	let t61;
-    	let h41;
-    	let t63;
-    	let p6;
-    	let t65;
-    	let p7;
-    	let t67;
-    	let p8;
-    	let t69;
-    	let div1;
-    	let img1;
-    	let img1_src_value;
-    	let t70;
-    	let div0;
-    	let t72;
-    	let p9;
-    	let t74;
-    	let div3;
-    	let img2;
-    	let img2_src_value;
-    	let t75;
-    	let div2;
-    	let t77;
-    	let p10;
-    	let t79;
-    	let p11;
-    	let t81;
-    	let h60;
-    	let t83;
-    	let p12;
-    	let hyperparameterview;
-    	let t84;
-    	let ol1;
-    	let li5;
-    	let strong7;
-    	let t86;
-    	let a2;
-    	let t88;
-    	let a3;
-    	let t90;
-    	let a4;
-    	let t92;
-    	let t93;
-    	let li6;
-    	let strong8;
-    	let t95;
-    	let a5;
-    	let t97;
-    	let t98;
-    	let li7;
-    	let strong9;
-    	let t100;
-    	let t101;
-    	let h42;
-    	let t103;
-    	let h61;
-    	let t105;
-    	let p13;
-    	let t106;
-    	let a6;
-    	let t108;
-    	let em4;
-    	let t110;
-    	let a7;
-    	let t112;
-    	let t113;
-    	let p14;
-    	let t116;
-    	let div5;
-    	let img3;
-    	let img3_src_value;
-    	let t117;
-    	let div4;
-    	let t119;
-    	let p15;
-    	let t121;
-    	let h62;
-    	let t123;
-    	let p16;
-    	let t124;
-    	let t125;
-    	let span4;
-    	let t127;
-    	let span5;
-    	let t129;
-    	let t130;
-    	let p17;
-    	let t132;
-    	let div7;
-    	let img4;
-    	let img4_src_value;
-    	let t133;
-    	let div6;
-    	let t134;
-    	let em5;
-    	let t136;
-    	let t137;
-    	let h43;
-    	let t139;
-    	let p18;
-    	let t141;
-    	let p19;
-    	let t143;
-    	let p20;
-    	let t145;
-    	let h44;
-    	let t147;
-    	let p21;
-    	let t149;
-    	let h22;
-    	let t151;
-    	let ol2;
-    	let li8;
-    	let strong10;
-    	let t153;
-    	let img5;
-    	let img5_src_value;
-    	let t154;
-    	let t155;
-    	let li9;
-    	let strong11;
-    	let t157;
-    	let img6;
-    	let img6_src_value;
-    	let t158;
-    	let t159;
-    	let li10;
-    	let strong12;
-    	let t161;
-    	let img7;
-    	let img7_src_value;
-    	let t162;
-    	let t163;
-    	let li11;
-    	let strong13;
-    	let t165;
-    	let img8;
-    	let img8_src_value;
-    	let t166;
-    	let em6;
-    	let t168;
-    	let t169;
-    	let li12;
-    	let strong14;
-    	let t171;
-    	let img9;
-    	let img9_src_value;
-    	let t172;
-    	let em7;
-    	let t174;
-    	let t175;
-    	let h23;
-    	let t177;
-    	let ul;
-    	let li13;
-    	let t178;
-    	let small0;
-    	let t180;
-    	let li14;
-    	let em8;
-    	let t182;
-    	let small1;
-    	let t184;
-    	let li15;
-    	let t185;
-    	let em9;
-    	let t187;
-    	let small2;
-    	let t189;
-    	let li16;
-    	let t190;
-    	let em10;
-    	let t192;
-    	let small3;
-    	let t194;
-    	let li17;
-    	let t195;
-    	let em11;
-    	let t197;
-    	let small4;
-    	let t199;
-    	let li18;
-    	let t200;
-    	let em12;
-    	let t202;
-    	let small5;
-    	let t204;
-    	let li19;
-    	let t205;
-    	let small6;
-    	let t207;
-    	let li20;
-    	let t208;
-    	let small7;
-    	let t210;
-    	let div8;
-    	let youtube;
-    	let t211;
-    	let h24;
-    	let t213;
-    	let p22;
-    	let t214;
-    	let a8;
-    	let em13;
-    	let t216;
-    	let a9;
-    	let em14;
-    	let t218;
-    	let a10;
-    	let em15;
-    	let t220;
-    	let t221;
-    	let h25;
-    	let t223;
-    	let p23;
-    	let t224;
-    	let a11;
-    	let t226;
-    	let a12;
-    	let t228;
-    	let a13;
-    	let t230;
-    	let a14;
-    	let t232;
-    	let a15;
-    	let t234;
-    	let a16;
-    	let t236;
-    	let a17;
-    	let t238;
-    	let a18;
-    	let t240;
-    	let current;
-    	let mounted;
-    	let dispose;
-    	hyperparameterview = new Hyperparameterview({ $$inline: true });
-
-    	let youtube_props = {
-    		videoId: "HnWIHWFbuUQ",
-    		playerId: "demo_video"
-    	};
-
-    	youtube = new Youtube({ props: youtube_props, $$inline: true });
-    	/*youtube_binding*/ ctx[3](youtube);
 
     	const block = {
     		c: function create() {
     			body = element("body");
-    			div9 = element("div");
-    			h20 = element("h2");
-    			h20.textContent = "What is a Convolutional Neural Network?";
+    			div = element("div");
+    			h2 = element("h2");
+    			h2.textContent = "DataTrainX c'est quoi ?";
     			t1 = space();
     			p0 = element("p");
-    			t2 = text("In machine learning, a classifier assigns a class label to a data point.  For example, an ");
-    			em0 = element("em");
-    			em0.textContent = "image classifier";
-    			t4 = text(" produces a class label (e.g, bird, plane) for what objects exist within an image.  A ");
-    			em1 = element("em");
-    			em1.textContent = "convolutional neural network";
-    			t6 = text(", or CNN for short, is a type of classifier, which excels at solving this problem!");
-    			t7 = space();
+    			p0.textContent = "Dans l’apprentissage, une logique de la restitution qui prévaut encore sur une logique de la compréhension serait à l’origine de nombreux échecs de l’apprenant. Pour se comprendre, comprendre le monde et autrui, tout apprenant produit et met en œuvre des ressources métacognitives.";
+    			t3 = space();
     			p1 = element("p");
-    			p1.textContent = "A CNN is a neural network: an algorithm used to recognize patterns in data. Neural Networks in general are composed of a collection of neurons that are organized in layers, each with their own learnable weights and biases.  Let’s break down a CNN into its basic building blocks.";
-    			t9 = space();
-    			ol0 = element("ol");
-    			li0 = element("li");
-    			t10 = text("A ");
-    			strong0 = element("strong");
-    			strong0.textContent = "tensor";
-    			t12 = text(" can be thought of as an n-dimensional matrix.  In the CNN above, tensors will be 3-dimensional with the exception of the output layer.");
-    			t13 = space();
-    			li1 = element("li");
-    			t14 = text("A ");
-    			strong1 = element("strong");
-    			strong1.textContent = "neuron";
-    			t16 = text(" can be thought of as a function that takes in multiple inputs and yields a single output.  The outputs of neurons are represented above as the ");
-    			span0 = element("span");
-    			span0.textContent = "red";
-    			t18 = text(" → ");
-    			span1 = element("span");
-    			span1.textContent = "blue";
-    			t20 = space();
-    			strong2 = element("strong");
-    			strong2.textContent = "activation maps";
-    			t22 = text(".");
-    			t23 = space();
-    			li2 = element("li");
-    			t24 = text("A ");
-    			strong3 = element("strong");
-    			strong3.textContent = "layer";
-    			t26 = text(" is simply a collection of neurons with the same operation, including the same hyperparameters.");
-    			t27 = space();
-    			li3 = element("li");
-    			strong4 = element("strong");
-    			strong4.textContent = "Kernel weights and biases";
-    			t29 = text(", while unique to each neuron, are tuned during the training phase, and allow the classifier to adapt to the problem and dataset provided.  They are encoded in the visualization with a ");
-    			span2 = element("span");
-    			span2.textContent = "yellow";
-    			t31 = text(" → ");
-    			span3 = element("span");
-    			span3.textContent = "green";
-    			t33 = text(" diverging colorscale.  The specific values can be viewed in the ");
-    			em2 = element("em");
-    			em2.textContent = "Interactive Formula View";
-    			t35 = text(" by clicking a neuron or by hovering over the kernel/bias in the ");
-    			em3 = element("em");
-    			em3.textContent = "Convolutional Elastic Explanation View";
-    			t37 = text(".");
-    			t38 = space();
-    			li4 = element("li");
-    			t39 = text("A CNN conveys a ");
-    			strong5 = element("strong");
-    			strong5.textContent = "differentiable score function";
-    			t41 = text(", which is represented as ");
-    			strong6 = element("strong");
-    			strong6.textContent = "class scores";
-    			t43 = text(" in the visualization on the output layer.");
-    			t44 = space();
-    			p2 = element("p");
-    			t45 = text("If you have studied neural networks before, these terms may sound familiar to you.  So what makes a CNN different? CNNs utilize a special type of layer, aptly named a convolutional layer, that makes them well-positioned to learn from image and image-like data.  Regarding image data, CNNs can be used for many different computer vision tasks, such as ");
-    			a0 = element("a");
-    			a0.textContent = "image processing, classification, segmentation, and object detection";
-    			t47 = text(".");
-    			t48 = space();
-    			p3 = element("p");
-    			t49 = text("In CNN Explainer, you can see how a simple CNN can be used for image classification.  Because of the network’s simplicity, its performance isn’t perfect, but that’s okay! The network architecture, ");
-    			a1 = element("a");
-    			a1.textContent = "Tiny VGG";
-    			t51 = text(", used in CNN Explainer contains many of the same layers and operations used in state-of-the-art CNNs today, but on a smaller scale.  This way, it will be easier to understand getting started.");
-    			t52 = space();
-    			h21 = element("h2");
-    			h21.textContent = "What does each layer of the network do?";
-    			t54 = space();
-    			p4 = element("p");
-    			p4.textContent = "Let’s walk through each layer in the network.  Feel free to interact with the visualization above by clicking and hovering over various parts of it as you read.";
-    			t56 = space();
-    			h40 = element("h4");
-    			h40.textContent = "Input Layer";
-    			t58 = space();
-    			p5 = element("p");
-    			t59 = text("The input layer (leftmost layer) represents the input image into the CNN.  Because we use RGB images as input, the input layer has three channels, corresponding to the red, green, and blue channels, respectively, which are shown in this layer. Use the color scale when you click on the ");
-    			img0 = element("img");
-    			t60 = text(" icon above to display detailed information (on this layer, and others).");
-    			t61 = space();
-    			h41 = element("h4");
-    			h41.textContent = "Convolutional Layers";
-    			t63 = space();
-    			p6 = element("p");
-    			p6.textContent = "The convolutional layers are the foundation of CNN, as they contain the learned kernels (weights), which extract features that distinguish different images from one another—this is what we want for classification!  As you interact with the convolutional layer, you will notice links between the previous layers and the convolutional layers.  Each link represents a unique kernel, which is used for the convolution operation to produce the current convolutional neuron’s output or activation map.";
-    			t65 = space();
-    			p7 = element("p");
-    			p7.textContent = "The convolutional neuron performs an elementwise dot product with a unique kernel and the output of the previous layer’s corresponding neuron.  This will yield as many intermediate results as there are unique kernels.  The convolutional neuron is the result of all of the intermediate results summed together with the learned bias.";
-    			t67 = space();
-    			p8 = element("p");
-    			p8.textContent = "For example, let’s look at the first convolutional layer in the Tiny VGG architecture above.  Notice that there are 10 neurons in this layer, but only 3 neurons in the previous layer.  In the Tiny VGG architecture, convolutional layers are fully-connected, meaning each neuron is connected to every other neuron in the previous layer.  Focusing on the output of the topmost convolutional neuron from the first convolutional layer, we see that there are 3 unique kernels when we hover over the activation map.";
-    			t69 = space();
-    			div1 = element("div");
-    			img1 = element("img");
-    			t70 = space();
-    			div0 = element("div");
-    			div0.textContent = "Figure 1.  As you hover over the activation map of the topmost node from the first convolutional layer, you can see that 3 kernels were applied to yield this activation map.  After clicking this activation map, you can see the convolution operation occuring with each unique kernel.";
-    			t72 = space();
-    			p9 = element("p");
-    			p9.textContent = "The size of these kernels is a hyper-parameter specified by the designers of the network architecture.  In order to produce the output of the convolutional neuron (activation map), we must perform an elementwise dot product with the output of the previous layer and the unique kernel learned by the network.  In TinyVGG, the dot product operation uses a stride of 1, which means that the kernel is shifted over 1 pixel per dot product, but this is a hyperparameter that the network architecture designer can adjust to better fit their dataset.  We must do this for all 3 kernels, which will yield 3 intermediate results.";
-    			t74 = space();
-    			div3 = element("div");
-    			img2 = element("img");
-    			t75 = space();
-    			div2 = element("div");
-    			div2.textContent = "Figure 2. The kernel being applied to yield the topmost intermediate result for the discussed activation map.";
-    			t77 = space();
-    			p10 = element("p");
-    			p10.textContent = "Then, an elementwise sum is performed containing all 3 intermediate results along with the bias the network has learned.  After this, the resulting 2-dimensional tensor will be the activation map viewable on the interface above for the topmost neuron in the first convolutional layer.  This same operation must be applied to produce each neuron’s activation map.";
-    			t79 = space();
-    			p11 = element("p");
-    			p11.textContent = "With some simple math, we are able to deduce that there are 3 x 10 = 30 unique kernels, each of size 3x3, applied in the first convolutional layer.  The connectivity between the convolutional layer and the previous layer is a design decision when building a network architecture, which will affect the number of kernels per convolutional layer.  Click around the visualization to better understand the operations behind the convolutional layer.  See if you can follow the example above!";
-    			t81 = space();
-    			h60 = element("h6");
-    			h60.textContent = "Understanding Hyperparameters";
-    			t83 = space();
-    			p12 = element("p");
-    			create_component(hyperparameterview.$$.fragment);
-    			t84 = space();
-    			ol1 = element("ol");
-    			li5 = element("li");
-    			strong7 = element("strong");
-    			strong7.textContent = "Padding";
-    			t86 = text(" is often necessary when the kernel extends beyond the activation map.  Padding conserves data at the borders of activation maps, which leads to better performance, and it can help ");
-    			a2 = element("a");
-    			a2.textContent = "preserve the input's spatial size";
-    			t88 = text(", which allows an architecture designer to build depper, higher performing networks.  There exist ");
-    			a3 = element("a");
-    			a3.textContent = "many padding techniques";
-    			t90 = text(", but the most commonly used approach is zero-padding because of its performance, simplicity, and computational efficiency.  The technique involves adding zeros symmetrically around the edges of an input.  This approach is adopted by many high-performing CNNs such as ");
-    			a4 = element("a");
-    			a4.textContent = "AlexNet";
-    			t92 = text(".");
-    			t93 = space();
-    			li6 = element("li");
-    			strong8 = element("strong");
-    			strong8.textContent = "Kernel size";
-    			t95 = text(", often also referred to as filter size, refers to the dimensions of the sliding window over the input.  Choosing this hyperparameter has a massive impact on the image classification task.  For example, small kernel sizes are able to extract a much larger amount of information containing highly local features from the input.  As you can see on the visualization above, a smaller kernel size also leads to a smaller reduction in layer dimensions, which allows for a deeper architecture.  Conversely, a large kernel size extracts less information, which leads to a faster reduction in layer dimensions, often leading to worse performance.  Large kernels are better suited to extract features that are larger.  At the end of the day, choosing an appropriate kernel size will be dependent on your task and dataset, but generally, smaller kernel sizes lead to better performance for the image classification task because an architecture designer is able to stack ");
-    			a5 = element("a");
-    			a5.textContent = "more and more layers together to learn more and more complex features";
-    			t97 = text("!");
-    			t98 = space();
-    			li7 = element("li");
-    			strong9 = element("strong");
-    			strong9.textContent = "Stride";
-    			t100 = text(" indicates how many pixels the kernel should be shifted over at a time.  For example, as described in the convolutional layer example above, Tiny VGG uses a stride of 1 for its convolutional layers, which means that the dot product is performed on a 3x3 window of the input to yield an output value, then is shifted to the right by one pixel for every subsequent operation.  The impact stride has on a CNN is similar to kernel size.  As stride is decreased, more features are learned because more data is extracted, which also leads to larger output layers.  On the contrary, as stride is increased, this leads to more limited feature extraction and smaller output layer dimensions.  One responsibility of the architecture designer is to ensure that the kernel slides across the input symmetrically when implementing a CNN.  Use the hyperparameter visualization above to alter stride on various input/kernel dimensions to understand this constraint!");
-    			t101 = space();
-    			h42 = element("h4");
-    			h42.textContent = "Activation Functions";
-    			t103 = space();
-    			h61 = element("h6");
-    			h61.textContent = "ReLU";
-    			t105 = space();
-    			p13 = element("p");
-    			t106 = text("Neural networks are extremely prevalent in modern technology—because they are so accurate!  The highest performing CNNs today consist of an absurd amount of layers, which are able to learn more and more features.  Part of the reason these groundbreaking CNNs are able to achieve such ");
-    			a6 = element("a");
-    			a6.textContent = "tremendous accuracies";
-    			t108 = text(" is because of their non-linearity.  ReLU applies much-needed non-linearity into the model.  Non-linearity is necessary to produce non-linear decision boundaries, so that the output cannot be written as a linear combination of the inputs.  If a non-linear activation function was not present, deep CNN architectures would devolve into a single, equivalent convolutional layer, which would not perform nearly as well.  The ReLU activation function is specifically used as a non-linear activation function, as opposed to other non-linear functions such as ");
-    			em4 = element("em");
-    			em4.textContent = "Sigmoid";
-    			t110 = text(" because it has been ");
-    			a7 = element("a");
-    			a7.textContent = "empirically observed";
-    			t112 = text(" that CNNs using ReLU are faster to train than their counterparts.");
-    			t113 = space();
-    			p14 = element("p");
-    			p14.textContent = `The ReLU activation function is a one-to-one mathematical operation: ${/*reluEquation*/ ctx[2]}`;
-    			t116 = space();
-    			div5 = element("div");
-    			img3 = element("img");
-    			t117 = space();
-    			div4 = element("div");
-    			div4.textContent = "Figure 3. The ReLU activation function graphed, which disregards all negative data.";
-    			t119 = space();
-    			p15 = element("p");
-    			p15.textContent = "This activation function is applied elementwise on every value from the input tensor.  For example, if applied ReLU on the value 2.24, the result would be 2.24, since 2.24 is larger than 0.  You can observe how this activation function is applied by clicking a ReLU neuron in the network above.  The Rectified Linear Activation function (ReLU) is performed after every convolutional layer in the network architecture outlined above.  Notice the impact this layer has on the activation map of various neurons throughout the network!";
-    			t121 = space();
-    			h62 = element("h6");
-    			h62.textContent = "Softmax";
-    			t123 = space();
-    			p16 = element("p");
-    			t124 = text(/*softmaxEquation*/ ctx[1]);
-    			t125 = text("\n    \tA softmax operation serves a key purpose: making sure the CNN outputs sum to 1.  Because of this, softmax operations are useful to scale model outputs into probabilities.  Clicking on the last layer reveals the softmax operation in the network. Notice how the logits after flatten aren’t scaled between zero to one.  For a visual indication of the impact of each logit (unscaled scalar value), they are encoded using a ");
-    			span4 = element("span");
-    			span4.textContent = "light orange";
-    			t127 = text(" → ");
-    			span5 = element("span");
-    			span5.textContent = "dark orange";
-    			t129 = text(" color scale.  After passing through the softmax function, each class now corresponds to an appropriate probability!");
-    			t130 = space();
-    			p17 = element("p");
-    			p17.textContent = "You might be thinking what the difference between standard normalization and softmax is—after all, both rescale the logits between 0 and 1.  Remember that backpropagation is a key aspect of training neural networks—we want the correct answer to have the largest “signal.” By using softmax, we are effectively “approximating” argmax while gaining differentiability.  Rescaling doesn’t weigh the max significantly higher than other logits, whereas softmax does.  Simply put, softmax is a “softer” argmax—see what we did there?";
-    			t132 = space();
-    			div7 = element("div");
-    			img4 = element("img");
-    			t133 = space();
-    			div6 = element("div");
-    			t134 = text("Figure 4. The ");
-    			em5 = element("em");
-    			em5.textContent = "Softmax Interactive Formula View";
-    			t136 = text(" allows a user to interact with both the color encoded logits and formula to understand how the prediction scores after the flatten layer are normalized to yield classification scores.");
-    			t137 = space();
-    			h43 = element("h4");
-    			h43.textContent = "Pooling Layers";
-    			t139 = space();
-    			p18 = element("p");
-    			p18.textContent = "There are many types of pooling layers in different CNN architectures, but they all have the purpose of gradually decreasing the spatial extent of the network, which reduces the parameters and overall computation of the network.  The type of pooling used in the Tiny VGG architecture above is Max-Pooling.";
-    			t141 = space();
-    			p19 = element("p");
-    			p19.textContent = "The Max-Pooling operation requires selecting a kernel size and a stride length during architecture design.  Once selected, the operation slides the kernel with the specified stride over the input while only selecting the largest value at each kernel slice from the input to yield a value for the output.  This process can be viewed by clicking a pooling neuron in the network above.";
-    			t143 = space();
-    			p20 = element("p");
-    			p20.textContent = "In the Tiny VGG architecture above, the pooling layers use a 2x2 kernel and a stride of 2.  This operation with these specifications results in the discarding of 75% of activations.  By discarding so many values, Tiny VGG is more computationally efficient and avoids overfitting.";
-    			t145 = space();
-    			h44 = element("h4");
-    			h44.textContent = "Flatten Layer";
-    			t147 = space();
-    			p21 = element("p");
-    			p21.textContent = "This layer converts a three-dimensional layer in the network into a one-dimensional vector to fit the  input of a fully-connected layer for classification.  For example, a 5x5x2 tensor would be converted into a vector of size 50.  The previous convolutional layers of the network extracted the features from the input image, but now it is time to classify the features.  We use the softmax function to classify these features, which requires a 1-dimensional input.  This is why the flatten layer is necessary.  This layer can be viewed by clicking any output class.";
-    			t149 = space();
-    			h22 = element("h2");
-    			h22.textContent = "Interactive features";
-    			t151 = space();
-    			ol2 = element("ol");
-    			li8 = element("li");
-    			strong10 = element("strong");
-    			strong10.textContent = "Upload your own image";
-    			t153 = text(" by selecting ");
-    			img5 = element("img");
-    			t154 = text(" to understand how your image is classified into the 10 classes.  By analyzing the neurons throughout the network, you can understand the activations maps and extracted features.");
-    			t155 = space();
-    			li9 = element("li");
-    			strong11 = element("strong");
-    			strong11.textContent = "Change the activation map colorscale";
-    			t157 = text(" to better understand the impact of activations at different levels of abstraction by adjusting ");
-    			img6 = element("img");
-    			t158 = text(".");
-    			t159 = space();
-    			li10 = element("li");
-    			strong12 = element("strong");
-    			strong12.textContent = "Understand network details";
-    			t161 = text(" such as layer dimensions and colorscales by clicking the ");
-    			img7 = element("img");
-    			t162 = text(" icon.");
-    			t163 = space();
-    			li11 = element("li");
-    			strong13 = element("strong");
-    			strong13.textContent = "Simulate network operations";
-    			t165 = text(" by clicking the ");
-    			img8 = element("img");
-    			t166 = text(" button or interact with the layer slice in the ");
-    			em6 = element("em");
-    			em6.textContent = "Interactive Formula View";
-    			t168 = text(" by hovering over portions of the input or output to understand the mappings and underlying operations.");
-    			t169 = space();
-    			li12 = element("li");
-    			strong14 = element("strong");
-    			strong14.textContent = "Learn layer functions";
-    			t171 = text(" by clicking ");
-    			img9 = element("img");
-    			t172 = text(" from the ");
-    			em7 = element("em");
-    			em7.textContent = "Interactive Formula View";
-    			t174 = text(" to read layer details from the article.");
-    			t175 = space();
-    			h23 = element("h2");
-    			h23.textContent = "Video Tutorial";
-    			t177 = space();
-    			ul = element("ul");
-    			li13 = element("li");
-    			t178 = text("CNN Explainer Introduction\n        ");
-    			small0 = element("small");
-    			small0.textContent = "(0:00-0:22)";
-    			t180 = space();
-    			li14 = element("li");
-    			em8 = element("em");
-    			em8.textContent = "Overview";
-    			t182 = space();
-    			small1 = element("small");
-    			small1.textContent = "(0:27-0:37)";
-    			t184 = space();
-    			li15 = element("li");
-    			t185 = text("Convolutional ");
-    			em9 = element("em");
-    			em9.textContent = "Elastic Explanation View";
-    			t187 = space();
-    			small2 = element("small");
-    			small2.textContent = "(0:37-0:46)";
-    			t189 = space();
-    			li16 = element("li");
-    			t190 = text("Convolutional, ReLU, and Pooling ");
-    			em10 = element("em");
-    			em10.textContent = "Interactive Formula Views";
-    			t192 = space();
-    			small3 = element("small");
-    			small3.textContent = "(0:46-1:21)";
-    			t194 = space();
-    			li17 = element("li");
-    			t195 = text("Flatten ");
-    			em11 = element("em");
-    			em11.textContent = "Elastic Explanation View";
-    			t197 = space();
-    			small4 = element("small");
-    			small4.textContent = "(1:22-1:41)";
-    			t199 = space();
-    			li18 = element("li");
-    			t200 = text("Softmax ");
-    			em12 = element("em");
-    			em12.textContent = "Interactive Formula View";
-    			t202 = space();
-    			small5 = element("small");
-    			small5.textContent = "(1:41-2:02)";
-    			t204 = space();
-    			li19 = element("li");
-    			t205 = text("Engaging Learning Experience: Understanding Classification\n        ");
-    			small6 = element("small");
-    			small6.textContent = "(2:06-2:28)";
-    			t207 = space();
-    			li20 = element("li");
-    			t208 = text("Interactive Tutorial Article\n        ");
-    			small7 = element("small");
-    			small7.textContent = "(2:29-2:54)";
-    			t210 = space();
-    			div8 = element("div");
-    			create_component(youtube.$$.fragment);
-    			t211 = space();
-    			h24 = element("h2");
-    			h24.textContent = "How is CNN Explainer implemented?";
-    			t213 = space();
-    			p22 = element("p");
-    			t214 = text("CNN Explainer uses ");
-    			a8 = element("a");
-    			em13 = element("em");
-    			em13.textContent = "TensorFlow.js";
-    			t216 = text(", an in-browser GPU-accelerated deep learning library to load the pretrained model for visualization.  The entire interactive system is written in Javascript using ");
-    			a9 = element("a");
-    			em14 = element("em");
-    			em14.textContent = "Svelte";
-    			t218 = text(" as a framework and ");
-    			a10 = element("a");
-    			em15 = element("em");
-    			em15.textContent = "D3.js";
-    			t220 = text(" for visualizations. You only need a web browser to get started learning CNNs today!");
-    			t221 = space();
-    			h25 = element("h2");
-    			h25.textContent = "Who developed CNN Explainer?";
-    			t223 = space();
-    			p23 = element("p");
-    			t224 = text("CNN Explainer was created by \n      ");
-    			a11 = element("a");
-    			a11.textContent = "Jay Wang";
-    			t226 = text(",\n      ");
-    			a12 = element("a");
-    			a12.textContent = "Robert Turko";
-    			t228 = text(", \n      ");
-    			a13 = element("a");
-    			a13.textContent = "Omar Shaikh";
-    			t230 = text(",\n      ");
-    			a14 = element("a");
-    			a14.textContent = "Haekyu Park";
-    			t232 = text(",\n      ");
-    			a15 = element("a");
-    			a15.textContent = "Nilaksh Das";
-    			t234 = text(",\n      ");
-    			a16 = element("a");
-    			a16.textContent = "Fred Hohman";
-    			t236 = text(",\n      ");
-    			a17 = element("a");
-    			a17.textContent = "Minsuk Kahng";
-    			t238 = text(", and\n      ");
-    			a18 = element("a");
-    			a18.textContent = "Polo Chau";
-    			t240 = text(",\n      which was the result of a research collaboration between \n      Georgia Tech and Oregon State.  We thank Anmol Chhabria, Kaan Sancak, Kantwon Rogers, and the Georgia Tech Visualization Lab for their support and constructive feedback.  This work was supported in part by NSF grants IIS-1563816, CNS-1704701, NASA NSTRF, DARPA GARD, gifts from Intel, NVIDIA, Google, Amazon.");
-    			attr_dev(h20, "class", "svelte-ixpg0w");
-    			add_location(h20, file$e, 104, 4, 1806);
-    			add_location(em0, file$e, 106, 92, 1955);
-    			add_location(em1, file$e, 106, 203, 2066);
-    			attr_dev(p0, "class", "svelte-ixpg0w");
-    			add_location(p0, file$e, 105, 4, 1859);
-    			attr_dev(p1, "class", "svelte-ixpg0w");
-    			add_location(p1, file$e, 108, 3, 2196);
-    			add_location(strong0, file$e, 112, 10, 2509);
-    			attr_dev(li0, "class", "svelte-ixpg0w");
-    			add_location(li0, file$e, 112, 4, 2503);
-    			add_location(strong1, file$e, 113, 10, 2683);
-    			set_style(span0, "color", "#FF7577");
-    			add_location(span0, file$e, 113, 177, 2850);
-    			set_style(span1, "color", "#60A7D7");
-    			add_location(span1, file$e, 113, 224, 2897);
-    			add_location(strong2, file$e, 113, 265, 2938);
-    			attr_dev(li1, "class", "svelte-ixpg0w");
-    			add_location(li1, file$e, 113, 4, 2677);
-    			add_location(strong3, file$e, 114, 10, 2987);
-    			attr_dev(li2, "class", "svelte-ixpg0w");
-    			add_location(li2, file$e, 114, 4, 2981);
-    			add_location(strong4, file$e, 115, 8, 3118);
-    			set_style(span2, "color", "#BC8435");
-    			add_location(span2, file$e, 115, 235, 3345);
-    			set_style(span3, "color", "#39988F");
-    			add_location(span3, file$e, 115, 285, 3395);
-    			add_location(em2, file$e, 115, 391, 3501);
-    			add_location(em3, file$e, 115, 489, 3599);
-    			attr_dev(li3, "class", "svelte-ixpg0w");
-    			add_location(li3, file$e, 115, 4, 3114);
-    			add_location(strong5, file$e, 116, 24, 3677);
-    			add_location(strong6, file$e, 116, 96, 3749);
-    			attr_dev(li4, "class", "svelte-ixpg0w");
-    			add_location(li4, file$e, 116, 4, 3657);
-    			attr_dev(ol0, "class", "svelte-ixpg0w");
-    			add_location(ol0, file$e, 111, 3, 2494);
-    			attr_dev(a0, "href", "http://ijcsit.com/docs/Volume%207/vol7issue5/ijcsit20160705014.pdf");
-    			attr_dev(a0, "title", "CNN Applications");
-    			attr_dev(a0, "class", "svelte-ixpg0w");
-    			add_location(a0, file$e, 119, 355, 4198);
-    			attr_dev(p2, "class", "svelte-ixpg0w");
-    			add_location(p2, file$e, 118, 3, 3839);
-    			attr_dev(a1, "href", "http://cs231n.stanford.edu/");
-    			attr_dev(a1, "title", "Tiny VGG Net presented by Stanford's CS231n");
-    			attr_dev(a1, "class", "svelte-ixpg0w");
-    			add_location(a1, file$e, 122, 201, 4592);
-    			attr_dev(p3, "class", "svelte-ixpg0w");
-    			add_location(p3, file$e, 121, 3, 4387);
-    			attr_dev(h21, "class", "svelte-ixpg0w");
-    			add_location(h21, file$e, 125, 6, 4910);
-    			attr_dev(p4, "class", "svelte-ixpg0w");
-    			add_location(p4, file$e, 126, 6, 4965);
-    			attr_dev(h40, "id", "article-input");
-    			attr_dev(h40, "class", "svelte-ixpg0w");
-    			add_location(h40, file$e, 129, 6, 5152);
-    			attr_dev(img0, "class", "is-rounded svelte-ixpg0w");
-    			attr_dev(img0, "width", "12%");
-    			attr_dev(img0, "height", "12%");
-    			if (!src_url_equal(img0.src, img0_src_value = "/assets/figures/network_details.png")) attr_dev(img0, "src", img0_src_value);
-    			attr_dev(img0, "alt", "network details icon");
-    			add_location(img0, file$e, 131, 293, 5495);
-    			attr_dev(p5, "class", "svelte-ixpg0w");
-    			add_location(p5, file$e, 130, 6, 5198);
-    			attr_dev(h41, "id", "article-convolution");
-    			attr_dev(h41, "class", "svelte-ixpg0w");
-    			add_location(h41, file$e, 133, 6, 5714);
-    			attr_dev(p6, "class", "svelte-ixpg0w");
-    			add_location(p6, file$e, 134, 6, 5775);
-    			attr_dev(p7, "class", "svelte-ixpg0w");
-    			add_location(p7, file$e, 137, 3, 6298);
-    			attr_dev(p8, "class", "svelte-ixpg0w");
-    			add_location(p8, file$e, 140, 3, 6649);
-    			if (!src_url_equal(img1.src, img1_src_value = "/assets/figures/convlayer_overview_demo.gif")) attr_dev(img1, "src", img1_src_value);
-    			attr_dev(img1, "alt", "clicking on topmost first conv. layer activation map");
-    			attr_dev(img1, "width", "60%");
-    			attr_dev(img1, "height", "60%");
-    			attr_dev(img1, "align", "middle");
-    			attr_dev(img1, "class", "svelte-ixpg0w");
-    			add_location(img1, file$e, 144, 6, 7207);
-    			attr_dev(div0, "class", "figure-caption svelte-ixpg0w");
-    			add_location(div0, file$e, 145, 6, 7375);
-    			attr_dev(div1, "class", "figure svelte-ixpg0w");
-    			add_location(div1, file$e, 143, 4, 7180);
-    			attr_dev(p9, "class", "svelte-ixpg0w");
-    			add_location(p9, file$e, 150, 3, 7720);
-    			if (!src_url_equal(img2.src, img2_src_value = "/assets/figures/convlayer_detailedview_demo.gif")) attr_dev(img2, "src", img2_src_value);
-    			attr_dev(img2, "alt", "clicking on topmost first conv. layer activation map");
-    			attr_dev(img2, "class", "svelte-ixpg0w");
-    			add_location(img2, file$e, 154, 6, 8390);
-    			attr_dev(div2, "class", "figure-caption svelte-ixpg0w");
-    			add_location(div2, file$e, 155, 6, 8527);
-    			attr_dev(div3, "class", "figure svelte-ixpg0w");
-    			add_location(div3, file$e, 153, 4, 8363);
-    			attr_dev(p10, "class", "svelte-ixpg0w");
-    			add_location(p10, file$e, 159, 3, 8701);
-    			attr_dev(p11, "class", "svelte-ixpg0w");
-    			add_location(p11, file$e, 162, 3, 9083);
-    			attr_dev(h60, "class", "svelte-ixpg0w");
-    			add_location(h60, file$e, 165, 4, 9591);
-    			attr_dev(p12, "class", "svelte-ixpg0w");
-    			add_location(p12, file$e, 166, 4, 9634);
-    			add_location(strong7, file$e, 170, 9, 9692);
-    			attr_dev(a2, "href", "https://arxiv.org/pdf/1603.07285.pdf");
-    			attr_dev(a2, "title", "See page 13");
-    			attr_dev(a2, "class", "svelte-ixpg0w");
-    			add_location(a2, file$e, 170, 214, 9897);
-    			attr_dev(a3, "href", "https://arxiv.org/pdf/1811.11718.pdf");
-    			attr_dev(a3, "title", "Outlines major padding techniques");
-    			attr_dev(a3, "class", "svelte-ixpg0w");
-    			add_location(a3, file$e, 170, 416, 10099);
-    			attr_dev(a4, "href", "https://papers.nips.cc/paper/4824-imagenet-classification-with-deep-convolutional-neural-networks.pdf");
-    			attr_dev(a4, "title", "AlexNet");
-    			attr_dev(a4, "class", "svelte-ixpg0w");
-    			add_location(a4, file$e, 170, 800, 10483);
-    			attr_dev(li5, "class", "svelte-ixpg0w");
-    			add_location(li5, file$e, 170, 5, 9688);
-    			add_location(strong8, file$e, 171, 9, 10638);
-    			attr_dev(a5, "href", "https://arxiv.org/pdf/1409.1556.pdf");
-    			attr_dev(a5, "title", "Learn why deeper networks perform better!");
-    			attr_dev(a5, "class", "svelte-ixpg0w");
-    			add_location(a5, file$e, 171, 997, 11626);
-    			attr_dev(li6, "class", "svelte-ixpg0w");
-    			add_location(li6, file$e, 171, 5, 10634);
-    			add_location(strong9, file$e, 172, 9, 11811);
-    			attr_dev(li7, "class", "svelte-ixpg0w");
-    			add_location(li7, file$e, 172, 5, 11807);
-    			attr_dev(ol1, "class", "svelte-ixpg0w");
-    			add_location(ol1, file$e, 169, 4, 9678);
-    			attr_dev(h42, "class", "svelte-ixpg0w");
-    			add_location(h42, file$e, 174, 4, 12803);
-    			attr_dev(h61, "id", "article-relu");
-    			attr_dev(h61, "class", "svelte-ixpg0w");
-    			add_location(h61, file$e, 175, 4, 12837);
-    			attr_dev(a6, "href", "https://arxiv.org/pdf/1512.03385.pdf");
-    			attr_dev(a6, "title", "ResNet");
-    			attr_dev(a6, "class", "svelte-ixpg0w");
-    			add_location(a6, file$e, 177, 295, 13172);
-    			add_location(em4, file$e, 177, 936, 13813);
-    			attr_dev(a7, "href", "https://arxiv.org/pdf/1906.01975.pdf");
-    			attr_dev(a7, "title", "See page 29");
-    			attr_dev(a7, "class", "svelte-ixpg0w");
-    			add_location(a7, file$e, 177, 973, 13850);
-    			attr_dev(p13, "class", "svelte-ixpg0w");
-    			add_location(p13, file$e, 176, 4, 12873);
-    			attr_dev(p14, "class", "svelte-ixpg0w");
-    			add_location(p14, file$e, 179, 4, 14021);
-    			if (!src_url_equal(img3.src, img3_src_value = "/assets/figures/relu_graph.png")) attr_dev(img3, "src", img3_src_value);
-    			attr_dev(img3, "alt", "relu graph");
-    			attr_dev(img3, "width", "30%");
-    			attr_dev(img3, "height", "30%");
-    			attr_dev(img3, "class", "svelte-ixpg0w");
-    			add_location(img3, file$e, 183, 4, 14150);
-    			attr_dev(div4, "class", "figure-caption svelte-ixpg0w");
-    			add_location(div4, file$e, 184, 6, 14252);
-    			attr_dev(div5, "class", "figure svelte-ixpg0w");
-    			add_location(div5, file$e, 182, 4, 14125);
-    			attr_dev(p15, "class", "svelte-ixpg0w");
-    			add_location(p15, file$e, 188, 4, 14401);
-    			attr_dev(h62, "id", "article-softmax");
-    			attr_dev(h62, "class", "svelte-ixpg0w");
-    			add_location(h62, file$e, 191, 4, 14953);
-    			set_style(span4, "color", "#FFC385");
-    			add_location(span4, file$e, 194, 424, 15446);
-    			set_style(span5, "color", "#C44103");
-    			add_location(span5, file$e, 194, 480, 15502);
-    			attr_dev(p16, "class", "svelte-ixpg0w");
-    			add_location(p16, file$e, 192, 4, 14995);
-    			attr_dev(p17, "class", "svelte-ixpg0w");
-    			add_location(p17, file$e, 196, 4, 15680);
-    			if (!src_url_equal(img4.src, img4_src_value = "/assets/figures/softmax_animation.gif")) attr_dev(img4, "src", img4_src_value);
-    			attr_dev(img4, "alt", "softmax interactive formula view");
-    			attr_dev(img4, "class", "svelte-ixpg0w");
-    			add_location(img4, file$e, 200, 4, 16270);
-    			add_location(em5, file$e, 202, 22, 16427);
-    			attr_dev(div6, "class", "figure-caption svelte-ixpg0w");
-    			add_location(div6, file$e, 201, 6, 16376);
-    			attr_dev(div7, "class", "figure svelte-ixpg0w");
-    			add_location(div7, file$e, 199, 4, 16245);
-    			attr_dev(h43, "id", "article-pooling");
-    			attr_dev(h43, "class", "svelte-ixpg0w");
-    			add_location(h43, file$e, 205, 4, 16681);
-    			attr_dev(p18, "class", "svelte-ixpg0w");
-    			add_location(p18, file$e, 206, 4, 16730);
-    			attr_dev(p19, "class", "svelte-ixpg0w");
-    			add_location(p19, file$e, 209, 4, 17058);
-    			attr_dev(p20, "class", "svelte-ixpg0w");
-    			add_location(p20, file$e, 212, 4, 17463);
-    			attr_dev(h44, "id", "article-flatten");
-    			attr_dev(h44, "class", "svelte-ixpg0w");
-    			add_location(h44, file$e, 215, 4, 17765);
-    			attr_dev(p21, "class", "svelte-ixpg0w");
-    			add_location(p21, file$e, 216, 4, 17813);
-    			attr_dev(h22, "class", "svelte-ixpg0w");
-    			add_location(h22, file$e, 220, 4, 18411);
-    			add_location(strong10, file$e, 222, 9, 18459);
-    			attr_dev(img5, "class", "icon is-rounded svelte-ixpg0w");
-    			if (!src_url_equal(img5.src, img5_src_value = "/assets/figures/upload_image_icon.png")) attr_dev(img5, "src", img5_src_value);
-    			attr_dev(img5, "alt", "upload image icon");
-    			add_location(img5, file$e, 222, 61, 18511);
-    			attr_dev(li8, "class", "svelte-ixpg0w");
-    			add_location(li8, file$e, 222, 5, 18455);
-    			add_location(strong11, file$e, 223, 9, 18812);
-    			attr_dev(img6, "class", "is-rounded svelte-ixpg0w");
-    			attr_dev(img6, "width", "12%");
-    			attr_dev(img6, "height", "12%");
-    			if (!src_url_equal(img6.src, img6_src_value = "/assets/figures/heatmap_scale.png")) attr_dev(img6, "src", img6_src_value);
-    			attr_dev(img6, "alt", "heatmap");
-    			add_location(img6, file$e, 223, 158, 18961);
-    			attr_dev(li9, "class", "svelte-ixpg0w");
-    			add_location(li9, file$e, 223, 5, 18808);
-    			add_location(strong12, file$e, 224, 9, 19091);
-    			attr_dev(img7, "class", "is-rounded svelte-ixpg0w");
-    			attr_dev(img7, "width", "12%");
-    			attr_dev(img7, "height", "12%");
-    			if (!src_url_equal(img7.src, img7_src_value = "/assets/figures/network_details.png")) attr_dev(img7, "src", img7_src_value);
-    			attr_dev(img7, "alt", "network details icon");
-    			add_location(img7, file$e, 224, 110, 19192);
-    			attr_dev(li10, "class", "svelte-ixpg0w");
-    			add_location(li10, file$e, 224, 5, 19087);
-    			add_location(strong13, file$e, 225, 9, 19342);
-    			attr_dev(img8, "class", "icon is-rounded svelte-ixpg0w");
-    			if (!src_url_equal(img8.src, img8_src_value = "/assets/figures/play_button.png")) attr_dev(img8, "src", img8_src_value);
-    			attr_dev(img8, "alt", "play icon");
-    			add_location(img8, file$e, 225, 70, 19403);
-    			add_location(em6, file$e, 225, 212, 19545);
-    			attr_dev(li11, "class", "svelte-ixpg0w");
-    			add_location(li11, file$e, 225, 5, 19338);
-    			add_location(strong14, file$e, 226, 10, 19697);
-    			attr_dev(img9, "class", "icon is-rounded svelte-ixpg0w");
-    			if (!src_url_equal(img9.src, img9_src_value = "/assets/figures/info_button.png")) attr_dev(img9, "src", img9_src_value);
-    			attr_dev(img9, "alt", "info icon");
-    			add_location(img9, file$e, 226, 61, 19748);
-    			add_location(em7, file$e, 226, 165, 19852);
-    			attr_dev(li12, "class", "svelte-ixpg0w");
-    			add_location(li12, file$e, 226, 6, 19693);
-    			attr_dev(ol2, "class", "svelte-ixpg0w");
-    			add_location(ol2, file$e, 221, 4, 18445);
-    			attr_dev(h23, "class", "svelte-ixpg0w");
-    			add_location(h23, file$e, 229, 4, 19947);
-    			attr_dev(small0, "class", "svelte-ixpg0w");
-    			add_location(small0, file$e, 233, 8, 20086);
-    			attr_dev(li13, "class", "video-link svelte-ixpg0w");
-    			add_location(li13, file$e, 231, 6, 19986);
-    			add_location(em8, file$e, 236, 8, 20197);
-    			attr_dev(small1, "class", "svelte-ixpg0w");
-    			add_location(small1, file$e, 237, 8, 20223);
-    			attr_dev(li14, "class", "video-link svelte-ixpg0w");
-    			add_location(li14, file$e, 235, 6, 20131);
-    			add_location(em9, file$e, 240, 22, 20348);
-    			attr_dev(small2, "class", "svelte-ixpg0w");
-    			add_location(small2, file$e, 241, 8, 20390);
-    			attr_dev(li15, "class", "video-link svelte-ixpg0w");
-    			add_location(li15, file$e, 239, 6, 20268);
-    			add_location(em10, file$e, 244, 41, 20534);
-    			attr_dev(small3, "class", "svelte-ixpg0w");
-    			add_location(small3, file$e, 245, 8, 20577);
-    			attr_dev(li16, "class", "video-link svelte-ixpg0w");
-    			add_location(li16, file$e, 243, 6, 20435);
-    			add_location(em11, file$e, 248, 16, 20696);
-    			attr_dev(small4, "class", "svelte-ixpg0w");
-    			add_location(small4, file$e, 249, 8, 20738);
-    			attr_dev(li17, "class", "video-link svelte-ixpg0w");
-    			add_location(li17, file$e, 247, 6, 20622);
-    			add_location(em12, file$e, 252, 16, 20858);
-    			attr_dev(small5, "class", "svelte-ixpg0w");
-    			add_location(small5, file$e, 253, 8, 20900);
-    			attr_dev(li18, "class", "video-link svelte-ixpg0w");
-    			add_location(li18, file$e, 251, 6, 20783);
-    			attr_dev(small6, "class", "svelte-ixpg0w");
-    			add_location(small6, file$e, 257, 8, 21079);
-    			attr_dev(li19, "class", "video-link svelte-ixpg0w");
-    			add_location(li19, file$e, 255, 6, 20945);
-    			attr_dev(small7, "class", "svelte-ixpg0w");
-    			add_location(small7, file$e, 261, 8, 21228);
-    			attr_dev(li20, "class", "video-link svelte-ixpg0w");
-    			add_location(li20, file$e, 259, 6, 21124);
-    			attr_dev(ul, "class", "svelte-ixpg0w");
-    			add_location(ul, file$e, 230, 4, 19975);
-    			attr_dev(div8, "class", "video svelte-ixpg0w");
-    			add_location(div8, file$e, 264, 4, 21281);
-    			attr_dev(h24, "class", "svelte-ixpg0w");
-    			add_location(h24, file$e, 268, 4, 21404);
-    			add_location(em13, file$e, 270, 62, 21517);
-    			attr_dev(a8, "href", "https://js.tensorflow.org/");
-    			attr_dev(a8, "class", "svelte-ixpg0w");
-    			add_location(a8, file$e, 270, 25, 21480);
-    			add_location(em14, file$e, 270, 282, 21737);
-    			attr_dev(a9, "href", "https://svelte.dev/");
-    			attr_dev(a9, "class", "svelte-ixpg0w");
-    			add_location(a9, file$e, 270, 252, 21707);
-    			add_location(em15, file$e, 270, 349, 21804);
-    			attr_dev(a10, "href", "https://d3js.org/");
-    			attr_dev(a10, "class", "svelte-ixpg0w");
-    			add_location(a10, file$e, 270, 321, 21776);
-    			attr_dev(p22, "class", "svelte-ixpg0w");
-    			add_location(p22, file$e, 269, 4, 21451);
-    			attr_dev(h25, "class", "svelte-ixpg0w");
-    			add_location(h25, file$e, 273, 4, 21921);
-    			attr_dev(a11, "href", "https://zijie.wang/");
-    			attr_dev(a11, "class", "svelte-ixpg0w");
-    			add_location(a11, file$e, 276, 6, 22009);
-    			attr_dev(a12, "href", "https://www.linkedin.com/in/robert-turko/");
-    			attr_dev(a12, "class", "svelte-ixpg0w");
-    			add_location(a12, file$e, 277, 6, 22059);
-    			attr_dev(a13, "href", "http://oshaikh.com/");
-    			attr_dev(a13, "class", "svelte-ixpg0w");
-    			add_location(a13, file$e, 278, 6, 22136);
-    			attr_dev(a14, "href", "https://haekyu.com/");
-    			attr_dev(a14, "class", "svelte-ixpg0w");
-    			add_location(a14, file$e, 279, 6, 22189);
-    			attr_dev(a15, "href", "http://nilakshdas.com/");
-    			attr_dev(a15, "class", "svelte-ixpg0w");
-    			add_location(a15, file$e, 280, 6, 22242);
-    			attr_dev(a16, "href", "https://fredhohman.com/");
-    			attr_dev(a16, "class", "svelte-ixpg0w");
-    			add_location(a16, file$e, 281, 6, 22298);
-    			attr_dev(a17, "href", "http://minsuk.com");
-    			attr_dev(a17, "class", "svelte-ixpg0w");
-    			add_location(a17, file$e, 282, 6, 22355);
-    			attr_dev(a18, "href", "https://www.cc.gatech.edu/~dchau/");
-    			attr_dev(a18, "class", "svelte-ixpg0w");
-    			add_location(a18, file$e, 283, 6, 22411);
-    			attr_dev(p23, "class", "svelte-ixpg0w");
-    			add_location(p23, file$e, 274, 4, 21963);
-    			attr_dev(div9, "id", "description");
-    			attr_dev(div9, "class", "svelte-ixpg0w");
-    			add_location(div9, file$e, 103, 2, 1779);
-    			add_location(body, file$e, 102, 0, 1770);
+    			p1.textContent = "On observera que cela fait appel à de nombreuses disciplines, comme la psychologie, la pédagogie, les neurosciences mais aussi le management, qui demandera à l’équipe enseignante une formation continue pour s’appuyer sur de tels dispositifs, légers et adaptables.";
+    			add_location(h2, file$e, 12, 4, 347);
+    			add_location(p0, file$e, 13, 4, 384);
+    			add_location(p1, file$e, 16, 3, 690);
+    			attr_dev(div, "id", "description");
+    			add_location(div, file$e, 11, 2, 320);
+    			add_location(body, file$e, 10, 0, 311);
     		},
     		l: function claim(nodes) {
     			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
     		},
     		m: function mount(target, anchor) {
     			insert_dev(target, body, anchor);
-    			append_dev(body, div9);
-    			append_dev(div9, h20);
-    			append_dev(div9, t1);
-    			append_dev(div9, p0);
-    			append_dev(p0, t2);
-    			append_dev(p0, em0);
-    			append_dev(p0, t4);
-    			append_dev(p0, em1);
-    			append_dev(p0, t6);
-    			append_dev(div9, t7);
-    			append_dev(div9, p1);
-    			append_dev(div9, t9);
-    			append_dev(div9, ol0);
-    			append_dev(ol0, li0);
-    			append_dev(li0, t10);
-    			append_dev(li0, strong0);
-    			append_dev(li0, t12);
-    			append_dev(ol0, t13);
-    			append_dev(ol0, li1);
-    			append_dev(li1, t14);
-    			append_dev(li1, strong1);
-    			append_dev(li1, t16);
-    			append_dev(li1, span0);
-    			append_dev(li1, t18);
-    			append_dev(li1, span1);
-    			append_dev(li1, t20);
-    			append_dev(li1, strong2);
-    			append_dev(li1, t22);
-    			append_dev(ol0, t23);
-    			append_dev(ol0, li2);
-    			append_dev(li2, t24);
-    			append_dev(li2, strong3);
-    			append_dev(li2, t26);
-    			append_dev(ol0, t27);
-    			append_dev(ol0, li3);
-    			append_dev(li3, strong4);
-    			append_dev(li3, t29);
-    			append_dev(li3, span2);
-    			append_dev(li3, t31);
-    			append_dev(li3, span3);
-    			append_dev(li3, t33);
-    			append_dev(li3, em2);
-    			append_dev(li3, t35);
-    			append_dev(li3, em3);
-    			append_dev(li3, t37);
-    			append_dev(ol0, t38);
-    			append_dev(ol0, li4);
-    			append_dev(li4, t39);
-    			append_dev(li4, strong5);
-    			append_dev(li4, t41);
-    			append_dev(li4, strong6);
-    			append_dev(li4, t43);
-    			append_dev(div9, t44);
-    			append_dev(div9, p2);
-    			append_dev(p2, t45);
-    			append_dev(p2, a0);
-    			append_dev(p2, t47);
-    			append_dev(div9, t48);
-    			append_dev(div9, p3);
-    			append_dev(p3, t49);
-    			append_dev(p3, a1);
-    			append_dev(p3, t51);
-    			append_dev(div9, t52);
-    			append_dev(div9, h21);
-    			append_dev(div9, t54);
-    			append_dev(div9, p4);
-    			append_dev(div9, t56);
-    			append_dev(div9, h40);
-    			append_dev(div9, t58);
-    			append_dev(div9, p5);
-    			append_dev(p5, t59);
-    			append_dev(p5, img0);
-    			append_dev(p5, t60);
-    			append_dev(div9, t61);
-    			append_dev(div9, h41);
-    			append_dev(div9, t63);
-    			append_dev(div9, p6);
-    			append_dev(div9, t65);
-    			append_dev(div9, p7);
-    			append_dev(div9, t67);
-    			append_dev(div9, p8);
-    			append_dev(div9, t69);
-    			append_dev(div9, div1);
-    			append_dev(div1, img1);
-    			append_dev(div1, t70);
-    			append_dev(div1, div0);
-    			append_dev(div9, t72);
-    			append_dev(div9, p9);
-    			append_dev(div9, t74);
-    			append_dev(div9, div3);
-    			append_dev(div3, img2);
-    			append_dev(div3, t75);
-    			append_dev(div3, div2);
-    			append_dev(div9, t77);
-    			append_dev(div9, p10);
-    			append_dev(div9, t79);
-    			append_dev(div9, p11);
-    			append_dev(div9, t81);
-    			append_dev(div9, h60);
-    			append_dev(div9, t83);
-    			append_dev(div9, p12);
-    			mount_component(hyperparameterview, p12, null);
-    			append_dev(div9, t84);
-    			append_dev(div9, ol1);
-    			append_dev(ol1, li5);
-    			append_dev(li5, strong7);
-    			append_dev(li5, t86);
-    			append_dev(li5, a2);
-    			append_dev(li5, t88);
-    			append_dev(li5, a3);
-    			append_dev(li5, t90);
-    			append_dev(li5, a4);
-    			append_dev(li5, t92);
-    			append_dev(ol1, t93);
-    			append_dev(ol1, li6);
-    			append_dev(li6, strong8);
-    			append_dev(li6, t95);
-    			append_dev(li6, a5);
-    			append_dev(li6, t97);
-    			append_dev(ol1, t98);
-    			append_dev(ol1, li7);
-    			append_dev(li7, strong9);
-    			append_dev(li7, t100);
-    			append_dev(div9, t101);
-    			append_dev(div9, h42);
-    			append_dev(div9, t103);
-    			append_dev(div9, h61);
-    			append_dev(div9, t105);
-    			append_dev(div9, p13);
-    			append_dev(p13, t106);
-    			append_dev(p13, a6);
-    			append_dev(p13, t108);
-    			append_dev(p13, em4);
-    			append_dev(p13, t110);
-    			append_dev(p13, a7);
-    			append_dev(p13, t112);
-    			append_dev(div9, t113);
-    			append_dev(div9, p14);
-    			append_dev(div9, t116);
-    			append_dev(div9, div5);
-    			append_dev(div5, img3);
-    			append_dev(div5, t117);
-    			append_dev(div5, div4);
-    			append_dev(div9, t119);
-    			append_dev(div9, p15);
-    			append_dev(div9, t121);
-    			append_dev(div9, h62);
-    			append_dev(div9, t123);
-    			append_dev(div9, p16);
-    			append_dev(p16, t124);
-    			append_dev(p16, t125);
-    			append_dev(p16, span4);
-    			append_dev(p16, t127);
-    			append_dev(p16, span5);
-    			append_dev(p16, t129);
-    			append_dev(div9, t130);
-    			append_dev(div9, p17);
-    			append_dev(div9, t132);
-    			append_dev(div9, div7);
-    			append_dev(div7, img4);
-    			append_dev(div7, t133);
-    			append_dev(div7, div6);
-    			append_dev(div6, t134);
-    			append_dev(div6, em5);
-    			append_dev(div6, t136);
-    			append_dev(div9, t137);
-    			append_dev(div9, h43);
-    			append_dev(div9, t139);
-    			append_dev(div9, p18);
-    			append_dev(div9, t141);
-    			append_dev(div9, p19);
-    			append_dev(div9, t143);
-    			append_dev(div9, p20);
-    			append_dev(div9, t145);
-    			append_dev(div9, h44);
-    			append_dev(div9, t147);
-    			append_dev(div9, p21);
-    			append_dev(div9, t149);
-    			append_dev(div9, h22);
-    			append_dev(div9, t151);
-    			append_dev(div9, ol2);
-    			append_dev(ol2, li8);
-    			append_dev(li8, strong10);
-    			append_dev(li8, t153);
-    			append_dev(li8, img5);
-    			append_dev(li8, t154);
-    			append_dev(ol2, t155);
-    			append_dev(ol2, li9);
-    			append_dev(li9, strong11);
-    			append_dev(li9, t157);
-    			append_dev(li9, img6);
-    			append_dev(li9, t158);
-    			append_dev(ol2, t159);
-    			append_dev(ol2, li10);
-    			append_dev(li10, strong12);
-    			append_dev(li10, t161);
-    			append_dev(li10, img7);
-    			append_dev(li10, t162);
-    			append_dev(ol2, t163);
-    			append_dev(ol2, li11);
-    			append_dev(li11, strong13);
-    			append_dev(li11, t165);
-    			append_dev(li11, img8);
-    			append_dev(li11, t166);
-    			append_dev(li11, em6);
-    			append_dev(li11, t168);
-    			append_dev(ol2, t169);
-    			append_dev(ol2, li12);
-    			append_dev(li12, strong14);
-    			append_dev(li12, t171);
-    			append_dev(li12, img9);
-    			append_dev(li12, t172);
-    			append_dev(li12, em7);
-    			append_dev(li12, t174);
-    			append_dev(div9, t175);
-    			append_dev(div9, h23);
-    			append_dev(div9, t177);
-    			append_dev(div9, ul);
-    			append_dev(ul, li13);
-    			append_dev(li13, t178);
-    			append_dev(li13, small0);
-    			append_dev(ul, t180);
-    			append_dev(ul, li14);
-    			append_dev(li14, em8);
-    			append_dev(li14, t182);
-    			append_dev(li14, small1);
-    			append_dev(ul, t184);
-    			append_dev(ul, li15);
-    			append_dev(li15, t185);
-    			append_dev(li15, em9);
-    			append_dev(li15, t187);
-    			append_dev(li15, small2);
-    			append_dev(ul, t189);
-    			append_dev(ul, li16);
-    			append_dev(li16, t190);
-    			append_dev(li16, em10);
-    			append_dev(li16, t192);
-    			append_dev(li16, small3);
-    			append_dev(ul, t194);
-    			append_dev(ul, li17);
-    			append_dev(li17, t195);
-    			append_dev(li17, em11);
-    			append_dev(li17, t197);
-    			append_dev(li17, small4);
-    			append_dev(ul, t199);
-    			append_dev(ul, li18);
-    			append_dev(li18, t200);
-    			append_dev(li18, em12);
-    			append_dev(li18, t202);
-    			append_dev(li18, small5);
-    			append_dev(ul, t204);
-    			append_dev(ul, li19);
-    			append_dev(li19, t205);
-    			append_dev(li19, small6);
-    			append_dev(ul, t207);
-    			append_dev(ul, li20);
-    			append_dev(li20, t208);
-    			append_dev(li20, small7);
-    			append_dev(div9, t210);
-    			append_dev(div9, div8);
-    			mount_component(youtube, div8, null);
-    			append_dev(div9, t211);
-    			append_dev(div9, h24);
-    			append_dev(div9, t213);
-    			append_dev(div9, p22);
-    			append_dev(p22, t214);
-    			append_dev(p22, a8);
-    			append_dev(a8, em13);
-    			append_dev(p22, t216);
-    			append_dev(p22, a9);
-    			append_dev(a9, em14);
-    			append_dev(p22, t218);
-    			append_dev(p22, a10);
-    			append_dev(a10, em15);
-    			append_dev(p22, t220);
-    			append_dev(div9, t221);
-    			append_dev(div9, h25);
-    			append_dev(div9, t223);
-    			append_dev(div9, p23);
-    			append_dev(p23, t224);
-    			append_dev(p23, a11);
-    			append_dev(p23, t226);
-    			append_dev(p23, a12);
-    			append_dev(p23, t228);
-    			append_dev(p23, a13);
-    			append_dev(p23, t230);
-    			append_dev(p23, a14);
-    			append_dev(p23, t232);
-    			append_dev(p23, a15);
-    			append_dev(p23, t234);
-    			append_dev(p23, a16);
-    			append_dev(p23, t236);
-    			append_dev(p23, a17);
-    			append_dev(p23, t238);
-    			append_dev(p23, a18);
-    			append_dev(p23, t240);
-    			current = true;
-
-    			if (!mounted) {
-    				dispose = [
-    					listen_dev(
-    						li13,
-    						"click",
-    						function () {
-    							if (is_function(/*currentPlayer*/ ctx[0].play(0))) /*currentPlayer*/ ctx[0].play(0).apply(this, arguments);
-    						},
-    						false,
-    						false,
-    						false
-    					),
-    					listen_dev(
-    						li14,
-    						"click",
-    						function () {
-    							if (is_function(/*currentPlayer*/ ctx[0].play(27))) /*currentPlayer*/ ctx[0].play(27).apply(this, arguments);
-    						},
-    						false,
-    						false,
-    						false
-    					),
-    					listen_dev(
-    						li15,
-    						"click",
-    						function () {
-    							if (is_function(/*currentPlayer*/ ctx[0].play(37))) /*currentPlayer*/ ctx[0].play(37).apply(this, arguments);
-    						},
-    						false,
-    						false,
-    						false
-    					),
-    					listen_dev(
-    						li16,
-    						"click",
-    						function () {
-    							if (is_function(/*currentPlayer*/ ctx[0].play(46))) /*currentPlayer*/ ctx[0].play(46).apply(this, arguments);
-    						},
-    						false,
-    						false,
-    						false
-    					),
-    					listen_dev(
-    						li17,
-    						"click",
-    						function () {
-    							if (is_function(/*currentPlayer*/ ctx[0].play(82))) /*currentPlayer*/ ctx[0].play(82).apply(this, arguments);
-    						},
-    						false,
-    						false,
-    						false
-    					),
-    					listen_dev(
-    						li18,
-    						"click",
-    						function () {
-    							if (is_function(/*currentPlayer*/ ctx[0].play(101))) /*currentPlayer*/ ctx[0].play(101).apply(this, arguments);
-    						},
-    						false,
-    						false,
-    						false
-    					),
-    					listen_dev(
-    						li19,
-    						"click",
-    						function () {
-    							if (is_function(/*currentPlayer*/ ctx[0].play(126))) /*currentPlayer*/ ctx[0].play(126).apply(this, arguments);
-    						},
-    						false,
-    						false,
-    						false
-    					),
-    					listen_dev(
-    						li20,
-    						"click",
-    						function () {
-    							if (is_function(/*currentPlayer*/ ctx[0].play(149))) /*currentPlayer*/ ctx[0].play(149).apply(this, arguments);
-    						},
-    						false,
-    						false,
-    						false
-    					)
-    				];
-
-    				mounted = true;
-    			}
+    			append_dev(body, div);
+    			append_dev(div, h2);
+    			append_dev(div, t1);
+    			append_dev(div, p0);
+    			append_dev(div, t3);
+    			append_dev(div, p1);
     		},
-    		p: function update(new_ctx, [dirty]) {
-    			ctx = new_ctx;
-    			const youtube_changes = {};
-    			youtube.$set(youtube_changes);
-    		},
-    		i: function intro(local) {
-    			if (current) return;
-    			transition_in(hyperparameterview.$$.fragment, local);
-    			transition_in(youtube.$$.fragment, local);
-    			current = true;
-    		},
-    		o: function outro(local) {
-    			transition_out(hyperparameterview.$$.fragment, local);
-    			transition_out(youtube.$$.fragment, local);
-    			current = false;
-    		},
+    		p: noop,
+    		i: noop,
+    		o: noop,
     		d: function destroy(detaching) {
     			if (detaching) detach_dev(body);
-    			destroy_component(hyperparameterview);
-    			/*youtube_binding*/ ctx[3](null);
-    			destroy_component(youtube);
-    			mounted = false;
-    			run_all(dispose);
     		}
     	};
 
@@ -8670,13 +7348,6 @@ var app = (function () {
     		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== '$$' && key !== 'slot') console.warn(`<Article> was created with unknown prop '${key}'`);
     	});
 
-    	function youtube_binding($$value) {
-    		binding_callbacks[$$value ? 'unshift' : 'push'](() => {
-    			currentPlayer = $$value;
-    			$$invalidate(0, currentPlayer);
-    		});
-    	}
-
     	$$self.$capture_state = () => ({
     		HyperparameterView: Hyperparameterview,
     		Youtube,
@@ -8686,16 +7357,16 @@ var app = (function () {
     	});
 
     	$$self.$inject_state = $$props => {
-    		if ('softmaxEquation' in $$props) $$invalidate(1, softmaxEquation = $$props.softmaxEquation);
-    		if ('reluEquation' in $$props) $$invalidate(2, reluEquation = $$props.reluEquation);
-    		if ('currentPlayer' in $$props) $$invalidate(0, currentPlayer = $$props.currentPlayer);
+    		if ('softmaxEquation' in $$props) softmaxEquation = $$props.softmaxEquation;
+    		if ('reluEquation' in $$props) reluEquation = $$props.reluEquation;
+    		if ('currentPlayer' in $$props) currentPlayer = $$props.currentPlayer;
     	};
 
     	if ($$props && "$$inject" in $$props) {
     		$$self.$inject_state($$props.$$inject);
     	}
 
-    	return [currentPlayer, softmaxEquation, reluEquation, youtube_binding];
+    	return [];
     }
 
     class Article extends SvelteComponentDev {
@@ -8715,7 +7386,10 @@ var app = (function () {
     /* global tf */
 
     // Network input image size
-    const networkInputSize = 64;
+    const networkInputSize = 48;
+
+    //mode RGB = 3, Gray = 1
+    const inputShape = 1;
 
     // Enum of node types
     const nodeType = {
@@ -8730,10 +7404,10 @@ var app = (function () {
     class Node {
       /**
        * Class structure for each neuron node.
-       * 
+       *
        * @param {string} layerName Name of the node's layer.
        * @param {int} index Index of this node in its layer.
-       * @param {string} type Node type {input, conv, pool, relu, fc}. 
+       * @param {string} type Node type {input, conv, pool, relu, fc}.
        * @param {number} bias The bias assocated to this node.
        * @param {number[]} output Output of this node.
        */
@@ -8753,7 +7427,7 @@ var app = (function () {
     class Link {
       /**
        * Class structure for each link between two nodes.
-       * 
+       *
        * @param {Node} source Source node.
        * @param {Node} dest Target node.
        * @param {number} weight Weight associated to this link. It can be a number,
@@ -8768,7 +7442,7 @@ var app = (function () {
 
     /**
      * Construct a CNN with given extracted outputs from every layer.
-     * 
+     *
      * @param {number[][]} allOutputs Array of outputs for each layer.
      *  allOutputs[i][j] is the output for layer i node j.
      * @param {Model} model Loaded tf.js model.
@@ -8776,19 +7450,17 @@ var app = (function () {
      */
     const constructCNNFromOutputs = (allOutputs, model, inputImageTensor) => {
       let cnn = [];
-      console.log("constructCNNFromOutputs model.layers.length = " + model.layers.length);
       // Add the first layer (input layer)
       let inputLayer = [];
       let inputShape = model.layers[0].batchInputShape.slice(1);
       let inputImageArray = inputImageTensor.transpose([2, 0, 1]).arraySync();
 
-      console.log("inputShape[2] = " + inputShape[2]);
       // First layer's three nodes' outputs are the channels of inputImageArray
       for (let i = 0; i < inputShape[2]; i++) {
         let node = new Node('input', i, nodeType.INPUT, 0, inputImageArray[i]);
         inputLayer.push(node);
       }
-                                                                                                                       
+
       cnn.push(inputLayer);
       let curLayerIndex = 1;
       for (let l = 0; l < model.layers.length; l++) {
@@ -8812,152 +7484,152 @@ var app = (function () {
           curLayerType = nodeType.FC;
         } else if (layer.name.includes('flatten')) {
           curLayerType = nodeType.FLATTEN;
-        } else {
+        } else if (layer.name.includes('batch')) ; else if (layer.name.includes('dropout')) ; else if (layer.name.includes('dense')) ; else if (layer.name.includes('activation')) ; else {
           console.log('Find unknown type');
         }
 
-        // Construct this layer based on its layer type
-        switch (curLayerType) {
-          case nodeType.CONV: {
-            let biases = layer.bias.val.arraySync();
-            // The new order is [output_depth, input_depth, height, width]
-            let weights = layer.kernel.val.transpose([3, 2, 0, 1]).arraySync();
+        //ignore if layer is undefined
+        if(curLayerType){
 
-            // Add nodes into this layer
-            for (let i = 0; i < outputs.length; i++) {
-              let node = new Node(layer.name, i, curLayerType, biases[i],
-                outputs[i]);
+          // Construct this layer based on its layer type
+          switch (curLayerType) {
+            case nodeType.CONV: {
+              let biases = layer.bias.val.arraySync();
+              // The new order is [output_depth, input_depth, height, width]
+              let weights = layer.kernel.val.transpose([3, 2, 0, 1]).arraySync();
 
-              // Connect this node to all previous nodes (create links)
-              // CONV layers have weights in links. Links are one-to-multiple.
-              for (let j = 0; j < cnn[curLayerIndex - 1].length; j++) {
-                let preNode = cnn[curLayerIndex - 1][j];
-                let curLink = new Link(preNode, node, weights[i][j]);
-                preNode.outputLinks.push(curLink);
-                node.inputLinks.push(curLink);
+              // Add nodes into this layer
+              for (let i = 0; i < outputs.length; i++) {
+                let node = new Node(layer.name, i, curLayerType, biases[i],
+                    outputs[i]);
+
+                // Connect this node to all previous nodes (create links)
+                // CONV layers have weights in links. Links are one-to-multiple.
+                for (let j = 0; j < cnn[curLayerIndex - 1].length; j++) {
+                  let preNode = cnn[curLayerIndex - 1][j];
+                  let curLink = new Link(preNode, node, weights[i][j]);
+                  preNode.outputLinks.push(curLink);
+                  node.inputLinks.push(curLink);
+                }
+                curLayerNodes.push(node);
               }
-              curLayerNodes.push(node);
+              break;
             }
-            break;
-          }
-          case nodeType.FC: {
-            let biases = layer.bias.val.arraySync();
-            // The new order is [output_depth, input_depth]
-            let weights = layer.kernel.val.transpose([1, 0]).arraySync();
+            case nodeType.FC: {
+              let biases = layer.bias.val.arraySync();
+              // The new order is [output_depth, input_depth]
+              let weights = layer.kernel.val.transpose([1, 0]).arraySync();
 
-            // Add nodes into this layer
-            for (let i = 0; i < outputs.length; i++) {
-              let node = new Node(layer.name, i, curLayerType, biases[i],
-                outputs[i]);
+              // Add nodes into this layer
+              for (let i = 0; i < outputs.length; i++) {
+                let node = new Node(layer.name, i, curLayerType, biases[i],
+                    outputs[i]);
 
-              // Connect this node to all previous nodes (create links)
-              // FC layers have weights in links. Links are one-to-multiple.
+                // Connect this node to all previous nodes (create links)
+                // FC layers have weights in links. Links are one-to-multiple.
 
-              // Since we are visualizing the logit values, we need to track
-              // the raw value before softmax
-              let curLogit = 0;
-              for (let j = 0; j < cnn[curLayerIndex - 1].length; j++) {
-                let preNode = cnn[curLayerIndex - 1][j];
-                let curLink = new Link(preNode, node, weights[i][j]);
-                preNode.outputLinks.push(curLink);
-                node.inputLinks.push(curLink);
-                curLogit += preNode.output * weights[i][j];
+                // Since we are visualizing the logit values, we need to track
+                // the raw value before softmax
+                let curLogit = 0;
+                for (let j = 0; j < cnn[curLayerIndex - 1].length; j++) {
+                  let preNode = cnn[curLayerIndex - 1][j];
+                  let curLink = new Link(preNode, node, weights[i][j]);
+                  preNode.outputLinks.push(curLink);
+                  node.inputLinks.push(curLink);
+                  curLogit += preNode.output * weights[i][j];
+                }
+                curLogit += biases[i];
+                node.logit = curLogit;
+                curLayerNodes.push(node);
               }
-              curLogit += biases[i];
-              node.logit = curLogit;
-              curLayerNodes.push(node);
+
+              // Sort flatten layer based on the node TF index
+              cnn[curLayerIndex - 1].sort((a, b) => a.realIndex - b.realIndex);
+              break;
             }
+            case nodeType.RELU:
+            case nodeType.POOL: {
+              // RELU and POOL have no bias nor weight
+              let bias = 0;
+              let weight = null;
 
-            // Sort flatten layer based on the node TF index
-            cnn[curLayerIndex - 1].sort((a, b) => a.realIndex - b.realIndex);
-            break;
-          }
-          case nodeType.RELU:
-          case nodeType.POOL: {
-            // RELU and POOL have no bias nor weight
-            let bias = 0;
-            let weight = null;
+              // Add nodes into this layer
+              for (let i = 0; i < outputs.length; i++) {
+                let node = new Node(layer.name, i, curLayerType, bias, outputs[i]);
 
-            // Add nodes into this layer
-            for (let i = 0; i < outputs.length; i++) {
-              let node = new Node(layer.name, i, curLayerType, bias, outputs[i]);
-
-              // RELU and POOL layers have no weights. Links are one-to-one
-              let preNode = cnn[curLayerIndex - 1][i];
-              let link = new Link(preNode, node, weight);
-              preNode.outputLinks.push(link);
-              node.inputLinks.push(link);
-
-              curLayerNodes.push(node);
+                // RELU and POOL layers have no weights. Links are one-to-one
+                let preNode = cnn[curLayerIndex - 1][i];
+                let link = new Link(preNode, node, weight);
+                preNode.outputLinks.push(link);
+                node.inputLinks.push(link);
+                curLayerNodes.push(node);
+              }
+              break;
             }
-            break;
-          }
-          case nodeType.FLATTEN: {
-            // Flatten layer has no bias nor weights.
-            let bias = 0;
+            case nodeType.FLATTEN: {
+              // Flatten layer has no bias nor weights.
+              let bias = 0;
 
-            for (let i = 0; i < outputs.length; i++) {
-              // Flatten layer has no weights. Links are multiple-to-one.
-              // Use dummy weights to store the corresponding entry in the previsou
-              // node as (row, column)
-              // The flatten() in tf2.keras has order: channel -> row -> column
-              let preNodeWidth = cnn[curLayerIndex - 1][0].output.length,
-                preNodeNum = cnn[curLayerIndex - 1].length,
-                preNodeIndex = i % preNodeNum,
-                preNodeRow = Math.floor(Math.floor(i / preNodeNum) / preNodeWidth),
-                preNodeCol = Math.floor(i / preNodeNum) % preNodeWidth,
-                // Use channel, row, colume to compute the real index with order
-                // row -> column -> channel
-                curNodeRealIndex = preNodeIndex * (preNodeWidth * preNodeWidth) +
-                  preNodeRow * preNodeWidth + preNodeCol;
-              
-              let node = new Node(layer.name, i, curLayerType,
-                  bias, outputs[i]);
-              
-              // TF uses the (i) index for computation, but the real order should
-              // be (curNodeRealIndex). We will sort the nodes using the real order
-              // after we compute the logits in the output layer.
-              node.realIndex = curNodeRealIndex;
+              for (let i = 0; i < outputs.length; i++) {
+                // Flatten layer has no weights. Links are multiple-to-one.
+                // Use dummy weights to store the corresponding entry in the previsou
+                // node as (row, column)
+                // The flatten() in tf2.keras has order: channel -> row -> column
+                let preNodeWidth = cnn[curLayerIndex - 1][0].output.length,
+                    preNodeNum = cnn[curLayerIndex - 1].length,
+                    preNodeIndex = i % preNodeNum,
+                    preNodeRow = Math.floor(Math.floor(i / preNodeNum) / preNodeWidth),
+                    preNodeCol = Math.floor(i / preNodeNum) % preNodeWidth,
+                    // Use channel, row, colume to compute the real index with order
+                    // row -> column -> channel
+                    curNodeRealIndex = preNodeIndex * (preNodeWidth * preNodeWidth) +
+                        preNodeRow * preNodeWidth + preNodeCol;
 
-              let link = new Link(cnn[curLayerIndex - 1][preNodeIndex],
-                  node, [preNodeRow, preNodeCol]);
+                let node = new Node(layer.name, i, curLayerType,
+                    bias, outputs[i]);
 
-              cnn[curLayerIndex - 1][preNodeIndex].outputLinks.push(link);
-              node.inputLinks.push(link);
+                // TF uses the (i) index for computation, but the real order should
+                // be (curNodeRealIndex). We will sort the nodes using the real order
+                // after we compute the logits in the output layer.
+                node.realIndex = curNodeRealIndex;
 
-              curLayerNodes.push(node);
+                let link = new Link(cnn[curLayerIndex - 1][preNodeIndex],
+                    node, [preNodeRow, preNodeCol]);
+
+                cnn[curLayerIndex - 1][preNodeIndex].outputLinks.push(link);
+                node.inputLinks.push(link);
+
+                curLayerNodes.push(node);
+              }
+
+              // Sort flatten layer based on the node TF index
+              curLayerNodes.sort((a, b) => a.index - b.index);
+              break;
             }
-
-            // Sort flatten layer based on the node TF index
-            curLayerNodes.sort((a, b) => a.index - b.index);
-            break;
+            default:
+              console.error('Encounter unknown layer type');
+              break;
           }
-          default:
-            console.error('Encounter unknown layer type');
-            break;
+
+          // Add current layer to the NN
+          cnn.push(curLayerNodes);
+          curLayerIndex++;
         }
-
-        // Add current layer to the NN
-        cnn.push(curLayerNodes);
-        console.log("cnn.length = " + cnn.length);
-        curLayerIndex++;
       }
-
       return cnn;
     };
 
     /**
      * Construct a CNN with given model and input.
-     * 
+     *
      * @param {string} inputImageFile filename of input image.
      * @param {Model} model Loaded tf.js model.
      */
     const constructCNN = async (inputImageFile, model) => {
 
-      console.log("constructCNN model.layers.length = " + model.layers.length);
       // Load the image file
       let inputImageTensor = await getInputImageArray(inputImageFile, true);
-
+      console.log(inputImageTensor);
       // Need to feed the model with a batch
       let inputImageTensorBatch = tf.stack([inputImageTensor]);
 
@@ -8965,18 +7637,14 @@ var app = (function () {
       // the model, and sequencially apply transformations.
       let preTensor = inputImageTensorBatch;
       let outputs = [];
-      console.log("model.layers.length >> " + model.layers.length);
       // Iterate through all layers, and build one model with that layer as output
       for (let l = 0; l < model.layers.length; l++) {
-        console.log(model.layers[l]);
         let curTensor = model.layers[l].apply(preTensor);
-        console.log("model.layers[l] = " + model.layers[l]);
         // Record the output tensor
         // Because there is only one element in the batch, we use squeeze()
         // We also want to use CHW order here
 
         let output = curTensor.squeeze();
-        console.log("output.shape.length = " + output.shape.length);
         if (output.shape.length === 3) {
           output = output.transpose([2, 0, 1]);
         }
@@ -8994,7 +7662,7 @@ var app = (function () {
 
     /**
      * Crop the largest central square of size 64x64x3 of a 3d array.
-     * 
+     *
      * @param {[int8]} arr array that requires cropping and padding (if a 64x64 crop
      * is not present)
      * @returns 64x64x3 array
@@ -9024,25 +7692,25 @@ var app = (function () {
      * Convert canvas image data into a 3D tensor with dimension [height, width, 3].
      * Recall that tensorflow uses NHWC order (batch, height, width, channel).
      * Each pixel is in 0-255 scale.
-     * 
+     *
      * @param {[int8]} imageData Canvas image data
      * @param {int} width Canvas image width
      * @param {int} height Canvas image height
      */
     const imageDataTo3DTensor = (imageData, width, height, normalize=true) => {
-      // Create array placeholder for the 3d array
-      let imageArray = tf.fill([width, height, 3], 0).arraySync();
+      // Create array placeholder for the 3d array [width, height, 3] for rgb
+      let imageArray = tf.fill([width, height, inputShape], 0).arraySync();
 
       // Iterate through the data to fill out channel arrays above
       for (let i = 0; i < imageData.length; i++) {
         let pixelIndex = Math.floor(i / 4),
-          channelIndex = i % 4,
-          row = width === height ? Math.floor(pixelIndex / width)
-                                  : pixelIndex % width,
-          column = width === height ? pixelIndex % width
-                                  : Math.floor(pixelIndex / width);
-        
-        if (channelIndex < 3) {
+            channelIndex = i % 4,
+            row = width === height ? Math.floor(pixelIndex / width)
+                : pixelIndex % width,
+            column = width === height ? pixelIndex % width
+                : Math.floor(pixelIndex / width);
+
+        if (channelIndex < inputShape) {
           let curEntry  = imageData[i];
           // Normalize the original pixel value from [0, 255] to [0, 1]
           if (normalize) {
@@ -9063,7 +7731,7 @@ var app = (function () {
 
     /**
      * Get the 3D pixel value array of the given image file.
-     * 
+     *
      * @param {string} imgFile File path to the image file
      * @returns A promise with the corresponding 3D array
      */
@@ -9093,7 +7761,7 @@ var app = (function () {
             resizeCanvas.width = inputImage.width * resizeFactor;
             resizeCanvas.height = inputImage.height * resizeFactor;
             resizeContext.drawImage(inputImage, 0, 0, resizeCanvas.width,
-              resizeCanvas.height);
+                resizeCanvas.height);
 
             // Step 2 - Flip non-square images horizontally and rotate them 90deg since
             // non-square images are not stored upright.
@@ -9111,12 +7779,12 @@ var app = (function () {
               context.drawImage(resizeCanvas, 0, 0);
             }
             canvasImage = context.getImageData(0, 0, resizeCanvas.width,
-              resizeCanvas.height);
+                resizeCanvas.height);
 
           } else {
             context.drawImage(inputImage, 0, 0);
             canvasImage = context.getImageData(0, 0, inputImage.width,
-              inputImage.height);
+                inputImage.height);
           }
           // Get image data and convert it to a 3D array
           let imageData = canvasImage.data;
@@ -9134,7 +7802,7 @@ var app = (function () {
 
     /**
      * Wrapper to load a model.
-     * 
+     *
      * @param {string} modelFile Filename of converted (through tensorflowjs.py)
      *  model json file.
      */
@@ -9170,9 +7838,9 @@ var app = (function () {
       svgPaddings: {top: 25, bottom: 25, left: 50, right: 50},
       kernelRectLength: 8/3,
       gapRatio: 4,
+      modeImg: 1, // 1 for gray or 3 rgb
       overlayRectOffset: 12,
-      classLists: ['Colere', 'Degout', 'Joie', 'Neutre', 'Peur',
-        'Surprise', 'Tristesse']
+      classLists: ['Colère', 'Dégoût', 'Peur', 'Joyeux', 'Triste', 'Surprise', 'Neutre']
     };
 
     // Configs
@@ -9420,8 +8088,8 @@ var app = (function () {
       // (canvas) into corresponding canvas
       bufferContext.putImageData(imageSingle, 0, 0);
       largeCanvasContext.drawImage(bufferCanvas, 0, 0, imageLength, imageLength,
-        0, 0, nodeLength$2 * 3, nodeLength$2 * 3);
-      
+          0, 0, nodeLength$2 * 3, nodeLength$2 * 3);
+
       let imageDataURL = largeCanvas.toDataURL();
       d3.select(image).attr('xlink:href', imageDataURL);
 
@@ -9440,11 +8108,11 @@ var app = (function () {
     const drawOutputScore = (d, i, g, scale) => {
       let group = d3.select(g[i]);
       group.select('rect.output-rect')
-        .transition('output')
-        .delay(500)
-        .duration(800)
-        .ease(d3.easeCubicIn)
-        .attr('width', scale(d.output));
+          .transition('output')
+          .delay(500)
+          .duration(800)
+          .ease(d3.easeCubicIn)
+          .attr('width', scale(d.output));
     };
 
     const drawCustomImage = (image, inputLayer) => {
@@ -9466,14 +8134,21 @@ var app = (function () {
         let row = Math.floor(pixeIndex / imageLength);
         let column = pixeIndex % imageLength;
 
-        let red = inputLayer[0].output[row][column];
-        let green = inputLayer[1].output[row][column];
-        let blue = inputLayer[2].output[row][column];
 
-        imageSingleArray[i] = red * 255;
-        imageSingleArray[i + 1] = green * 255;
-        imageSingleArray[i + 2] = blue * 255;
-        imageSingleArray[i + 3] = 255;
+          let red = inputLayer[0].output[row][column];
+          imageSingleArray[i] = red * 255;
+          imageSingleArray[i] = red * 255;
+
+        if(overviewConfig.modeImg == 3){
+          let green = inputLayer[1].output[row][column];
+          let blue = inputLayer[2].output[row][column];
+          imageSingleArray[i + 1] = green * 255;
+          imageSingleArray[i + 2] = blue * 255;
+          imageSingleArray[i + 3] = 255;
+        }
+
+
+
       }
 
       // canvas.toDataURL() only exports image in 96 DPI, so we can hack it to have
@@ -9487,8 +8162,8 @@ var app = (function () {
       // (canvas) into corresponding canvas
       bufferContext.putImageData(imageSingle, 0, 0);
       largeCanvasContext.drawImage(bufferCanvas, 0, 0, imageLength, imageLength,
-        0, 0, imageWidth * 3, imageWidth * 3);
-      
+          0, 0, imageWidth * 3, imageWidth * 3);
+
       let imageDataURL = largeCanvas.toDataURL();
       // d3.select(image).attr('xlink:href', imageDataURL);
       image.src = imageDataURL;
@@ -9510,21 +8185,21 @@ var app = (function () {
       if (min === undefined) { min = 0; }
       if (max === undefined) { max = 1; }
       let gradient = g.append('defs')
-        .append('svg:linearGradient')
-        .attr('id', `${gradientName}`)
-        .attr('x1', '0%')
-        .attr('y1', '100%')
-        .attr('x2', '100%')
-        .attr('y2', '100%')
-        .attr('spreadMethod', 'pad');
+          .append('svg:linearGradient')
+          .attr('id', `${gradientName}`)
+          .attr('x1', '0%')
+          .attr('y1', '100%')
+          .attr('x2', '100%')
+          .attr('y2', '100%')
+          .attr('spreadMethod', 'pad');
       let interpolation = 10;
       for (let i = 0; i < interpolation; i++) {
         let curProgress = i / (interpolation - 1);
         let curColor = colorScale(curProgress * (max - min) + min);
         gradient.append('stop')
-          .attr('offset', `${curProgress * 100}%`)
-          .attr('stop-color', curColor)
-          .attr('stop-opacity', 1);
+            .attr('offset', `${curProgress * 100}%`)
+            .attr('stop-color', curColor)
+            .attr('stop-opacity', 1);
       }
     };
 
@@ -9541,52 +8216,52 @@ var app = (function () {
         let range2 = cnnLayerRanges.local[start + 2];
 
         let localLegendScale1 = d3.scaleLinear()
-          .range([0, 2 * nodeLength$2 + hSpaceAroundGap - 1.2])
-          .domain([-range1 / 2, range1 / 2]);
-        
+            .range([0, 2 * nodeLength$2 + hSpaceAroundGap - 1.2])
+            .domain([-range1 / 2, range1 / 2]);
+
         let localLegendScale2 = d3.scaleLinear()
-          .range([0, 3 * nodeLength$2 + 2 * hSpaceAroundGap - 1.2])
-          .domain([-range2 / 2, range2 / 2]);
+            .range([0, 3 * nodeLength$2 + 2 * hSpaceAroundGap - 1.2])
+            .domain([-range2 / 2, range2 / 2]);
 
         let localLegendAxis1 = d3.axisBottom()
-          .scale(localLegendScale1)
-          .tickFormat(d3.format('.2f'))
-          .tickValues([-range1 / 2, 0, range1 / 2]);
-        
+            .scale(localLegendScale1)
+            .tickFormat(d3.format('.2f'))
+            .tickValues([-range1 / 2, 0, range1 / 2]);
+
         let localLegendAxis2 = d3.axisBottom()
-          .scale(localLegendScale2)
-          .tickFormat(d3.format('.2f'))
-          .tickValues([-range2 / 2, 0, range2 / 2]);
+            .scale(localLegendScale2)
+            .tickFormat(d3.format('.2f'))
+            .tickValues([-range2 / 2, 0, range2 / 2]);
 
         let localLegend1 = legends.append('g')
-          .attr('class', 'legend local-legend')
-          .attr('id', `local-legend-${i}-1`)
-          .classed('hidden', !detailedMode || selectedScaleLevel !== 'local')
-          .attr('transform', `translate(${nodeCoordinate[start][0].x}, ${0})`);
+            .attr('class', 'legend local-legend')
+            .attr('id', `local-legend-${i}-1`)
+            .classed('hidden', !detailedMode || selectedScaleLevel !== 'local')
+            .attr('transform', `translate(${nodeCoordinate[start][0].x}, ${0})`);
 
         localLegend1.append('g')
-          .attr('transform', `translate(0, ${legendHeight - 3})`)
-          .call(localLegendAxis1);
+            .attr('transform', `translate(0, ${legendHeight - 3})`)
+            .call(localLegendAxis1);
 
         localLegend1.append('rect')
-          .attr('width', 2 * nodeLength$2 + hSpaceAroundGap)
-          .attr('height', legendHeight)
-          .style('fill', 'url(#convGradient)');
+            .attr('width', 2 * nodeLength$2 + hSpaceAroundGap)
+            .attr('height', legendHeight)
+            .style('fill', 'url(#convGradient)');
 
         let localLegend2 = legends.append('g')
-          .attr('class', 'legend local-legend')
-          .attr('id', `local-legend-${i}-2`)
-          .classed('hidden', !detailedMode || selectedScaleLevel !== 'local')
-          .attr('transform', `translate(${nodeCoordinate[start + 2][0].x}, ${0})`);
+            .attr('class', 'legend local-legend')
+            .attr('id', `local-legend-${i}-2`)
+            .classed('hidden', !detailedMode || selectedScaleLevel !== 'local')
+            .attr('transform', `translate(${nodeCoordinate[start + 2][0].x}, ${0})`);
 
         localLegend2.append('g')
-          .attr('transform', `translate(0, ${legendHeight - 3})`)
-          .call(localLegendAxis2);
+            .attr('transform', `translate(0, ${legendHeight - 3})`)
+            .call(localLegendAxis2);
 
         localLegend2.append('rect')
-          .attr('width', 3 * nodeLength$2 + 2 * hSpaceAroundGap)
-          .attr('height', legendHeight)
-          .style('fill', 'url(#convGradient)');
+            .attr('width', 3 * nodeLength$2 + 2 * hSpaceAroundGap)
+            .attr('height', legendHeight)
+            .style('fill', 'url(#convGradient)');
       }
 
       // Add module legends
@@ -9595,30 +8270,30 @@ var app = (function () {
         let range = cnnLayerRanges.module[start];
 
         let moduleLegendScale = d3.scaleLinear()
-          .range([0, 5 * nodeLength$2 + 3 * hSpaceAroundGap +
+            .range([0, 5 * nodeLength$2 + 3 * hSpaceAroundGap +
             1 * hSpaceAroundGap * gapRatio - 1.2])
-          .domain([-range / 2, range / 2]);
+            .domain([-range / 2, range / 2]);
 
         let moduleLegendAxis = d3.axisBottom()
-          .scale(moduleLegendScale)
-          .tickFormat(d3.format('.2f'))
-          .tickValues([-range / 2, -(range / 4), 0, range / 4, range / 2]);
+            .scale(moduleLegendScale)
+            .tickFormat(d3.format('.2f'))
+            .tickValues([-range / 2, -(range / 4), 0, range / 4, range / 2]);
 
         let moduleLegend = legends.append('g')
-          .attr('class', 'legend module-legend')
-          .attr('id', `module-legend-${i}`)
-          .classed('hidden', !detailedMode || selectedScaleLevel !== 'module')
-          .attr('transform', `translate(${nodeCoordinate[start][0].x}, ${0})`);
-        
+            .attr('class', 'legend module-legend')
+            .attr('id', `module-legend-${i}`)
+            .classed('hidden', !detailedMode || selectedScaleLevel !== 'module')
+            .attr('transform', `translate(${nodeCoordinate[start][0].x}, ${0})`);
+
         moduleLegend.append('g')
-          .attr('transform', `translate(0, ${legendHeight - 3})`)
-          .call(moduleLegendAxis);
+            .attr('transform', `translate(0, ${legendHeight - 3})`)
+            .call(moduleLegendAxis);
 
         moduleLegend.append('rect')
-          .attr('width', 5 * nodeLength$2 + 3 * hSpaceAroundGap +
-            1 * hSpaceAroundGap * gapRatio)
-          .attr('height', legendHeight)
-          .style('fill', 'url(#convGradient)');
+            .attr('width', 5 * nodeLength$2 + 3 * hSpaceAroundGap +
+                1 * hSpaceAroundGap * gapRatio)
+            .attr('height', legendHeight)
+            .style('fill', 'url(#convGradient)');
       }
 
       // Add global legends
@@ -9626,84 +8301,86 @@ var app = (function () {
       let range = cnnLayerRanges.global[start];
 
       let globalLegendScale = d3.scaleLinear()
-        .range([0, 10 * nodeLength$2 + 6 * hSpaceAroundGap +
+          .range([0, 10 * nodeLength$2 + 6 * hSpaceAroundGap +
           3 * hSpaceAroundGap * gapRatio - 1.2])
-        .domain([-range / 2, range / 2]);
+          .domain([-range / 2, range / 2]);
 
       let globalLegendAxis = d3.axisBottom()
-        .scale(globalLegendScale)
-        .tickFormat(d3.format('.2f'))
-        .tickValues([-range / 2, -(range / 4), 0, range / 4, range / 2]);
+          .scale(globalLegendScale)
+          .tickFormat(d3.format('.2f'))
+          .tickValues([-range / 2, -(range / 4), 0, range / 4, range / 2]);
 
       let globalLegend = legends.append('g')
-        .attr('class', 'legend global-legend')
-        .attr('id', 'global-legend')
-        .classed('hidden', !detailedMode || selectedScaleLevel !== 'global')
-        .attr('transform', `translate(${nodeCoordinate[start][0].x}, ${0})`);
+          .attr('class', 'legend global-legend')
+          .attr('id', 'global-legend')
+          .classed('hidden', !detailedMode || selectedScaleLevel !== 'global')
+          .attr('transform', `translate(${nodeCoordinate[start][0].x}, ${0})`);
 
       globalLegend.append('g')
-        .attr('transform', `translate(0, ${legendHeight - 3})`)
-        .call(globalLegendAxis);
+          .attr('transform', `translate(0, ${legendHeight - 3})`)
+          .call(globalLegendAxis);
 
       globalLegend.append('rect')
-        .attr('width', 10 * nodeLength$2 + 6 * hSpaceAroundGap +
-          3 * hSpaceAroundGap * gapRatio)
-        .attr('height', legendHeight)
-        .style('fill', 'url(#convGradient)');
+          .attr('width', 10 * nodeLength$2 + 6 * hSpaceAroundGap +
+              3 * hSpaceAroundGap * gapRatio)
+          .attr('height', legendHeight)
+          .style('fill', 'url(#convGradient)');
 
 
       // Add output legend
       let outputRectScale = d3.scaleLinear()
-            .domain(cnnLayerRanges.output)
-            .range([0, nodeLength$2 - 1.2]);
+          .domain(cnnLayerRanges.output)
+          .range([0, nodeLength$2 - 1.2]);
 
       let outputLegendAxis = d3.axisBottom()
-        .scale(outputRectScale)
-        .tickFormat(d3.format('.1f'))
-        .tickValues([0, cnnLayerRanges.output[1]]);
-      
+          .scale(outputRectScale)
+          .tickFormat(d3.format('.1f'))
+          .tickValues([0, cnnLayerRanges.output[1]]);
+
+      console.log(nodeCoordinate);
+
       let outputLegend = legends.append('g')
-        .attr('class', 'legend output-legend')
-        .attr('id', 'output-legend')
-        .classed('hidden', !detailedMode)
-        .attr('transform', `translate(${nodeCoordinate[11][0].x}, ${0})`);
-      
+          .attr('class', 'legend output-legend')
+          .attr('id', 'output-legend')
+          .classed('hidden', !detailedMode)
+          .attr('transform', `translate(${nodeCoordinate[11][0].x}, ${0})`);
+
       outputLegend.append('g')
-        .attr('transform', `translate(0, ${legendHeight - 3})`)
-        .call(outputLegendAxis);
+          .attr('transform', `translate(0, ${legendHeight - 3})`)
+          .call(outputLegendAxis);
 
       outputLegend.append('rect')
-        .attr('width', nodeLength$2)
-        .attr('height', legendHeight)
-        .style('fill', 'gray');
-      
+          .attr('width', nodeLength$2)
+          .attr('height', legendHeight)
+          .style('fill', 'gray');
+
       // Add input image legend
       let inputScale = d3.scaleLinear()
-        .range([0, nodeLength$2 - 1.2])
-        .domain([0, 1]);
+          .range([0, nodeLength$2 - 1.2])
+          .domain([0, 1]);
 
       let inputLegendAxis = d3.axisBottom()
-        .scale(inputScale)
-        .tickFormat(d3.format('.1f'))
-        .tickValues([0, 0.5, 1]);
+          .scale(inputScale)
+          .tickFormat(d3.format('.1f'))
+          .tickValues([0, 0.5, 1]);
 
       let inputLegend = legends.append('g')
-        .attr('class', 'legend input-legend')
-        .classed('hidden', !detailedMode)
-        .attr('transform', `translate(${nodeCoordinate[0][0].x}, ${0})`);
-      
+          .attr('class', 'legend input-legend')
+          .classed('hidden', !detailedMode)
+          .attr('transform', `translate(${nodeCoordinate[0][0].x}, ${0})`);
+
       inputLegend.append('g')
-        .attr('transform', `translate(0, ${legendHeight - 3})`)
-        .call(inputLegendAxis);
+          .attr('transform', `translate(0, ${legendHeight - 3})`)
+          .call(inputLegendAxis);
 
       inputLegend.append('rect')
-        .attr('x', 0.3)
-        .attr('width', nodeLength$2 - 0.3)
-        .attr('height', legendHeight)
-        .attr('transform', `rotate(180, ${nodeLength$2/2}, ${legendHeight/2})`)
-        .style('stroke', 'rgb(20, 20, 20)')
-        .style('stroke-width', 0.3)
-        .style('fill', 'url(#inputGradient)');
+          .attr('x', 0.3)
+          .attr('width', nodeLength$2 - 0.3)
+          .attr('height', legendHeight)
+          .attr('transform', `rotate(180, ${nodeLength$2/2}, ${legendHeight/2})`)
+          .style('stroke', 'rgb(20, 20, 20)')
+          .style('stroke-width', 0.3)
+          .style('fill', 'url(#inputGradient)');
     };
 
     /**
@@ -9716,7 +8393,7 @@ var app = (function () {
      * @param {function} nodeClickHandler Callback func for click
      */
     const drawCNN = (width, height, cnnGroup, nodeMouseOverHandler,
-      nodeMouseLeaveHandler, nodeClickHandler) => {
+                            nodeMouseLeaveHandler, nodeClickHandler) => {
       // Draw the CNN
       // There are 8 short gaps and 5 long gaps
       hSpaceAroundGap = (width - nodeLength$2 * numLayers) / (8 + 5 * gapRatio);
@@ -9743,85 +8420,85 @@ var app = (function () {
         let left = leftAccuumulatedSpace;
 
         let layerGroup = cnnGroup.append('g')
-          .attr('class', 'cnn-layer-group')
-          .attr('id', `cnn-layer-group-${l}`);
+            .attr('class', 'cnn-layer-group')
+            .attr('id', `cnn-layer-group-${l}`);
 
         vSpaceAroundGap = (height - nodeLength$2 * curLayer.length) /
-          (curLayer.length + 1);
+            (curLayer.length + 1);
         vSpaceAroundGapStore.set(vSpaceAroundGap);
 
         let nodeGroups = layerGroup.selectAll('g.node-group')
-          .data(curLayer, d => d.index)
-          .enter()
-          .append('g')
-          .attr('class', 'node-group')
-          .style('cursor', 'pointer')
-          .style('pointer-events', 'all')
-          .on('click', nodeClickHandler)
-          .on('mouseover', nodeMouseOverHandler)
-          .on('mouseleave', nodeMouseLeaveHandler)
-          .classed('node-output', isOutput)
-          .attr('id', (d, i) => {
-            // Compute the coordinate
-            // Not using transform on the group object because of a decade old
-            // bug on webkit (safari)
-            // https://bugs.webkit.org/show_bug.cgi?id=23113
-            let top = i * nodeLength$2 + (i + 1) * vSpaceAroundGap;
-            top += svgPaddings.top;
-            nodeCoordinate[l].push({x: left, y: top});
-            return `layer-${l}-node-${i}`
-          });
-        
+            .data(curLayer, d => d.index)
+            .enter()
+            .append('g')
+            .attr('class', 'node-group')
+            .style('cursor', 'pointer')
+            .style('pointer-events', 'all')
+            .on('click', nodeClickHandler)
+            .on('mouseover', nodeMouseOverHandler)
+            .on('mouseleave', nodeMouseLeaveHandler)
+            .classed('node-output', isOutput)
+            .attr('id', (d, i) => {
+              // Compute the coordinate
+              // Not using transform on the group object because of a decade old
+              // bug on webkit (safari)
+              // https://bugs.webkit.org/show_bug.cgi?id=23113
+              let top = i * nodeLength$2 + (i + 1) * vSpaceAroundGap;
+              top += svgPaddings.top;
+              nodeCoordinate[l].push({x: left, y: top});
+              return `layer-${l}-node-${i}`
+            });
+
         // Overwrite the mouseover and mouseleave function for output nodes to show
         // hover info in the UI
         layerGroup.selectAll('g.node-output')
-          .on('mouseover', (d, i, g) => {
-            nodeMouseOverHandler(d, i, g);
-            hoverInfoStore.set( {show: true, text: `Output value: ${formater(d.output)}`} );
-          })
-          .on('mouseleave', (d, i, g) => {
-            nodeMouseLeaveHandler(d, i, g);
-            hoverInfoStore.set( {show: false, text: `Output value: ${formater(d.output)}`} );
-          });
-        
+            .on('mouseover', (d, i, g) => {
+              nodeMouseOverHandler(d, i, g);
+              hoverInfoStore.set( {show: true, text: `Output value: ${formater(d.output)}`} );
+            })
+            .on('mouseleave', (d, i, g) => {
+              nodeMouseLeaveHandler(d, i, g);
+              hoverInfoStore.set( {show: false, text: `Output value: ${formater(d.output)}`} );
+            });
+
         if (curLayer[0].layerName !== 'output') {
           // Embed raster image in these groups
           nodeGroups.append('image')
-            .attr('class', 'node-image')
-            .attr('width', nodeLength$2)
-            .attr('height', nodeLength$2)
-            .attr('x', left)
-            .attr('y', (d, i) => nodeCoordinate[l][i].y);
-          
+              .attr('class', 'node-image')
+              .attr('width', nodeLength$2)
+              .attr('height', nodeLength$2)
+              .attr('x', left)
+              .attr('y', (d, i) => nodeCoordinate[l][i].y);
+
           // Add a rectangle to show the border
           nodeGroups.append('rect')
-            .attr('class', 'bounding')
-            .attr('width', nodeLength$2)
-            .attr('height', nodeLength$2)
-            .attr('x', left)
-            .attr('y', (d, i) => nodeCoordinate[l][i].y)
-            .style('fill', 'none')
-            .style('stroke', 'gray')
-            .style('stroke-width', 1)
-            .classed('hidden', true);
+              .attr('class', 'bounding')
+              .attr('width', nodeLength$2)
+              .attr('height', nodeLength$2)
+              .attr('x', left)
+              .attr('y', (d, i) => nodeCoordinate[l][i].y)
+              .style('fill', 'none')
+              .style('stroke', 'gray')
+              .style('stroke-width', 1)
+              .classed('hidden', true);
         } else {
           nodeGroups.append('rect')
-            .attr('class', 'output-rect')
-            .attr('x', left)
-            .attr('y', (d, i) => nodeCoordinate[l][i].y + nodeLength$2 / 2 + 8)
-            .attr('height', nodeLength$2 / 4)
-            .attr('width', 0)
-            .style('fill', 'gray');
+              .attr('class', 'output-rect')
+              .attr('x', left)
+              .attr('y', (d, i) => nodeCoordinate[l][i].y + nodeLength$2 / 2 + 8)
+              .attr('height', nodeLength$2 / 4)
+              .attr('width', 0)
+              .style('fill', 'gray');
           nodeGroups.append('text')
-            .attr('class', 'output-text')
-            .attr('x', left)
-            .attr('y', (d, i) => nodeCoordinate[l][i].y + nodeLength$2 / 2)
-            .style('dominant-baseline', 'middle')
-            .style('font-size', '11px')
-            .style('fill', 'black')
-            .style('opacity', 0.5)
-            .text((d, i) => classLists[i]);
-          
+              .attr('class', 'output-text')
+              .attr('x', left)
+              .attr('y', (d, i) => nodeCoordinate[l][i].y + nodeLength$2 / 2)
+              .style('dominant-baseline', 'middle')
+              .style('font-size', '11px')
+              .style('fill', 'black')
+              .style('opacity', 0.5)
+              .text((d, i) => classLists[i]);
+
           // Add annotation text to tell readers the exact output probability
           // nodeGroups.append('text')
           //   .attr('class', 'annotation-text')
@@ -9839,19 +8516,19 @@ var app = (function () {
       // Compute the scale of the output score width (mapping the the node
       // width to the max output score)
       let outputRectScale = d3.scaleLinear()
-            .domain(cnnLayerRanges.output)
-            .range([0, nodeLength$2]);
+          .domain(cnnLayerRanges.output)
+          .range([0, nodeLength$2]);
 
       // Draw the canvas
       for (let l = 0; l < cnn.length; l++) {
         let range = cnnLayerRanges[selectedScaleLevel][l];
         svg$1.select(`g#cnn-layer-group-${l}`)
-          .selectAll('image.node-image')
-          .each((d, i, g) => drawOutput(d, i, g, range));
+            .selectAll('image.node-image')
+            .each((d, i, g) => drawOutput(d, i, g, range));
       }
 
       svg$1.selectAll('g.node-output').each(
-        (d, i, g) => drawOutputScore(d, i, g, outputRectScale)
+          (d, i, g) => drawOutputScore(d, i, g, outputRectScale)
       );
 
       // Add layer label
@@ -9871,85 +8548,85 @@ var app = (function () {
 
       let svgHeight = Number(d3.select('#cnn-svg').style('height').replace('px', '')) + 150;
       let scroll = new SmoothScroll('a[href*="#"]', {offset: -svgHeight});
-      
+
       let detailedLabels = svg$1.selectAll('g.layer-detailed-label')
-        .data(layerNames)
-        .enter()
-        .append('g')
-        .attr('class', 'layer-detailed-label')
-        .attr('id', (d, i) => `layer-detailed-label-${i}`)
-        .classed('hidden', !detailedMode)
-        .attr('transform', (d, i) => {
-          let x = nodeCoordinate[i][0].x + nodeLength$2 / 2;
-          let y = (svgPaddings.top + vSpaceAroundGap) / 2 - 6;
-          return `translate(${x}, ${y})`;
-        })
-        .style('cursor', d => d.name.includes('output') ? 'default' : 'help')
-        .on('click', (d) => {
-          let target = '';
-          if (d.name.includes('conv')) { target = 'convolution'; }
-          if (d.name.includes('relu')) { target = 'relu'; }
-          if (d.name.includes('max_pool')) { target = 'pooling';}
-          if (d.name.includes('input')) { target = 'input';}
+          .data(layerNames)
+          .enter()
+          .append('g')
+          .attr('class', 'layer-detailed-label')
+          .attr('id', (d, i) => `layer-detailed-label-${i}`)
+          .classed('hidden', !detailedMode)
+          .attr('transform', (d, i) => {
+            let x = nodeCoordinate[i][0].x + nodeLength$2 / 2;
+            let y = (svgPaddings.top + vSpaceAroundGap) / 2 - 6;
+            return `translate(${x}, ${y})`;
+          })
+          .style('cursor', d => d.name.includes('output') ? 'default' : 'help')
+          .on('click', (d) => {
+            let target = '';
+            if (d.name.includes('conv')) { target = 'convolution'; }
+            if (d.name.includes('relu')) { target = 'relu'; }
+            if (d.name.includes('max_pool')) { target = 'pooling';}
+            if (d.name.includes('input')) { target = 'input';}
 
-          // Scroll to a article element
-          let anchor = document.querySelector(`#article-${target}`);
-          scroll.animateScroll(anchor);
-        });
-      
+            // Scroll to a article element
+            let anchor = document.querySelector(`#article-${target}`);
+            scroll.animateScroll(anchor);
+          });
+
       detailedLabels.append('title')
-        .text('Move to article section');
-        
-      detailedLabels.append('text')
-        .style('opacity', 0.7)
-        .style('dominant-baseline', 'middle')
-        .append('tspan')
-        .style('font-size', '12px')
-        .text(d => d.name)
-        .append('tspan')
-        .style('font-size', '8px')
-        .style('font-weight', 'normal')
-        .attr('x', 0)
-        .attr('dy', '1.5em')
-        .text(d => d.dimension);
-      
-      let labels = svg$1.selectAll('g.layer-label')
-        .data(layerNames)
-        .enter()
-        .append('g')
-        .attr('class', 'layer-label')
-        .attr('id', (d, i) => `layer-label-${i}`)
-        .classed('hidden', detailedMode)
-        .attr('transform', (d, i) => {
-          let x = nodeCoordinate[i][0].x + nodeLength$2 / 2;
-          let y = (svgPaddings.top + vSpaceAroundGap) / 2 + 5;
-          return `translate(${x}, ${y})`;
-        })
-        .style('cursor', d => d.name.includes('output') ? 'default' : 'help')
-        .on('click', (d) => {
-          let target = '';
-          if (d.name.includes('conv')) { target = 'convolution'; }
-          if (d.name.includes('relu')) { target = 'relu'; }
-          if (d.name.includes('max_pool')) { target = 'pooling';}
-          if (d.name.includes('input')) { target = 'input';}
+          .text('Move to article section');
 
-          // Scroll to a article element
-          let anchor = document.querySelector(`#article-${target}`);
-          scroll.animateScroll(anchor);
-        });
-      
+      detailedLabels.append('text')
+          .style('opacity', 0.7)
+          .style('dominant-baseline', 'middle')
+          .append('tspan')
+          .style('font-size', '12px')
+          .text(d => d.name)
+          .append('tspan')
+          .style('font-size', '8px')
+          .style('font-weight', 'normal')
+          .attr('x', 0)
+          .attr('dy', '1.5em')
+          .text(d => d.dimension);
+
+      let labels = svg$1.selectAll('g.layer-label')
+          .data(layerNames)
+          .enter()
+          .append('g')
+          .attr('class', 'layer-label')
+          .attr('id', (d, i) => `layer-label-${i}`)
+          .classed('hidden', detailedMode)
+          .attr('transform', (d, i) => {
+            let x = nodeCoordinate[i][0].x + nodeLength$2 / 2;
+            let y = (svgPaddings.top + vSpaceAroundGap) / 2 + 5;
+            return `translate(${x}, ${y})`;
+          })
+          .style('cursor', d => d.name.includes('output') ? 'default' : 'help')
+          .on('click', (d) => {
+            let target = '';
+            if (d.name.includes('conv')) { target = 'convolution'; }
+            if (d.name.includes('relu')) { target = 'relu'; }
+            if (d.name.includes('max_pool')) { target = 'pooling';}
+            if (d.name.includes('input')) { target = 'input';}
+
+            // Scroll to a article element
+            let anchor = document.querySelector(`#article-${target}`);
+            scroll.animateScroll(anchor);
+          });
+
       labels.append('title')
-        .text('Move to article section');
-      
+          .text('Move to article section');
+
       labels.append('text')
-        .style('dominant-baseline', 'middle')
-        .style('opacity', 0.8)
-        .text(d => {
-          if (d.name.includes('conv')) { return 'conv' }
-          if (d.name.includes('relu')) { return 'relu' }
-          if (d.name.includes('max_pool')) { return 'max_pool'}
-          return d.name
-        });
+          .style('dominant-baseline', 'middle')
+          .style('opacity', 0.8)
+          .text(d => {
+            if (d.name.includes('conv')) { return 'conv' }
+            if (d.name.includes('relu')) { return 'relu' }
+            if (d.name.includes('max_pool')) { return 'max_pool'}
+            return d.name
+          });
 
       // Add layer color scale legends
       getLegendGradient(svg$1, layerColorScales$2.conv, 'convGradient');
@@ -9959,73 +8636,75 @@ var app = (function () {
       let legends = svg$1.append('g')
           .attr('class', 'color-legend')
           .attr('transform', `translate(${0}, ${
-        svgPaddings.top + vSpaceAroundGap * (classLists.length) + vSpaceAroundGap +
-        nodeLength$2 * classLists.length
+          svgPaddings.top + vSpaceAroundGap * (classLists.length) + vSpaceAroundGap +
+          nodeLength$2 * classLists.length
       })`);
-      
+
       drawLegends(legends, legendHeight);
 
       // Add edges between nodes
       let linkGen = d3.linkHorizontal()
-        .x(d => d.x)
-        .y(d => d.y);
-      
+          .x(d => d.x)
+          .y(d => d.y);
+
       let linkData = getLinkData(nodeCoordinate, cnn);
 
       let edgeGroup = cnnGroup.append('g')
-        .attr('class', 'edge-group');
-      
+          .attr('class', 'edge-group');
+
       edgeGroup.selectAll('path.edge')
-        .data(linkData)
-        .enter()
-        .append('path')
-        .attr('class', d =>
-          `edge edge-${d.targetLayerIndex} edge-${d.targetLayerIndex}-${d.targetNodeIndex}`)
-        .attr('id', d => 
-          `edge-${d.targetLayerIndex}-${d.targetNodeIndex}-${d.sourceNodeIndex}`)
-        .attr('d', d => linkGen({source: d.source, target: d.target}))
-        .style('fill', 'none')
-        .style('stroke-width', edgeStrokeWidth)
-        .style('opacity', edgeOpacity)
-        .style('stroke', edgeInitColor);
+          .data(linkData)
+          .enter()
+          .append('path')
+          .attr('class', d =>
+              `edge edge-${d.targetLayerIndex} edge-${d.targetLayerIndex}-${d.targetNodeIndex}`)
+          .attr('id', d =>
+              `edge-${d.targetLayerIndex}-${d.targetNodeIndex}-${d.sourceNodeIndex}`)
+          .attr('d', d => linkGen({source: d.source, target: d.target}))
+          .style('fill', 'none')
+          .style('stroke-width', edgeStrokeWidth)
+          .style('opacity', edgeOpacity)
+          .style('stroke', edgeInitColor);
 
       // Add input channel annotations
       let inputAnnotation = cnnGroup.append('g')
-        .attr('class', 'input-annotation');
+          .attr('class', 'input-annotation');
 
       let redChannel = inputAnnotation.append('text')
-        .attr('x', nodeCoordinate[0][0].x + nodeLength$2 / 2)
-        .attr('y', nodeCoordinate[0][0].y + nodeLength$2 + 5)
-        .attr('class', 'annotation-text')
-        .style('dominant-baseline', 'hanging')
-        .style('text-anchor', 'middle');
-      
-      redChannel.append('tspan')
-        .style('dominant-baseline', 'hanging')
-        .style('fill', '#C95E67')
-        .text('Red');
-      
-      redChannel.append('tspan')
-        .style('dominant-baseline', 'hanging')
-        .text(' channel');
+          .attr('x', nodeCoordinate[0][0].x + nodeLength$2 / 2)
+          .attr('y', nodeCoordinate[0][0].y + nodeLength$2 + 5)
+          .attr('class', 'annotation-text')
+          .style('dominant-baseline', 'hanging')
+          .style('text-anchor', 'middle');
 
-      inputAnnotation.append('text')
-        .attr('x', nodeCoordinate[0][1].x + nodeLength$2 / 2)
-        .attr('y', nodeCoordinate[0][1].y + nodeLength$2 + 5)
-        .attr('class', 'annotation-text')
-        .style('dominant-baseline', 'hanging')
-        .style('text-anchor', 'middle')
-        .style('fill', '#3DB665')
-        .text('Green');
+      redChannel.append('tspan')
+          .style('dominant-baseline', 'hanging')
+          .style('fill', '#C95E67')
+          .text('Red');
 
-      inputAnnotation.append('text')
-        .attr('x', nodeCoordinate[0][2].x + nodeLength$2 / 2)
-        .attr('y', nodeCoordinate[0][2].y + nodeLength$2 + 5)
-        .attr('class', 'annotation-text')
-        .style('dominant-baseline', 'hanging')
-        .style('text-anchor', 'middle')
-        .style('fill', '#3F7FBC')
-        .text('Blue');
+      redChannel.append('tspan')
+          .style('dominant-baseline', 'hanging')
+          .text(' channel');
+
+      if(overviewConfig.modeImg == 3){
+        inputAnnotation.append('text')
+            .attr('x', nodeCoordinate[0][1].x + nodeLength$2 / 2)
+            .attr('y', nodeCoordinate[0][1].y + nodeLength$2 + 5)
+            .attr('class', 'annotation-text')
+            .style('dominant-baseline', 'hanging')
+            .style('text-anchor', 'middle')
+            .style('fill', '#3DB665')
+            .text('Green');
+
+        inputAnnotation.append('text')
+            .attr('x', nodeCoordinate[0][2].x + nodeLength$2 / 2)
+            .attr('y', nodeCoordinate[0][2].y + nodeLength$2 + 5)
+            .attr('class', 'annotation-text')
+            .style('dominant-baseline', 'hanging')
+            .style('text-anchor', 'middle')
+            .style('fill', '#3F7FBC')
+            .text('Blue');
+      }
     };
 
     /**
@@ -10045,26 +8724,26 @@ var app = (function () {
         let layerGroup = svg$1.select(`g#cnn-layer-group-${l}`);
 
         let nodeGroups = layerGroup.selectAll('g.node-group')
-          .data(curLayer);
+            .data(curLayer);
 
         if (l < cnn.length - 1) {
           // Redraw the canvas and output node
           nodeGroups.transition('disappear')
-            .duration(300)
-            .ease(d3.easeCubicOut)
-            .style('opacity', 0)
-            .on('end', function() {
-              d3.select(this)
-                .select('image.node-image')
-                .each((d, i, g) => drawOutput(d, i, g, range));
-              d3.select(this).transition('appear')
-                .duration(700)
-                .ease(d3.easeCubicIn)
-                .style('opacity', 1);
-            });
+              .duration(300)
+              .ease(d3.easeCubicOut)
+              .style('opacity', 0)
+              .on('end', function() {
+                d3.select(this)
+                    .select('image.node-image')
+                    .each((d, i, g) => drawOutput(d, i, g, range));
+                d3.select(this).transition('appear')
+                    .duration(700)
+                    .ease(d3.easeCubicIn)
+                    .style('opacity', 1);
+              });
         } else {
           nodeGroups.each(
-            (d, i, g) => drawOutputScore(d, i, g, outputRectScale)
+              (d, i, g) => drawOutputScore(d, i, g, outputRectScale)
           );
         }
       }
@@ -10077,23 +8756,23 @@ var app = (function () {
         let range2 = cnnLayerRanges.local[start + 2];
 
         let localLegendScale1 = d3.scaleLinear()
-          .range([0, 2 * nodeLength$2 + hSpaceAroundGap])
-          .domain([-range1 / 2, range1 / 2]);
-        
+            .range([0, 2 * nodeLength$2 + hSpaceAroundGap])
+            .domain([-range1 / 2, range1 / 2]);
+
         let localLegendScale2 = d3.scaleLinear()
-          .range([0, 3 * nodeLength$2 + 2 * hSpaceAroundGap])
-          .domain([-range2 / 2, range2 / 2]);
+            .range([0, 3 * nodeLength$2 + 2 * hSpaceAroundGap])
+            .domain([-range2 / 2, range2 / 2]);
 
         let localLegendAxis1 = d3.axisBottom()
-          .scale(localLegendScale1)
-          .tickFormat(d3.format('.2f'))
-          .tickValues([-range1 / 2, 0, range1 / 2]);
-        
+            .scale(localLegendScale1)
+            .tickFormat(d3.format('.2f'))
+            .tickValues([-range1 / 2, 0, range1 / 2]);
+
         let localLegendAxis2 = d3.axisBottom()
-          .scale(localLegendScale2)
-          .tickFormat(d3.format('.2f'))
-          .tickValues([-range2 / 2, 0, range2 / 2]);
-        
+            .scale(localLegendScale2)
+            .tickFormat(d3.format('.2f'))
+            .tickValues([-range2 / 2, 0, range2 / 2]);
+
         svg$1.select(`g#local-legend-${i}-1`).select('g').call(localLegendAxis1);
         svg$1.select(`g#local-legend-${i}-2`).select('g').call(localLegendAxis2);
       }
@@ -10104,15 +8783,15 @@ var app = (function () {
         let range = cnnLayerRanges.local[start];
 
         let moduleLegendScale = d3.scaleLinear()
-          .range([0, 5 * nodeLength$2 + 3 * hSpaceAroundGap +
+            .range([0, 5 * nodeLength$2 + 3 * hSpaceAroundGap +
             1 * hSpaceAroundGap * gapRatio - 1.2])
-          .domain([-range, range]);
+            .domain([-range, range]);
 
         let moduleLegendAxis = d3.axisBottom()
-          .scale(moduleLegendScale)
-          .tickFormat(d3.format('.2f'))
-          .tickValues([-range, -(range / 2), 0, range/2, range]);
-        
+            .scale(moduleLegendScale)
+            .tickFormat(d3.format('.2f'))
+            .tickValues([-range, -(range / 2), 0, range/2, range]);
+
         svg$1.select(`g#module-legend-${i}`).select('g').call(moduleLegendAxis);
       }
 
@@ -10121,23 +8800,23 @@ var app = (function () {
       let range = cnnLayerRanges.global[start];
 
       let globalLegendScale = d3.scaleLinear()
-        .range([0, 10 * nodeLength$2 + 6 * hSpaceAroundGap +
+          .range([0, 10 * nodeLength$2 + 6 * hSpaceAroundGap +
           3 * hSpaceAroundGap * gapRatio - 1.2])
-        .domain([-range, range]);
+          .domain([-range, range]);
 
       let globalLegendAxis = d3.axisBottom()
-        .scale(globalLegendScale)
-        .tickFormat(d3.format('.2f'))
-        .tickValues([-range, -(range / 2), 0, range/2, range]);
+          .scale(globalLegendScale)
+          .tickFormat(d3.format('.2f'))
+          .tickValues([-range, -(range / 2), 0, range/2, range]);
 
       svg$1.select(`g#global-legend`).select('g').call(globalLegendAxis);
 
       // Output legend
       let outputLegendAxis = d3.axisBottom()
-        .scale(outputRectScale)
-        .tickFormat(d3.format('.1f'))
-        .tickValues([0, cnnLayerRanges.output[1]]);
-      
+          .scale(outputRectScale)
+          .tickFormat(d3.format('.1f'))
+          .tickValues([0, cnnLayerRanges.output[1]]);
+
       svg$1.select('g#output-legend').select('g').call(outputLegendAxis);
     };
 
@@ -10167,8 +8846,8 @@ var app = (function () {
         if (curLayer[0].type === 'conv' || curLayer[0].type === 'fc') {
           aggregatedExtent = aggregatedExtent.map(Math.abs);
           // Plus 0.1 to offset the rounding error (avoid black color)
-          curRange = 2 * (0.1 + 
-            Math.round(Math.max(...aggregatedExtent) * 1000) / 1000);
+          curRange = 2 * (0.1 +
+              Math.round(Math.max(...aggregatedExtent) * 1000) / 1000);
         }
 
         if (curRange !== undefined){
@@ -10194,7 +8873,7 @@ var app = (function () {
 
       let cnnLayerRangesGlobal = [1];
       let maxRange = Math.max(...cnnLayerRangesLocal.slice(1,
-        cnnLayerRangesLocal.length - 1));
+          cnnLayerRangesLocal.length - 1));
       for (let i = 0; i < numLayers - 2; i++) {
         cnnLayerRangesGlobal.push(maxRange);
       }
@@ -10556,12 +9235,15 @@ var app = (function () {
         let pixeIndex = Math.floor(i / 4);
         let row = Math.floor(pixeIndex / imageLength);
         let column = pixeIndex % imageLength;
-        let color = d3.rgb(colorScale((dataMatrix[row][column] + range / 2) / range));
 
-        imageSingleArray[i] = color.r;
-        imageSingleArray[i + 1] = color.g;
-        imageSingleArray[i + 2] = color.b;
-        imageSingleArray[i + 3] = 255;
+        imageSingleArray[i] = 255;
+        if(overviewConfig.modeImg > 1){
+          let color = d3.rgb(colorScale((dataMatrix[row][column] + range / 2) / range));
+          imageSingleArray[i] = color.r;
+          imageSingleArray[i + 1] = color.g;
+          imageSingleArray[i + 2] = color.b;
+          imageSingleArray[i + 3] = 255;
+        }
       }
 
       // canvas.toDataURL() only exports image in 96 DPI, so we can hack it to have
@@ -11324,15 +10006,16 @@ var app = (function () {
         arrowSY = nodeCoordinate$1[curLayerIndex - 1][0].y + nodeLength$4 +
           kernelRectLength * 3 + 5;
         dr = 20;
-
-        sliderX2 = leftX;
+        if(overviewConfig.modeImg > 1) {
+          sliderX2 = leftX;
           sliderY2 = nodeCoordinate$1[curLayerIndex - 1][1].y + nodeLength$4 +
-        kernelRectLength * 3;
-        arrowSX2 = leftX - kernelRectLength * 3;
-        arrowSY2 = nodeCoordinate$1[curLayerIndex - 1][1].y + nodeLength$4 + 15;
-        arrowTX2 = leftX - 13;
-        arrowTY2 =  nodeCoordinate$1[curLayerIndex - 1][1].y + 15;
-        dr2 = 35;
+              kernelRectLength * 3;
+          arrowSX2 = leftX - kernelRectLength * 3;
+          arrowSY2 = nodeCoordinate$1[curLayerIndex - 1][1].y + nodeLength$4 + 15;
+          arrowTX2 = leftX - 13;
+          arrowTY2 = nodeCoordinate$1[curLayerIndex - 1][1].y + 15;
+          dr2 = 35;
+        }
       } else {
         sliderX = leftX - 3 * kernelRectLength * 3;
         sliderY = nodeCoordinate$1[curLayerIndex - 1][0].y + nodeLength$4 / 3;
@@ -11471,7 +10154,7 @@ var app = (function () {
         .attr('dy', '1em')
         .style('dominant-baseline', 'hanging')
         .text('results and then add bias');
-      
+
       if (i === 9) {
         drawArrow({
           group: group,
@@ -11742,34 +10425,34 @@ var app = (function () {
         y: svgPaddings$2.top + vSpaceAroundGap$2 * (10) + vSpaceAroundGap$2 + 
           nodeLength$4 * 10 - 25
       });
+      if(overviewConfig.modeImg > 1) {
+        drawIntermediateLayerLegend({
+          legendHeight: 5,
+          curLayerIndex: curLayerIndex,
+          range: range,
+          minMax: finalMinMax,
+          group: intermediateLayer,
+          width: 2 * nodeLength$4 + intermediateGap,
+          x: nodeCoordinate$1[curLayerIndex - 1][2].x,
+          y: svgPaddings$2.top + vSpaceAroundGap$2 * (10) + vSpaceAroundGap$2 +
+              nodeLength$4 * 10
+        });
 
-      drawIntermediateLayerLegend({
-        legendHeight: 5,
-        curLayerIndex: curLayerIndex,
-        range: range,
-        minMax: finalMinMax,
-        group: intermediateLayer,
-        width: 2 * nodeLength$4 + intermediateGap,
-        x: nodeCoordinate$1[curLayerIndex - 1][2].x,
-        y: svgPaddings$2.top + vSpaceAroundGap$2 * (10) + vSpaceAroundGap$2 + 
-          nodeLength$4 * 10
-      });
-
-      drawIntermediateLayerLegend({
-        legendHeight: 5,
-        curLayerIndex: curLayerIndex,
-        range: kernelRange,
-        minMax: kernelMinMax,
-        group: intermediateLayer,
-        width: 2 * nodeLength$4 + intermediateGap,
-        x: targetX + nodeLength$4 - (2 * nodeLength$4 + intermediateGap),
-        y: svgPaddings$2.top + vSpaceAroundGap$2 * (10) + vSpaceAroundGap$2 + 
-          nodeLength$4 * 10,
-        gradientAppendingName: 'kernelColorGradient',
-        colorScale: layerColorScales$4.weight,
-        gradientGap: 0.2
-      });
-
+        drawIntermediateLayerLegend({
+          legendHeight: 5,
+          curLayerIndex: curLayerIndex,
+          range: kernelRange,
+          minMax: kernelMinMax,
+          group: intermediateLayer,
+          width: 2 * nodeLength$4 + intermediateGap,
+          x: targetX + nodeLength$4 - (2 * nodeLength$4 + intermediateGap),
+          y: svgPaddings$2.top + vSpaceAroundGap$2 * (10) + vSpaceAroundGap$2 +
+              nodeLength$4 * 10,
+          gradientAppendingName: 'kernelColorGradient',
+          colorScale: layerColorScales$4.weight,
+          gradientGap: 0.2
+        });
+      }
       // Show everything
       svg$3.selectAll('g.intermediate-layer, g.intermediate-layer-annotation')
         .transition()
@@ -14009,7 +12692,7 @@ var app = (function () {
         .style('opacity', 1);
     };
 
-    /* src\overview\Overview.svelte generated by Svelte v3.44.2 */
+    /* src\overview\Overview.svelte generated by Svelte v3.47.0 */
 
     const { Object: Object_1, console: console_1$3 } = globals;
 
@@ -14017,12 +12700,12 @@ var app = (function () {
 
     function get_each_context(ctx, list, i) {
     	const child_ctx = ctx.slice();
-    	child_ctx[83] = list[i];
-    	child_ctx[85] = i;
+    	child_ctx[84] = list[i];
+    	child_ctx[86] = i;
     	return child_ctx;
     }
 
-    // (1487:6) {#each imageOptions as image, i}
+    // (1499:6) {#each imageOptions as image, i}
     function create_each_block(ctx) {
     	let div;
     	let img;
@@ -14039,17 +12722,17 @@ var app = (function () {
     			div = element("div");
     			img = element("img");
     			t = space();
-    			if (!src_url_equal(img.src, img_src_value = "/assets/img/" + /*image*/ ctx[83].file)) attr_dev(img, "src", img_src_value);
+    			if (!src_url_equal(img.src, img_src_value = "/assets/img/" + /*image*/ ctx[84].file)) attr_dev(img, "src", img_src_value);
     			attr_dev(img, "alt", "image option");
-    			attr_dev(img, "title", img_title_value = /*image*/ ctx[83].class);
-    			attr_dev(img, "data-imagename", img_data_imagename_value = /*image*/ ctx[83].file);
-    			attr_dev(img, "class", "svelte-1xz6y1p");
-    			add_location(img, file$f, 1492, 10, 47691);
-    			attr_dev(div, "class", "image-container svelte-1xz6y1p");
-    			attr_dev(div, "data-imagename", div_data_imagename_value = /*image*/ ctx[83].file);
-    			toggle_class(div, "inactive", /*selectedImage*/ ctx[7] !== /*image*/ ctx[83].file);
+    			attr_dev(img, "title", img_title_value = /*image*/ ctx[84].class);
+    			attr_dev(img, "data-imagename", img_data_imagename_value = /*image*/ ctx[84].file);
+    			attr_dev(img, "class", "svelte-1t0aiaa");
+    			add_location(img, file$f, 1504, 10, 47729);
+    			attr_dev(div, "class", "image-container svelte-1t0aiaa");
+    			attr_dev(div, "data-imagename", div_data_imagename_value = /*image*/ ctx[84].file);
+    			toggle_class(div, "inactive", /*selectedImage*/ ctx[7] !== /*image*/ ctx[84].file);
     			toggle_class(div, "disabled", /*disableControl*/ ctx[6]);
-    			add_location(div, file$f, 1487, 8, 47447);
+    			add_location(div, file$f, 1499, 8, 47485);
     		},
     		m: function mount(target, anchor) {
     			insert_dev(target, div, anchor);
@@ -14063,9 +12746,9 @@ var app = (function () {
     					function () {
     						if (is_function(/*disableControl*/ ctx[6]
     						? click_handler
-    						: /*imageOptionClicked*/ ctx[16])) (/*disableControl*/ ctx[6]
+    						: /*imageOptionClicked*/ ctx[17])) (/*disableControl*/ ctx[6]
     						? click_handler
-    						: /*imageOptionClicked*/ ctx[16]).apply(this, arguments);
+    						: /*imageOptionClicked*/ ctx[17]).apply(this, arguments);
     					},
     					false,
     					false,
@@ -14078,8 +12761,8 @@ var app = (function () {
     		p: function update(new_ctx, dirty) {
     			ctx = new_ctx;
 
-    			if (dirty[0] & /*selectedImage, imageOptions*/ 16512) {
-    				toggle_class(div, "inactive", /*selectedImage*/ ctx[7] !== /*image*/ ctx[83].file);
+    			if (dirty[0] & /*selectedImage, imageOptions*/ 32896) {
+    				toggle_class(div, "inactive", /*selectedImage*/ ctx[7] !== /*image*/ ctx[84].file);
     			}
 
     			if (dirty[0] & /*disableControl*/ 64) {
@@ -14097,14 +12780,14 @@ var app = (function () {
     		block,
     		id: create_each_block.name,
     		type: "each",
-    		source: "(1487:6) {#each imageOptions as image, i}",
+    		source: "(1499:6) {#each imageOptions as image, i}",
     		ctx
     	});
 
     	return block;
     }
 
-    // (1594:39) 
+    // (1616:39) 
     function create_if_block_3(ctx) {
     	let softmaxview;
     	let current;
@@ -14122,7 +12805,7 @@ var app = (function () {
     			$$inline: true
     		});
 
-    	softmaxview.$on("xClicked", /*handleExitFromDetiledSoftmaxView*/ ctx[23]);
+    	softmaxview.$on("xClicked", /*handleExitFromDetiledSoftmaxView*/ ctx[24]);
     	softmaxview.$on("mouseOver", softmaxDetailViewMouseOverHandler);
     	softmaxview.$on("mouseLeave", softmaxDetailViewMouseLeaveHandler);
 
@@ -14163,14 +12846,14 @@ var app = (function () {
     		block,
     		id: create_if_block_3.name,
     		type: "if",
-    		source: "(1594:39) ",
+    		source: "(1616:39) ",
     		ctx
     	});
 
     	return block;
     }
 
-    // (1589:67) 
+    // (1611:67) 
     function create_if_block_2(ctx) {
     	let poolview;
     	let current;
@@ -14185,7 +12868,7 @@ var app = (function () {
     			$$inline: true
     		});
 
-    	poolview.$on("message", /*handleExitFromDetiledPoolView*/ ctx[21]);
+    	poolview.$on("message", /*handleExitFromDetiledPoolView*/ ctx[22]);
 
     	const block = {
     		c: function create() {
@@ -14220,14 +12903,14 @@ var app = (function () {
     		block,
     		id: create_if_block_2.name,
     		type: "if",
-    		source: "(1589:67) ",
+    		source: "(1611:67) ",
     		ctx
     	});
 
     	return block;
     }
 
-    // (1584:67) 
+    // (1606:67) 
     function create_if_block_1(ctx) {
     	let activationview;
     	let current;
@@ -14242,7 +12925,7 @@ var app = (function () {
     			$$inline: true
     		});
 
-    	activationview.$on("message", /*handleExitFromDetiledActivationView*/ ctx[22]);
+    	activationview.$on("message", /*handleExitFromDetiledActivationView*/ ctx[23]);
 
     	const block = {
     		c: function create() {
@@ -14278,14 +12961,14 @@ var app = (function () {
     		block,
     		id: create_if_block_1.name,
     		type: "if",
-    		source: "(1584:67) ",
+    		source: "(1606:67) ",
     		ctx
     	});
 
     	return block;
     }
 
-    // (1576:2) {#if selectedNode.data && selectedNode.data.type === 'conv' && selectedNodeIndex != -1}
+    // (1598:2) {#if selectedNode.data && selectedNode.data.type === 'conv' && selectedNodeIndex != -1}
     function create_if_block$3(ctx) {
     	let convolutionview;
     	let current;
@@ -14296,15 +12979,15 @@ var app = (function () {
     				kernel: /*nodeData*/ ctx[8][/*selectedNodeIndex*/ ctx[9]].kernel,
     				dataRange: /*nodeData*/ ctx[8].colorRange,
     				colorScale: /*nodeData*/ ctx[8].inputIsInputLayer
-    				? /*layerColorScales*/ ctx[13].input[0]
-    				: /*layerColorScales*/ ctx[13].conv,
+    				? /*layerColorScales*/ ctx[14].input[0]
+    				: /*layerColorScales*/ ctx[14].conv,
     				isInputInputLayer: /*nodeData*/ ctx[8].inputIsInputLayer,
     				isExited: /*isExitedFromCollapse*/ ctx[11]
     			},
     			$$inline: true
     		});
 
-    	convolutionview.$on("message", /*handleExitFromDetiledConvView*/ ctx[20]);
+    	convolutionview.$on("message", /*handleExitFromDetiledConvView*/ ctx[21]);
 
     	const block = {
     		c: function create() {
@@ -14321,8 +13004,8 @@ var app = (function () {
     			if (dirty[0] & /*nodeData*/ 256) convolutionview_changes.dataRange = /*nodeData*/ ctx[8].colorRange;
 
     			if (dirty[0] & /*nodeData*/ 256) convolutionview_changes.colorScale = /*nodeData*/ ctx[8].inputIsInputLayer
-    			? /*layerColorScales*/ ctx[13].input[0]
-    			: /*layerColorScales*/ ctx[13].conv;
+    			? /*layerColorScales*/ ctx[14].input[0]
+    			: /*layerColorScales*/ ctx[14].conv;
 
     			if (dirty[0] & /*nodeData*/ 256) convolutionview_changes.isInputInputLayer = /*nodeData*/ ctx[8].inputIsInputLayer;
     			if (dirty[0] & /*isExitedFromCollapse*/ 2048) convolutionview_changes.isExited = /*isExitedFromCollapse*/ ctx[11];
@@ -14346,7 +13029,7 @@ var app = (function () {
     		block,
     		id: create_if_block$3.name,
     		type: "if",
-    		source: "(1576:2) {#if selectedNode.data && selectedNode.data.type === 'conv' && selectedNodeIndex != -1}",
+    		source: "(1598:2) {#if selectedNode.data && selectedNode.data.type === 'conv' && selectedNodeIndex != -1}",
     		ctx
     	});
 
@@ -14383,30 +13066,36 @@ var app = (function () {
     	let t7;
     	let span4;
     	let t9;
-    	let div3;
+    	let button2;
     	let span5;
     	let i4;
     	let t10;
+    	let span6;
+    	let t12;
+    	let div3;
+    	let span7;
+    	let i5;
+    	let t13;
     	let div2;
     	let select;
     	let option0;
     	let option1;
     	let option2;
-    	let t14;
+    	let t17;
     	let div6;
     	let svg_1;
-    	let t15;
+    	let t18;
     	let article;
-    	let t16;
+    	let t19;
     	let div8;
     	let current_block_type_index;
     	let if_block;
-    	let t17;
+    	let t20;
     	let modal;
     	let current;
     	let mounted;
     	let dispose;
-    	let each_value = /*imageOptions*/ ctx[14];
+    	let each_value = /*imageOptions*/ ctx[15];
     	validate_each_argument(each_value);
     	let each_blocks = [];
 
@@ -14431,8 +13120,8 @@ var app = (function () {
     	}
 
     	modal = new Modal({ $$inline: true });
-    	modal.$on("xClicked", /*handleModalCanceled*/ ctx[18]);
-    	modal.$on("urlTyped", /*handleCustomImage*/ ctx[19]);
+    	modal.$on("xClicked", /*handleModalCanceled*/ ctx[19]);
+    	modal.$on("urlTyped", /*handleCustomImage*/ ctx[20]);
 
     	const block = {
     		c: function create() {
@@ -14466,12 +13155,19 @@ var app = (function () {
     			i3 = element("i");
     			t7 = space();
     			span4 = element("span");
-    			span4.textContent = "Show detail";
+    			span4.textContent = "Faire le test";
     			t9 = space();
-    			div3 = element("div");
+    			button2 = element("button");
     			span5 = element("span");
     			i4 = element("i");
     			t10 = space();
+    			span6 = element("span");
+    			span6.textContent = "Détail";
+    			t12 = space();
+    			div3 = element("div");
+    			span7 = element("span");
+    			i5 = element("i");
+    			t13 = space();
     			div2 = element("div");
     			select = element("select");
     			option0 = element("option");
@@ -14480,94 +13176,101 @@ var app = (function () {
     			option1.textContent = "Module";
     			option2 = element("option");
     			option2.textContent = "Global";
-    			t14 = space();
+    			t17 = space();
     			div6 = element("div");
     			svg_1 = svg_element("svg");
-    			t15 = space();
+    			t18 = space();
     			create_component(article.$$.fragment);
-    			t16 = space();
+    			t19 = space();
     			div8 = element("div");
     			if (if_block) if_block.c();
-    			t17 = space();
+    			t20 = space();
     			create_component(modal.$$.fragment);
-    			attr_dev(img, "class", "custom-image svelte-1xz6y1p");
+    			attr_dev(img, "class", "custom-image svelte-1t0aiaa");
     			if (!src_url_equal(img.src, img_src_value = "/assets/img/plus.svg")) attr_dev(img, "src", img_src_value);
     			attr_dev(img, "alt", "plus button");
     			attr_dev(img, "title", "Add new input image");
     			attr_dev(img, "data-imagename", "custom");
-    			add_location(img, file$f, 1506, 10, 48154);
+    			add_location(img, file$f, 1518, 10, 48192);
     			attr_dev(i0, "class", "fas fa-circle fa-stack-2x");
-    			add_location(i0, file$f, 1514, 12, 48445);
+    			add_location(i0, file$f, 1526, 12, 48483);
     			attr_dev(i1, "class", "fas fa-pen fa-stack-1x fa-inverse");
-    			add_location(i1, file$f, 1515, 12, 48499);
-    			attr_dev(span0, "class", "fa-stack edit-icon svelte-1xz6y1p");
+    			add_location(i1, file$f, 1527, 12, 48537);
+    			attr_dev(span0, "class", "fa-stack edit-icon svelte-1t0aiaa");
     			toggle_class(span0, "hidden", /*customImageURL*/ ctx[12] === null);
-    			add_location(span0, file$f, 1512, 10, 48348);
-    			attr_dev(div0, "class", "image-container svelte-1xz6y1p");
+    			add_location(span0, file$f, 1524, 10, 48386);
+    			attr_dev(div0, "class", "image-container svelte-1t0aiaa");
     			attr_dev(div0, "data-imagename", div0_data_imagename_value = 'custom');
     			toggle_class(div0, "inactive", /*selectedImage*/ ctx[7] !== 'custom');
     			toggle_class(div0, "disabled", /*disableControl*/ ctx[6]);
-    			add_location(div0, file$f, 1500, 8, 47913);
+    			add_location(div0, file$f, 1512, 8, 47951);
     			attr_dev(i2, "class", "fas fa-crosshairs ");
-    			add_location(i2, file$f, 1524, 10, 48784);
+    			add_location(i2, file$f, 1536, 10, 48822);
     			attr_dev(span1, "class", "icon");
     			set_style(span1, "margin-right", "5px");
-    			add_location(span1, file$f, 1523, 8, 48727);
+    			add_location(span1, file$f, 1535, 8, 48765);
     			attr_dev(span2, "id", "hover-label-text");
-    			add_location(span2, file$f, 1526, 8, 48843);
-    			attr_dev(button0, "class", "button is-very-small is-link is-light svelte-1xz6y1p");
+    			add_location(span2, file$f, 1538, 8, 48881);
+    			attr_dev(button0, "class", "button is-very-small is-link is-light svelte-1t0aiaa");
     			attr_dev(button0, "id", "hover-label");
     			set_style(button0, "opacity", /*hoverInfo*/ ctx[4].show ? 1 : 0);
-    			add_location(button0, file$f, 1520, 6, 48590);
-    			attr_dev(div1, "class", "left-control svelte-1xz6y1p");
-    			add_location(div1, file$f, 1485, 4, 47373);
-    			attr_dev(i3, "class", "fas fa-eye");
-    			add_location(i3, file$f, 1540, 10, 49204);
+    			add_location(button0, file$f, 1532, 6, 48628);
+    			attr_dev(div1, "class", "left-control svelte-1t0aiaa");
+    			add_location(div1, file$f, 1497, 4, 47411);
+    			attr_dev(i3, "class", "fa-solid fa-address-card");
+    			add_location(i3, file$f, 1548, 10, 49146);
     			attr_dev(span3, "class", "icon");
-    			add_location(span3, file$f, 1539, 8, 49174);
-    			attr_dev(span4, "id", "hover-label-text");
-    			add_location(span4, file$f, 1542, 8, 49255);
-    			attr_dev(button1, "class", "button is-very-small svelte-1xz6y1p");
-    			attr_dev(button1, "id", "detailed-button");
-    			button1.disabled = /*disableControl*/ ctx[6];
-    			toggle_class(button1, "is-activated", /*detailedMode*/ ctx[2]);
-    			add_location(button1, file$f, 1534, 6, 48982);
-    			attr_dev(i4, "class", "fas fa-palette");
-    			add_location(i4, file$f, 1550, 10, 49483);
-    			attr_dev(span5, "class", "icon is-left");
-    			add_location(span5, file$f, 1549, 8, 49445);
+    			add_location(span3, file$f, 1547, 8, 49116);
+    			add_location(span4, file$f, 1550, 12, 49215);
+    			attr_dev(button1, "class", "button is-success is-very-small is-activated svelte-1t0aiaa");
+    			add_location(button1, file$f, 1546, 8, 49022);
+    			attr_dev(i4, "class", "fas fa-eye");
+    			add_location(i4, file$f, 1562, 10, 49524);
+    			attr_dev(span5, "class", "icon");
+    			add_location(span5, file$f, 1561, 8, 49494);
+    			attr_dev(span6, "id", "hover-label-text");
+    			add_location(span6, file$f, 1564, 8, 49575);
+    			attr_dev(button2, "class", "button blue-button is-very-small svelte-1t0aiaa");
+    			attr_dev(button2, "id", "detailed-button");
+    			button2.disabled = /*disableControl*/ ctx[6];
+    			toggle_class(button2, "is-activated", /*detailedMode*/ ctx[2]);
+    			add_location(button2, file$f, 1556, 8, 49290);
+    			attr_dev(i5, "class", "fas fa-palette");
+    			add_location(i5, file$f, 1572, 10, 49798);
+    			attr_dev(span7, "class", "icon is-left");
+    			add_location(span7, file$f, 1571, 8, 49760);
     			option0.__value = "local";
     			option0.value = option0.__value;
-    			add_location(option0, file$f, 1556, 12, 49679);
+    			add_location(option0, file$f, 1578, 12, 49994);
     			option1.__value = "module";
     			option1.value = option1.__value;
-    			add_location(option1, file$f, 1557, 12, 49727);
+    			add_location(option1, file$f, 1579, 12, 50042);
     			option2.__value = "global";
     			option2.value = option2.__value;
-    			add_location(option2, file$f, 1558, 12, 49778);
+    			add_location(option2, file$f, 1580, 12, 50093);
     			attr_dev(select, "id", "level-select");
     			select.disabled = /*disableControl*/ ctx[6];
-    			attr_dev(select, "class", "svelte-1xz6y1p");
-    			if (/*selectedScaleLevel*/ ctx[0] === void 0) add_render_callback(() => /*select_change_handler*/ ctx[24].call(select));
-    			add_location(select, file$f, 1554, 10, 49570);
-    			attr_dev(div2, "class", "select svelte-1xz6y1p");
-    			add_location(div2, file$f, 1553, 8, 49539);
-    			attr_dev(div3, "class", "control is-very-small has-icons-left svelte-1xz6y1p");
+    			attr_dev(select, "class", "svelte-1t0aiaa");
+    			if (/*selectedScaleLevel*/ ctx[0] === void 0) add_render_callback(() => /*select_change_handler*/ ctx[25].call(select));
+    			add_location(select, file$f, 1576, 10, 49885);
+    			attr_dev(div2, "class", "select svelte-1t0aiaa");
+    			add_location(div2, file$f, 1575, 8, 49854);
+    			attr_dev(div3, "class", "control is-very-small has-icons-left svelte-1t0aiaa");
     			attr_dev(div3, "title", "Change color scale range");
-    			add_location(div3, file$f, 1547, 6, 49345);
-    			attr_dev(div4, "class", "right-control svelte-1xz6y1p");
-    			add_location(div4, file$f, 1532, 4, 48947);
-    			attr_dev(div5, "class", "control-container svelte-1xz6y1p");
-    			add_location(div5, file$f, 1483, 2, 47336);
+    			add_location(div3, file$f, 1569, 6, 49660);
+    			attr_dev(div4, "class", "right-control svelte-1t0aiaa");
+    			add_location(div4, file$f, 1544, 4, 48985);
+    			attr_dev(div5, "class", "control-container svelte-1t0aiaa");
+    			add_location(div5, file$f, 1495, 2, 47374);
     			attr_dev(svg_1, "id", "cnn-svg");
-    			attr_dev(svg_1, "class", "svelte-1xz6y1p");
-    			add_location(svg_1, file$f, 1568, 4, 49916);
-    			attr_dev(div6, "class", "cnn svelte-1xz6y1p");
-    			add_location(div6, file$f, 1567, 2, 49894);
-    			attr_dev(div7, "class", "overview svelte-1xz6y1p");
-    			add_location(div7, file$f, 1480, 0, 47278);
+    			attr_dev(svg_1, "class", "svelte-1t0aiaa");
+    			add_location(svg_1, file$f, 1590, 4, 50231);
+    			attr_dev(div6, "class", "cnn svelte-1t0aiaa");
+    			add_location(div6, file$f, 1589, 2, 50209);
+    			attr_dev(div7, "class", "overview svelte-1t0aiaa");
+    			add_location(div7, file$f, 1492, 0, 47316);
     			attr_dev(div8, "id", "detailview");
-    			add_location(div8, file$f, 1574, 0, 49970);
+    			add_location(div8, file$f, 1596, 0, 50285);
     		},
     		l: function claim(nodes) {
     			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
@@ -14604,30 +13307,36 @@ var app = (function () {
     			append_dev(button1, t7);
     			append_dev(button1, span4);
     			append_dev(div4, t9);
-    			append_dev(div4, div3);
-    			append_dev(div3, span5);
+    			append_dev(div4, button2);
+    			append_dev(button2, span5);
     			append_dev(span5, i4);
-    			append_dev(div3, t10);
+    			append_dev(button2, t10);
+    			append_dev(button2, span6);
+    			append_dev(div4, t12);
+    			append_dev(div4, div3);
+    			append_dev(div3, span7);
+    			append_dev(span7, i5);
+    			append_dev(div3, t13);
     			append_dev(div3, div2);
     			append_dev(div2, select);
     			append_dev(select, option0);
     			append_dev(select, option1);
     			append_dev(select, option2);
     			select_option(select, /*selectedScaleLevel*/ ctx[0]);
-    			append_dev(div7, t14);
+    			append_dev(div7, t17);
     			append_dev(div7, div6);
     			append_dev(div6, svg_1);
-    			/*div7_binding*/ ctx[25](div7);
-    			insert_dev(target, t15, anchor);
+    			/*div7_binding*/ ctx[26](div7);
+    			insert_dev(target, t18, anchor);
     			mount_component(article, target, anchor);
-    			insert_dev(target, t16, anchor);
+    			insert_dev(target, t19, anchor);
     			insert_dev(target, div8, anchor);
 
     			if (~current_block_type_index) {
     				if_blocks[current_block_type_index].m(div8, null);
     			}
 
-    			insert_dev(target, t17, anchor);
+    			insert_dev(target, t20, anchor);
     			mount_component(modal, target, anchor);
     			current = true;
 
@@ -14639,16 +13348,17 @@ var app = (function () {
     						function () {
     							if (is_function(/*disableControl*/ ctx[6]
     							? click_handler_1
-    							: /*customImageClicked*/ ctx[17])) (/*disableControl*/ ctx[6]
+    							: /*customImageClicked*/ ctx[18])) (/*disableControl*/ ctx[6]
     							? click_handler_1
-    							: /*customImageClicked*/ ctx[17]).apply(this, arguments);
+    							: /*customImageClicked*/ ctx[18]).apply(this, arguments);
     						},
     						false,
     						false,
     						false
     					),
-    					listen_dev(button1, "click", /*detailedButtonClicked*/ ctx[15], false, false, false),
-    					listen_dev(select, "change", /*select_change_handler*/ ctx[24])
+    					listen_dev(button1, "click", /*afficheStart*/ ctx[13], false, false, false),
+    					listen_dev(button2, "click", /*detailedButtonClicked*/ ctx[16], false, false, false),
+    					listen_dev(select, "change", /*select_change_handler*/ ctx[25])
     				];
 
     				mounted = true;
@@ -14657,8 +13367,8 @@ var app = (function () {
     		p: function update(new_ctx, dirty) {
     			ctx = new_ctx;
 
-    			if (dirty[0] & /*imageOptions, selectedImage, disableControl, imageOptionClicked*/ 82112) {
-    				each_value = /*imageOptions*/ ctx[14];
+    			if (dirty[0] & /*imageOptions, selectedImage, disableControl, imageOptionClicked*/ 164032) {
+    				each_value = /*imageOptions*/ ctx[15];
     				validate_each_argument(each_value);
     				let i;
 
@@ -14700,11 +13410,11 @@ var app = (function () {
     			}
 
     			if (!current || dirty[0] & /*disableControl*/ 64) {
-    				prop_dev(button1, "disabled", /*disableControl*/ ctx[6]);
+    				prop_dev(button2, "disabled", /*disableControl*/ ctx[6]);
     			}
 
     			if (dirty[0] & /*detailedMode*/ 4) {
-    				toggle_class(button1, "is-activated", /*detailedMode*/ ctx[2]);
+    				toggle_class(button2, "is-activated", /*detailedMode*/ ctx[2]);
     			}
 
     			if (!current || dirty[0] & /*disableControl*/ 64) {
@@ -14766,17 +13476,17 @@ var app = (function () {
     		d: function destroy(detaching) {
     			if (detaching) detach_dev(div7);
     			destroy_each(each_blocks, detaching);
-    			/*div7_binding*/ ctx[25](null);
-    			if (detaching) detach_dev(t15);
+    			/*div7_binding*/ ctx[26](null);
+    			if (detaching) detach_dev(t18);
     			destroy_component(article, detaching);
-    			if (detaching) detach_dev(t16);
+    			if (detaching) detach_dev(t19);
     			if (detaching) detach_dev(div8);
 
     			if (~current_block_type_index) {
     				if_blocks[current_block_type_index].d();
     			}
 
-    			if (detaching) detach_dev(t17);
+    			if (detaching) detach_dev(t20);
     			destroy_component(modal, detaching);
     			mounted = false;
     			run_all(dispose);
@@ -14805,7 +13515,14 @@ var app = (function () {
     function instance$f($$self, $$props, $$invalidate) {
     	let { $$slots: slots = {}, $$scope } = $$props;
     	validate_slots('Overview', slots, []);
+
+    	function afficheStart() {
+    		leftStartStore.update(n => 0);
+    	}
+
+    	// View bindings
     	let overviewComponent;
+
     	let scaleLevelSet = new Set(['local', 'module', 'global']);
     	let selectedScaleLevel = 'local';
     	selectedScaleLevelStore.set(selectedScaleLevel);
@@ -15016,21 +13733,13 @@ var app = (function () {
     	};
 
     	let imageOptions = [
-    		{ file: 'cnn.jpg', class: 'colere' },
-    		{ file: 'degout_3.jpg', class: 'degout' },
-    		{ file: 'joie_3.jpg', class: 'joie' },
-    		{ file: 'neutre_2.jpg', class: 'neutre' },
-    		{ file: 'peur_3.jpg', class: 'peur' },
-    		{
-    			file: 'surprise_2.jpg',
-    			class: 'surprise'
-    		},
-    		{
-    			file: 'tristesse_2.jpg',
-    			class: 'tristesse'
-    		},
-    		{ file: 'panda_1.jpeg', class: 'tristesse' },
-    		{ file: 'happy_1.jpeg', class: 'joyeux' }
+    		{ file: 'colere.jpg', class: 'Colère' },
+    		{ file: 'degout.jpg', class: 'Dégoût' },
+    		{ file: 'peur.jpg', class: 'Peur' },
+    		{ file: 'joyeux.jpg', class: 'Joyeux' },
+    		{ file: 'triste.jpg', class: 'Triste' },
+    		{ file: 'surprise.jpg', class: 'Surprise' },
+    		{ file: 'neutre.jpg', class: 'Neutre' }
     	];
 
     	let selectedImage = imageOptions[0].file;
@@ -15810,7 +14519,7 @@ var app = (function () {
     		svg.append("defs").append("marker").attr("id", 'marker-alt').attr("viewBox", "0 -5 10 10").attr("refX", 6).attr("refY", 0).attr("markerWidth", 6).attr("markerHeight", 6).attr("orient", "auto").append("path").style('fill', 'none').style('stroke', 'gray').style('stroke-width', 2).attr("d", "M-5,-10L10,0L-5,10");
 
     		console.time('Construct cnn');
-    		model = await loadTrainedModel('/assets/data/model.json');
+    		model = await loadTrainedModel('/assets/data/fer_tinyVGG/model.json');
     		cnn = await constructCNN(`/assets/img/${selectedImage}`, model);
     		console.timeEnd('Construct cnn');
     		cnnStore.set(cnn);
@@ -15985,6 +14694,7 @@ var app = (function () {
     		allowsSoftmaxAnimationStore,
     		modalStore,
     		intermediateLayerPositionStore,
+    		leftStartStore,
     		ConvolutionView: Convolutionview,
     		ActivationView: Activationview,
     		PoolView: Poolview,
@@ -16009,6 +14719,7 @@ var app = (function () {
     		updateCNN,
     		updateCNNLayerRanges,
     		drawCustomImage,
+    		afficheStart,
     		overviewComponent,
     		scaleLevelSet,
     		selectedScaleLevel,
@@ -16124,7 +14835,7 @@ var app = (function () {
     		if ('disableControl' in $$props) $$invalidate(6, disableControl = $$props.disableControl);
     		if ('cnn' in $$props) cnn = $$props.cnn;
     		if ('detailedViewAbsCoords' in $$props) detailedViewAbsCoords = $$props.detailedViewAbsCoords;
-    		if ('imageOptions' in $$props) $$invalidate(14, imageOptions = $$props.imageOptions);
+    		if ('imageOptions' in $$props) $$invalidate(15, imageOptions = $$props.imageOptions);
     		if ('selectedImage' in $$props) $$invalidate(7, selectedImage = $$props.selectedImage);
     		if ('nodeData' in $$props) $$invalidate(8, nodeData = $$props.nodeData);
     		if ('selectedNodeIndex' in $$props) $$invalidate(9, selectedNodeIndex = $$props.selectedNodeIndex);
@@ -16159,6 +14870,7 @@ var app = (function () {
     		isExitedFromDetailedView,
     		isExitedFromCollapse,
     		customImageURL,
+    		afficheStart,
     		layerColorScales,
     		imageOptions,
     		detailedButtonClicked,
@@ -16189,44 +14901,209 @@ var app = (function () {
     	}
     }
 
-    /* src\Explainer.svelte generated by Svelte v3.44.2 */
-    const file$g = "src\\Explainer.svelte";
+    const time = readable(new Date(), function start(set) {
+       const interval = setInterval(() => {
+          set(new Date());
+       }, 1000);
+
+       return function stop() {
+          clearInterval(interval);
+       };
+    });
+
+    const start = new Date();
+
+    const elapsed = derived(
+        time,
+        $time => Math.round(($time - start) / 1000)
+    );
+
+    /* src\overview\Start.svelte generated by Svelte v3.47.0 */
+    const file$g = "src\\overview\\Start.svelte";
 
     function create_fragment$g(ctx) {
-    	let div;
-    	let overview;
-    	let current;
-    	overview = new Overview({ $$inline: true });
+    	let section;
+    	let div3;
+    	let div2;
+    	let div0;
+    	let h1;
+    	let t0;
+    	let t1_value = /*formatter*/ ctx[6].format(/*$time*/ ctx[3]) + "";
+    	let t1;
+    	let t2;
+    	let p0;
+    	let t3;
+    	let t4;
+    	let t5;
+    	let t6_value = (/*$elapsed*/ ctx[4] === 1 ? 'second' : 'seconds') + "";
+    	let t6;
+    	let t7;
+    	let p1;
+    	let t9;
+    	let button0;
+    	let span0;
+    	let i0;
+    	let t10;
+    	let span1;
+    	let t12;
+    	let div1;
+    	let button1;
+    	let span2;
+    	let i1;
+    	let t13;
+    	let spa;
+    	let mounted;
+    	let dispose;
+    	add_render_callback(/*onwindowresize*/ ctx[7]);
 
     	const block = {
     		c: function create() {
-    			div = element("div");
-    			create_component(overview.$$.fragment);
-    			attr_dev(div, "id", "explainer");
-    			attr_dev(div, "class", "svelte-1avhf6");
-    			add_location(div, file$g, 30, 0, 547);
+    			section = element("section");
+    			div3 = element("div");
+    			div2 = element("div");
+    			div0 = element("div");
+    			h1 = element("h1");
+    			t0 = text("The time is ");
+    			t1 = text(t1_value);
+    			t2 = space();
+    			p0 = element("p");
+    			t3 = text("This page has been open for\r\n                    ");
+    			t4 = text(/*$elapsed*/ ctx[4]);
+    			t5 = space();
+    			t6 = text(t6_value);
+    			t7 = space();
+    			p1 = element("p");
+    			p1.textContent = "Something short and leading about the collection below—its contents, the creator, etc. Make it short and sweet, but not too short so folks don’t simply skip over it entirely.";
+    			t9 = space();
+    			button0 = element("button");
+    			span0 = element("span");
+    			i0 = element("i");
+    			t10 = space();
+    			span1 = element("span");
+    			span1.textContent = "Faire le test";
+    			t12 = space();
+    			div1 = element("div");
+    			button1 = element("button");
+    			span2 = element("span");
+    			i1 = element("i");
+    			t13 = space();
+    			spa = element("spa");
+    			spa.textContent = "Comment ça marche ?";
+    			add_location(h1, file$g, 44, 16, 1043);
+    			add_location(p0, file$g, 45, 16, 1107);
+    			attr_dev(p1, "class", "lead text-muted");
+    			add_location(p1, file$g, 49, 16, 1271);
+    			attr_dev(i0, "class", "fa-solid fa-address-card");
+    			add_location(i0, file$g, 53, 18, 1648);
+    			attr_dev(span0, "class", "icon");
+    			add_location(span0, file$g, 52, 16, 1609);
+    			add_location(span1, file$g, 55, 20, 1735);
+    			attr_dev(button0, "class", "button is-success");
+    			attr_dev(button0, "id", "strat-button");
+    			add_location(button0, file$g, 51, 16, 1496);
+    			attr_dev(div0, "class", "column is-white");
+    			add_location(div0, file$g, 43, 12, 996);
+    			attr_dev(i1, "class", "fas fa-eye");
+    			add_location(i1, file$g, 63, 18, 2024);
+    			attr_dev(span2, "class", "icon");
+    			add_location(span2, file$g, 62, 16, 1985);
+    			add_location(spa, file$g, 65, 20, 2097);
+    			attr_dev(button1, "class", "button is-info");
+    			attr_dev(button1, "id", "explain-button");
+    			add_location(button1, file$g, 61, 16, 1873);
+    			attr_dev(div1, "class", "column is-white");
+    			add_location(div1, file$g, 60, 12, 1826);
+    			attr_dev(div2, "class", "columns");
+    			add_location(div2, file$g, 42, 8, 961);
+    			attr_dev(div3, "class", "container");
+    			add_location(div3, file$g, 41, 4, 928);
+    			attr_dev(section, "id", "home");
+    			attr_dev(section, "class", "start jumbotron text-center svelte-1v9za6v");
+    			set_style(section, "height", /*innerHeight*/ ctx[1] - /*top*/ ctx[5] + "px");
+    			set_style(section, "left", /*leftStartValue*/ ctx[2] + "px");
+    			add_location(section, file$g, 38, 0, 799);
     		},
     		l: function claim(nodes) {
     			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
     		},
     		m: function mount(target, anchor) {
-    			insert_dev(target, div, anchor);
-    			mount_component(overview, div, null);
-    			current = true;
+    			insert_dev(target, section, anchor);
+    			append_dev(section, div3);
+    			append_dev(div3, div2);
+    			append_dev(div2, div0);
+    			append_dev(div0, h1);
+    			append_dev(h1, t0);
+    			append_dev(h1, t1);
+    			append_dev(div0, t2);
+    			append_dev(div0, p0);
+    			append_dev(p0, t3);
+    			append_dev(p0, t4);
+    			append_dev(p0, t5);
+    			append_dev(p0, t6);
+    			append_dev(div0, t7);
+    			append_dev(div0, p1);
+    			append_dev(div0, t9);
+    			append_dev(div0, button0);
+    			append_dev(button0, span0);
+    			append_dev(span0, i0);
+    			append_dev(button0, t10);
+    			append_dev(button0, span1);
+    			append_dev(div2, t12);
+    			append_dev(div2, div1);
+    			append_dev(div1, button1);
+    			append_dev(button1, span2);
+    			append_dev(span2, i1);
+    			append_dev(button1, t13);
+    			append_dev(button1, spa);
+
+    			if (!mounted) {
+    				dispose = [
+    					listen_dev(window, "resize", /*onwindowresize*/ ctx[7]),
+    					listen_dev(
+    						button0,
+    						"click",
+    						function () {
+    							if (is_function(leftStartStore.set(-/*innerWidth*/ ctx[0]))) leftStartStore.set(-/*innerWidth*/ ctx[0]).apply(this, arguments);
+    						},
+    						false,
+    						false,
+    						false
+    					),
+    					listen_dev(
+    						button1,
+    						"click",
+    						function () {
+    							if (is_function(leftStartStore.set(-/*innerWidth*/ ctx[0]))) leftStartStore.set(-/*innerWidth*/ ctx[0]).apply(this, arguments);
+    						},
+    						false,
+    						false,
+    						false
+    					)
+    				];
+
+    				mounted = true;
+    			}
     		},
-    		p: noop,
-    		i: function intro(local) {
-    			if (current) return;
-    			transition_in(overview.$$.fragment, local);
-    			current = true;
+    		p: function update(new_ctx, [dirty]) {
+    			ctx = new_ctx;
+    			if (dirty & /*$time*/ 8 && t1_value !== (t1_value = /*formatter*/ ctx[6].format(/*$time*/ ctx[3]) + "")) set_data_dev(t1, t1_value);
+    			if (dirty & /*$elapsed*/ 16) set_data_dev(t4, /*$elapsed*/ ctx[4]);
+    			if (dirty & /*$elapsed*/ 16 && t6_value !== (t6_value = (/*$elapsed*/ ctx[4] === 1 ? 'second' : 'seconds') + "")) set_data_dev(t6, t6_value);
+
+    			if (dirty & /*innerHeight*/ 2) {
+    				set_style(section, "height", /*innerHeight*/ ctx[1] - /*top*/ ctx[5] + "px");
+    			}
+
+    			if (dirty & /*leftStartValue*/ 4) {
+    				set_style(section, "left", /*leftStartValue*/ ctx[2] + "px");
+    			}
     		},
-    		o: function outro(local) {
-    			transition_out(overview.$$.fragment, local);
-    			current = false;
-    		},
+    		i: noop,
+    		o: noop,
     		d: function destroy(detaching) {
-    			if (detaching) detach_dev(div);
-    			destroy_component(overview);
+    			if (detaching) detach_dev(section);
+    			mounted = false;
+    			run_all(dispose);
     		}
     	};
 
@@ -16242,6 +15119,167 @@ var app = (function () {
     }
 
     function instance$g($$self, $$props, $$invalidate) {
+    	let $time;
+    	let $elapsed;
+    	validate_store(time, 'time');
+    	component_subscribe($$self, time, $$value => $$invalidate(3, $time = $$value));
+    	validate_store(elapsed, 'elapsed');
+    	component_subscribe($$self, elapsed, $$value => $$invalidate(4, $elapsed = $$value));
+    	let { $$slots: slots = {}, $$scope } = $$props;
+    	validate_slots('Start', slots, []);
+    	let innerWidth;
+    	let innerHeight;
+    	let clientHeight;
+    	let top = 50;
+    	let leftStartValue;
+
+    	leftStartStore.subscribe(value => {
+    		$$invalidate(2, leftStartValue = value);
+    	});
+
+    	const formatter = new Intl.DateTimeFormat('en',
+    	{
+    			hour12: true,
+    			hour: 'numeric',
+    			minute: '2-digit',
+    			second: '2-digit'
+    		});
+
+    	const writable_props = [];
+
+    	Object.keys($$props).forEach(key => {
+    		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== '$$' && key !== 'slot') console.warn(`<Start> was created with unknown prop '${key}'`);
+    	});
+
+    	function onwindowresize() {
+    		$$invalidate(1, innerHeight = window.innerHeight);
+    		$$invalidate(0, innerWidth = window.innerWidth);
+    	}
+
+    	$$self.$capture_state = () => ({
+    		time,
+    		elapsed,
+    		leftStartStore,
+    		innerWidth,
+    		innerHeight,
+    		clientHeight,
+    		top,
+    		leftStartValue,
+    		formatter,
+    		$time,
+    		$elapsed
+    	});
+
+    	$$self.$inject_state = $$props => {
+    		if ('innerWidth' in $$props) $$invalidate(0, innerWidth = $$props.innerWidth);
+    		if ('innerHeight' in $$props) $$invalidate(1, innerHeight = $$props.innerHeight);
+    		if ('clientHeight' in $$props) clientHeight = $$props.clientHeight;
+    		if ('top' in $$props) $$invalidate(5, top = $$props.top);
+    		if ('leftStartValue' in $$props) $$invalidate(2, leftStartValue = $$props.leftStartValue);
+    	};
+
+    	if ($$props && "$$inject" in $$props) {
+    		$$self.$inject_state($$props.$$inject);
+    	}
+
+    	return [
+    		innerWidth,
+    		innerHeight,
+    		leftStartValue,
+    		$time,
+    		$elapsed,
+    		top,
+    		formatter,
+    		onwindowresize
+    	];
+    }
+
+    class Start extends SvelteComponentDev {
+    	constructor(options) {
+    		super(options);
+    		init(this, options, instance$g, create_fragment$g, safe_not_equal, {});
+
+    		dispatch_dev("SvelteRegisterComponent", {
+    			component: this,
+    			tagName: "Start",
+    			options,
+    			id: create_fragment$g.name
+    		});
+    	}
+    }
+
+    /* src\Explainer.svelte generated by Svelte v3.47.0 */
+    const file$h = "src\\Explainer.svelte";
+
+    function create_fragment$h(ctx) {
+    	let main;
+    	let div0;
+    	let start;
+    	let t;
+    	let div1;
+    	let overview;
+    	let current;
+    	start = new Start({ $$inline: true });
+    	overview = new Overview({ $$inline: true });
+
+    	const block = {
+    		c: function create() {
+    			main = element("main");
+    			div0 = element("div");
+    			create_component(start.$$.fragment);
+    			t = space();
+    			div1 = element("div");
+    			create_component(overview.$$.fragment);
+    			attr_dev(div0, "id", "start");
+    			add_location(div0, file$h, 33, 4, 647);
+    			attr_dev(div1, "id", "explainer");
+    			attr_dev(div1, "class", "svelte-hmtv48");
+    			add_location(div1, file$h, 36, 4, 697);
+    			add_location(main, file$h, 32, 0, 636);
+    		},
+    		l: function claim(nodes) {
+    			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
+    		},
+    		m: function mount(target, anchor) {
+    			insert_dev(target, main, anchor);
+    			append_dev(main, div0);
+    			mount_component(start, div0, null);
+    			append_dev(main, t);
+    			append_dev(main, div1);
+    			mount_component(overview, div1, null);
+    			current = true;
+    		},
+    		p: noop,
+    		i: function intro(local) {
+    			if (current) return;
+    			transition_in(start.$$.fragment, local);
+    			transition_in(overview.$$.fragment, local);
+    			current = true;
+    		},
+    		o: function outro(local) {
+    			transition_out(start.$$.fragment, local);
+    			transition_out(overview.$$.fragment, local);
+    			current = false;
+    		},
+    		d: function destroy(detaching) {
+    			if (detaching) detach_dev(main);
+    			destroy_component(start);
+    			destroy_component(overview);
+    		}
+    	};
+
+    	dispatch_dev("SvelteRegisterBlock", {
+    		block,
+    		id: create_fragment$h.name,
+    		type: "component",
+    		source: "",
+    		ctx
+    	});
+
+    	return block;
+    }
+
+    function instance$h($$self, $$props, $$invalidate) {
     	let { $$slots: slots = {}, $$scope } = $$props;
     	validate_slots('Explainer', slots, []);
 
@@ -16258,7 +15296,13 @@ var app = (function () {
     		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== '$$' && key !== 'slot') console.warn(`<Explainer> was created with unknown prop '${key}'`);
     	});
 
-    	$$self.$capture_state = () => ({ Overview, cnnStore, View, mainView });
+    	$$self.$capture_state = () => ({
+    		Overview,
+    		cnnStore,
+    		Start,
+    		View,
+    		mainView
+    	});
 
     	$$self.$inject_state = $$props => {
     		if ('mainView' in $$props) mainView = $$props.mainView;
@@ -16274,200 +15318,92 @@ var app = (function () {
     class Explainer extends SvelteComponentDev {
     	constructor(options) {
     		super(options);
-    		init(this, options, instance$g, create_fragment$g, safe_not_equal, {});
+    		init(this, options, instance$h, create_fragment$h, safe_not_equal, {});
 
     		dispatch_dev("SvelteRegisterComponent", {
     			component: this,
     			tagName: "Explainer",
     			options,
-    			id: create_fragment$g.name
+    			id: create_fragment$h.name
     		});
     	}
     }
 
-    /* src\Header.svelte generated by Svelte v3.44.2 */
+    /* src\Header.svelte generated by Svelte v3.47.0 */
 
-    const file$h = "src\\Header.svelte";
+    const file$i = "src\\Header.svelte";
 
-    function create_fragment$h(ctx) {
-    	let div6;
-    	let div1;
+    function create_fragment$i(ctx) {
+    	let header;
+    	let div2;
     	let div0;
     	let t1;
-    	let svg;
-    	let defs;
-    	let filter;
-    	let feTurbulence;
-    	let feColorMatrix;
-    	let feComposite;
-    	let g;
-    	let text_1;
-    	let t2;
+    	let div1;
     	let t3;
-    	let div5;
-    	let div2;
-    	let a0;
-    	let img0;
-    	let img0_src_value;
-    	let t4;
-    	let div3;
-    	let a1;
-    	let img1;
-    	let img1_src_value;
-    	let t5;
     	let div4;
-    	let a2;
-    	let img2;
-    	let img2_src_value;
+    	let div3;
+    	let a;
+    	let i;
 
     	const block = {
     		c: function create() {
-    			div6 = element("div");
-    			div1 = element("div");
-    			div0 = element("div");
-    			div0.textContent = "CNN Explainer";
-    			t1 = space();
-    			svg = svg_element("svg");
-    			defs = svg_element("defs");
-    			filter = svg_element("filter");
-    			feTurbulence = svg_element("feTurbulence");
-    			feColorMatrix = svg_element("feColorMatrix");
-    			feComposite = svg_element("feComposite");
-    			g = svg_element("g");
-    			text_1 = svg_element("text");
-    			t2 = text("Learn Convolutional Neural Network (CNN) in your browser!");
-    			t3 = space();
-    			div5 = element("div");
+    			header = element("header");
     			div2 = element("div");
-    			a0 = element("a");
-    			img0 = element("img");
-    			t4 = space();
-    			div3 = element("div");
-    			a1 = element("a");
-    			img1 = element("img");
-    			t5 = space();
+    			div0 = element("div");
+    			div0.textContent = "DataTrainX";
+    			t1 = space();
+    			div1 = element("div");
+    			div1.textContent = "Outil de recherche des singularités cognitives d’un étudiant!";
+    			t3 = space();
     			div4 = element("div");
-    			a2 = element("a");
-    			img2 = element("img");
+    			div3 = element("div");
+    			a = element("a");
+    			i = element("i");
     			attr_dev(div0, "id", "logo-text");
-    			attr_dev(div0, "class", "svelte-qob9ex");
-    			add_location(div0, file$h, 59, 4, 811);
-    			attr_dev(feTurbulence, "type", "fractalNoise");
-    			attr_dev(feTurbulence, "baseFrequency", "2");
-    			attr_dev(feTurbulence, "numOctaves", "5");
-    			attr_dev(feTurbulence, "stitchTiles", "stitch");
-    			attr_dev(feTurbulence, "result", "f1");
-    			add_location(feTurbulence, file$h, 66, 5, 1020);
-    			attr_dev(feColorMatrix, "type", "matrix");
-    			attr_dev(feColorMatrix, "values", "0 0 0 0 0, 0 0 0 0 0, 0 0 0 0 0, 0 0 0 -1.5 1.5");
-    			attr_dev(feColorMatrix, "result", "f2");
-    			add_location(feColorMatrix, file$h, 68, 5, 1147);
-    			attr_dev(feComposite, "operator", "in");
-    			attr_dev(feComposite, "in2", "f2");
-    			attr_dev(feComposite, "in", "SourceGraphic");
-    			attr_dev(feComposite, "result", "f3");
-    			add_location(feComposite, file$h, 70, 5, 1273);
-    			attr_dev(filter, "x", "0%");
-    			attr_dev(filter, "y", "0%");
-    			attr_dev(filter, "width", "100%");
-    			attr_dev(filter, "height", "100%");
-    			attr_dev(filter, "filterUnits", "objectBoundingBox");
-    			attr_dev(filter, "id", "chalk-texture");
-    			add_location(filter, file$h, 65, 4, 914);
-    			add_location(defs, file$h, 64, 3, 903);
-    			attr_dev(text_1, "id", "svg-logo-tagline");
-    			attr_dev(text_1, "class", "svelte-qob9ex");
-    			add_location(text_1, file$h, 76, 4, 1456);
-    			attr_dev(g, "filter", "url(#chalk-texture)");
-    			attr_dev(g, "transform", "translate(0, 35)");
-    			add_location(g, file$h, 75, 3, 1390);
-    			attr_dev(svg, "width", "510px");
-    			attr_dev(svg, "height", "50px");
-    			add_location(svg, file$h, 63, 2, 866);
-    			attr_dev(div1, "id", "logo");
-    			attr_dev(div1, "class", "svelte-qob9ex");
-    			add_location(div1, file$h, 58, 2, 791);
-    			if (!src_url_equal(img0.src, img0_src_value = "/assets/img/pdf.png")) attr_dev(img0, "src", img0_src_value);
-    			attr_dev(img0, "alt", "pdf icon");
-    			attr_dev(img0, "class", "svelte-qob9ex");
-    			add_location(img0, file$h, 87, 4, 1722);
-    			attr_dev(a0, "target", "_blank");
-    			attr_dev(a0, "href", "https://arxiv.org/abs/2004.15004");
-    			attr_dev(a0, "class", "svelte-qob9ex");
-    			add_location(a0, file$h, 86, 3, 1658);
-    			attr_dev(div2, "class", "icon svelte-qob9ex");
-    			attr_dev(div2, "title", "Research paper");
-    			add_location(div2, file$h, 85, 2, 1613);
-    			if (!src_url_equal(img1.src, img1_src_value = "/assets/img/youtube.png")) attr_dev(img1, "src", img1_src_value);
-    			attr_dev(img1, "alt", "youtube icon");
-    			attr_dev(img1, "class", "svelte-qob9ex");
-    			add_location(img1, file$h, 93, 4, 1901);
-    			attr_dev(a1, "target", "_blank");
-    			attr_dev(a1, "href", "https://youtu.be/HnWIHWFbuUQ");
-    			attr_dev(a1, "class", "svelte-qob9ex");
-    			add_location(a1, file$h, 92, 3, 1841);
-    			attr_dev(div3, "class", "icon svelte-qob9ex");
-    			attr_dev(div3, "title", "Demo video");
-    			add_location(div3, file$h, 91, 2, 1800);
-    			if (!src_url_equal(img2.src, img2_src_value = "/assets/img/github.png")) attr_dev(img2, "src", img2_src_value);
-    			attr_dev(img2, "alt", "github icon");
-    			attr_dev(img2, "class", "svelte-qob9ex");
-    			add_location(img2, file$h, 99, 4, 2107);
-    			attr_dev(a2, "target", "_blank");
-    			attr_dev(a2, "href", "https://github.com/poloclub/cnn-explainer");
-    			attr_dev(a2, "class", "svelte-qob9ex");
-    			add_location(a2, file$h, 98, 3, 2034);
-    			attr_dev(div4, "class", "icon svelte-qob9ex");
-    			attr_dev(div4, "title", "Open-source code");
-    			add_location(div4, file$h, 97, 2, 1987);
-    			attr_dev(div5, "class", "icons svelte-qob9ex");
-    			add_location(div5, file$h, 83, 1, 1589);
-    			attr_dev(div6, "id", "header");
-    			attr_dev(div6, "class", "svelte-qob9ex");
-    			add_location(div6, file$h, 56, 0, 770);
+    			add_location(div0, file$i, 8, 8, 72);
+    			attr_dev(div1, "id", "svg-logo-tagline");
+    			add_location(div1, file$i, 11, 8, 139);
+    			attr_dev(div2, "id", "logo");
+    			add_location(div2, file$i, 7, 4, 48);
+    			attr_dev(i, "class", "fa-brands fa-github");
+    			add_location(i, file$i, 19, 16, 443);
+    			attr_dev(a, "target", "_blank");
+    			attr_dev(a, "href", "https://github.com/davy-blavette/DatatrainX");
+    			add_location(a, file$i, 18, 12, 356);
+    			attr_dev(div3, "class", "icon");
+    			attr_dev(div3, "title", "Open-source code");
+    			add_location(div3, file$i, 17, 8, 300);
+    			attr_dev(div4, "class", "icons");
+    			add_location(div4, file$i, 16, 4, 272);
+    			attr_dev(header, "id", "header");
+    			add_location(header, file$i, 5, 0, 22);
     		},
     		l: function claim(nodes) {
     			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
     		},
     		m: function mount(target, anchor) {
-    			insert_dev(target, div6, anchor);
-    			append_dev(div6, div1);
-    			append_dev(div1, div0);
-    			append_dev(div1, t1);
-    			append_dev(div1, svg);
-    			append_dev(svg, defs);
-    			append_dev(defs, filter);
-    			append_dev(filter, feTurbulence);
-    			append_dev(filter, feColorMatrix);
-    			append_dev(filter, feComposite);
-    			append_dev(svg, g);
-    			append_dev(g, text_1);
-    			append_dev(text_1, t2);
-    			append_dev(div6, t3);
-    			append_dev(div6, div5);
-    			append_dev(div5, div2);
-    			append_dev(div2, a0);
-    			append_dev(a0, img0);
-    			append_dev(div5, t4);
-    			append_dev(div5, div3);
-    			append_dev(div3, a1);
-    			append_dev(a1, img1);
-    			append_dev(div5, t5);
-    			append_dev(div5, div4);
-    			append_dev(div4, a2);
-    			append_dev(a2, img2);
+    			insert_dev(target, header, anchor);
+    			append_dev(header, div2);
+    			append_dev(div2, div0);
+    			append_dev(div2, t1);
+    			append_dev(div2, div1);
+    			append_dev(header, t3);
+    			append_dev(header, div4);
+    			append_dev(div4, div3);
+    			append_dev(div3, a);
+    			append_dev(a, i);
     		},
     		p: noop,
     		i: noop,
     		o: noop,
     		d: function destroy(detaching) {
-    			if (detaching) detach_dev(div6);
+    			if (detaching) detach_dev(header);
     		}
     	};
 
     	dispatch_dev("SvelteRegisterBlock", {
     		block,
-    		id: create_fragment$h.name,
+    		id: create_fragment$i.name,
     		type: "component",
     		source: "",
     		ctx
@@ -16476,7 +15412,7 @@ var app = (function () {
     	return block;
     }
 
-    function instance$h($$self, $$props) {
+    function instance$i($$self, $$props) {
     	let { $$slots: slots = {}, $$scope } = $$props;
     	validate_slots('Header', slots, []);
     	const writable_props = [];
@@ -16491,21 +15427,21 @@ var app = (function () {
     class Header extends SvelteComponentDev {
     	constructor(options) {
     		super(options);
-    		init(this, options, instance$h, create_fragment$h, safe_not_equal, {});
+    		init(this, options, instance$i, create_fragment$i, safe_not_equal, {});
 
     		dispatch_dev("SvelteRegisterComponent", {
     			component: this,
     			tagName: "Header",
     			options,
-    			id: create_fragment$h.name
+    			id: create_fragment$i.name
     		});
     	}
     }
 
-    /* src\App.svelte generated by Svelte v3.44.2 */
-    const file$i = "src\\App.svelte";
+    /* src\App.svelte generated by Svelte v3.47.0 */
+    const file$j = "src\\App.svelte";
 
-    function create_fragment$i(ctx) {
+    function create_fragment$j(ctx) {
     	let div;
     	let header;
     	let t;
@@ -16521,7 +15457,7 @@ var app = (function () {
     			t = space();
     			create_component(explainer.$$.fragment);
     			attr_dev(div, "id", "app-page");
-    			add_location(div, file$i, 8, 0, 122);
+    			add_location(div, file$j, 8, 0, 122);
     		},
     		l: function claim(nodes) {
     			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
@@ -16554,7 +15490,7 @@ var app = (function () {
 
     	dispatch_dev("SvelteRegisterBlock", {
     		block,
-    		id: create_fragment$i.name,
+    		id: create_fragment$j.name,
     		type: "component",
     		source: "",
     		ctx
@@ -16563,7 +15499,7 @@ var app = (function () {
     	return block;
     }
 
-    function instance$i($$self, $$props, $$invalidate) {
+    function instance$j($$self, $$props, $$invalidate) {
     	let { $$slots: slots = {}, $$scope } = $$props;
     	validate_slots('App', slots, []);
     	const writable_props = [];
@@ -16579,13 +15515,13 @@ var app = (function () {
     class App extends SvelteComponentDev {
     	constructor(options) {
     		super(options);
-    		init(this, options, instance$i, create_fragment$i, safe_not_equal, {});
+    		init(this, options, instance$j, create_fragment$j, safe_not_equal, {});
 
     		dispatch_dev("SvelteRegisterComponent", {
     			component: this,
     			tagName: "App",
     			options,
-    			id: create_fragment$i.name
+    			id: create_fragment$j.name
     		});
     	}
     }

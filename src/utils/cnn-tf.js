@@ -1,7 +1,10 @@
 /* global tf */
 
 // Network input image size
-const networkInputSize = 64;
+const networkInputSize = 48;
+
+//mode RGB = 3, Gray = 1
+const inputShape = 1;
 
 // Enum of node types
 const nodeType = {
@@ -16,10 +19,10 @@ const nodeType = {
 class Node {
   /**
    * Class structure for each neuron node.
-   * 
+   *
    * @param {string} layerName Name of the node's layer.
    * @param {int} index Index of this node in its layer.
-   * @param {string} type Node type {input, conv, pool, relu, fc}. 
+   * @param {string} type Node type {input, conv, pool, relu, fc}.
    * @param {number} bias The bias assocated to this node.
    * @param {number[]} output Output of this node.
    */
@@ -39,7 +42,7 @@ class Node {
 class Link {
   /**
    * Class structure for each link between two nodes.
-   * 
+   *
    * @param {Node} source Source node.
    * @param {Node} dest Target node.
    * @param {number} weight Weight associated to this link. It can be a number,
@@ -54,7 +57,7 @@ class Link {
 
 /**
  * Construct a CNN with given extracted outputs from every layer.
- * 
+ *
  * @param {number[][]} allOutputs Array of outputs for each layer.
  *  allOutputs[i][j] is the output for layer i node j.
  * @param {Model} model Loaded tf.js model.
@@ -62,19 +65,17 @@ class Link {
  */
 const constructCNNFromOutputs = (allOutputs, model, inputImageTensor) => {
   let cnn = [];
-  console.log("constructCNNFromOutputs model.layers.length = " + model.layers.length);
   // Add the first layer (input layer)
   let inputLayer = [];
   let inputShape = model.layers[0].batchInputShape.slice(1);
   let inputImageArray = inputImageTensor.transpose([2, 0, 1]).arraySync();
 
-  console.log("inputShape[2] = " + inputShape[2]);
   // First layer's three nodes' outputs are the channels of inputImageArray
   for (let i = 0; i < inputShape[2]; i++) {
     let node = new Node('input', i, nodeType.INPUT, 0, inputImageArray[i]);
     inputLayer.push(node);
   }
-                                                                                                                   
+
   cnn.push(inputLayer);
   let curLayerIndex = 1;
   for (let l = 0; l < model.layers.length; l++) {
@@ -98,152 +99,160 @@ const constructCNNFromOutputs = (allOutputs, model, inputImageTensor) => {
       curLayerType = nodeType.FC;
     } else if (layer.name.includes('flatten')) {
       curLayerType = nodeType.FLATTEN;
+    } else if (layer.name.includes('batch')) {
+      //curLayerType = nodeType.RELU;
+    } else if (layer.name.includes('dropout')) {
+      //curLayerType = nodeType.RELU;
+    } else if (layer.name.includes('dense')) {
+      //curLayerType = nodeType.FC;
+    } else if (layer.name.includes('activation')) {
+      //curLayerType = nodeType.RELU;
     } else {
       console.log('Find unknown type');
     }
 
-    // Construct this layer based on its layer type
-    switch (curLayerType) {
-      case nodeType.CONV: {
-        let biases = layer.bias.val.arraySync();
-        // The new order is [output_depth, input_depth, height, width]
-        let weights = layer.kernel.val.transpose([3, 2, 0, 1]).arraySync();
+    //ignore if layer is undefined
+    if(curLayerType){
 
-        // Add nodes into this layer
-        for (let i = 0; i < outputs.length; i++) {
-          let node = new Node(layer.name, i, curLayerType, biases[i],
-            outputs[i]);
+      // Construct this layer based on its layer type
+      switch (curLayerType) {
+        case nodeType.CONV: {
+          let biases = layer.bias.val.arraySync();
+          // The new order is [output_depth, input_depth, height, width]
+          let weights = layer.kernel.val.transpose([3, 2, 0, 1]).arraySync();
 
-          // Connect this node to all previous nodes (create links)
-          // CONV layers have weights in links. Links are one-to-multiple.
-          for (let j = 0; j < cnn[curLayerIndex - 1].length; j++) {
-            let preNode = cnn[curLayerIndex - 1][j];
-            let curLink = new Link(preNode, node, weights[i][j]);
-            preNode.outputLinks.push(curLink);
-            node.inputLinks.push(curLink);
+          // Add nodes into this layer
+          for (let i = 0; i < outputs.length; i++) {
+            let node = new Node(layer.name, i, curLayerType, biases[i],
+                outputs[i]);
+
+            // Connect this node to all previous nodes (create links)
+            // CONV layers have weights in links. Links are one-to-multiple.
+            for (let j = 0; j < cnn[curLayerIndex - 1].length; j++) {
+              let preNode = cnn[curLayerIndex - 1][j];
+              let curLink = new Link(preNode, node, weights[i][j]);
+              preNode.outputLinks.push(curLink);
+              node.inputLinks.push(curLink);
+            }
+            curLayerNodes.push(node);
           }
-          curLayerNodes.push(node);
+          break;
         }
-        break;
-      }
-      case nodeType.FC: {
-        let biases = layer.bias.val.arraySync();
-        // The new order is [output_depth, input_depth]
-        let weights = layer.kernel.val.transpose([1, 0]).arraySync();
+        case nodeType.FC: {
+          let biases = layer.bias.val.arraySync();
+          // The new order is [output_depth, input_depth]
+          let weights = layer.kernel.val.transpose([1, 0]).arraySync();
 
-        // Add nodes into this layer
-        for (let i = 0; i < outputs.length; i++) {
-          let node = new Node(layer.name, i, curLayerType, biases[i],
-            outputs[i]);
+          // Add nodes into this layer
+          for (let i = 0; i < outputs.length; i++) {
+            let node = new Node(layer.name, i, curLayerType, biases[i],
+                outputs[i]);
 
-          // Connect this node to all previous nodes (create links)
-          // FC layers have weights in links. Links are one-to-multiple.
+            // Connect this node to all previous nodes (create links)
+            // FC layers have weights in links. Links are one-to-multiple.
 
-          // Since we are visualizing the logit values, we need to track
-          // the raw value before softmax
-          let curLogit = 0;
-          for (let j = 0; j < cnn[curLayerIndex - 1].length; j++) {
-            let preNode = cnn[curLayerIndex - 1][j];
-            let curLink = new Link(preNode, node, weights[i][j]);
-            preNode.outputLinks.push(curLink);
-            node.inputLinks.push(curLink);
-            curLogit += preNode.output * weights[i][j];
+            // Since we are visualizing the logit values, we need to track
+            // the raw value before softmax
+            let curLogit = 0;
+            for (let j = 0; j < cnn[curLayerIndex - 1].length; j++) {
+              let preNode = cnn[curLayerIndex - 1][j];
+              let curLink = new Link(preNode, node, weights[i][j]);
+              preNode.outputLinks.push(curLink);
+              node.inputLinks.push(curLink);
+              curLogit += preNode.output * weights[i][j];
+            }
+            curLogit += biases[i];
+            node.logit = curLogit;
+            curLayerNodes.push(node);
           }
-          curLogit += biases[i];
-          node.logit = curLogit;
-          curLayerNodes.push(node);
+
+          // Sort flatten layer based on the node TF index
+          cnn[curLayerIndex - 1].sort((a, b) => a.realIndex - b.realIndex);
+          break;
         }
+        case nodeType.RELU:
+        case nodeType.POOL: {
+          // RELU and POOL have no bias nor weight
+          let bias = 0;
+          let weight = null;
 
-        // Sort flatten layer based on the node TF index
-        cnn[curLayerIndex - 1].sort((a, b) => a.realIndex - b.realIndex);
-        break;
-      }
-      case nodeType.RELU:
-      case nodeType.POOL: {
-        // RELU and POOL have no bias nor weight
-        let bias = 0;
-        let weight = null;
+          // Add nodes into this layer
+          for (let i = 0; i < outputs.length; i++) {
+            let node = new Node(layer.name, i, curLayerType, bias, outputs[i]);
 
-        // Add nodes into this layer
-        for (let i = 0; i < outputs.length; i++) {
-          let node = new Node(layer.name, i, curLayerType, bias, outputs[i]);
-
-          // RELU and POOL layers have no weights. Links are one-to-one
-          let preNode = cnn[curLayerIndex - 1][i];
-          let link = new Link(preNode, node, weight);
-          preNode.outputLinks.push(link);
-          node.inputLinks.push(link);
-
-          curLayerNodes.push(node);
+            // RELU and POOL layers have no weights. Links are one-to-one
+            let preNode = cnn[curLayerIndex - 1][i];
+            let link = new Link(preNode, node, weight);
+            preNode.outputLinks.push(link);
+            node.inputLinks.push(link);
+            curLayerNodes.push(node);
+          }
+          break;
         }
-        break;
-      }
-      case nodeType.FLATTEN: {
-        // Flatten layer has no bias nor weights.
-        let bias = 0;
+        case nodeType.FLATTEN: {
+          // Flatten layer has no bias nor weights.
+          let bias = 0;
 
-        for (let i = 0; i < outputs.length; i++) {
-          // Flatten layer has no weights. Links are multiple-to-one.
-          // Use dummy weights to store the corresponding entry in the previsou
-          // node as (row, column)
-          // The flatten() in tf2.keras has order: channel -> row -> column
-          let preNodeWidth = cnn[curLayerIndex - 1][0].output.length,
-            preNodeNum = cnn[curLayerIndex - 1].length,
-            preNodeIndex = i % preNodeNum,
-            preNodeRow = Math.floor(Math.floor(i / preNodeNum) / preNodeWidth),
-            preNodeCol = Math.floor(i / preNodeNum) % preNodeWidth,
-            // Use channel, row, colume to compute the real index with order
-            // row -> column -> channel
-            curNodeRealIndex = preNodeIndex * (preNodeWidth * preNodeWidth) +
-              preNodeRow * preNodeWidth + preNodeCol;
-          
-          let node = new Node(layer.name, i, curLayerType,
-              bias, outputs[i]);
-          
-          // TF uses the (i) index for computation, but the real order should
-          // be (curNodeRealIndex). We will sort the nodes using the real order
-          // after we compute the logits in the output layer.
-          node.realIndex = curNodeRealIndex;
+          for (let i = 0; i < outputs.length; i++) {
+            // Flatten layer has no weights. Links are multiple-to-one.
+            // Use dummy weights to store the corresponding entry in the previsou
+            // node as (row, column)
+            // The flatten() in tf2.keras has order: channel -> row -> column
+            let preNodeWidth = cnn[curLayerIndex - 1][0].output.length,
+                preNodeNum = cnn[curLayerIndex - 1].length,
+                preNodeIndex = i % preNodeNum,
+                preNodeRow = Math.floor(Math.floor(i / preNodeNum) / preNodeWidth),
+                preNodeCol = Math.floor(i / preNodeNum) % preNodeWidth,
+                // Use channel, row, colume to compute the real index with order
+                // row -> column -> channel
+                curNodeRealIndex = preNodeIndex * (preNodeWidth * preNodeWidth) +
+                    preNodeRow * preNodeWidth + preNodeCol;
 
-          let link = new Link(cnn[curLayerIndex - 1][preNodeIndex],
-              node, [preNodeRow, preNodeCol]);
+            let node = new Node(layer.name, i, curLayerType,
+                bias, outputs[i]);
 
-          cnn[curLayerIndex - 1][preNodeIndex].outputLinks.push(link);
-          node.inputLinks.push(link);
+            // TF uses the (i) index for computation, but the real order should
+            // be (curNodeRealIndex). We will sort the nodes using the real order
+            // after we compute the logits in the output layer.
+            node.realIndex = curNodeRealIndex;
 
-          curLayerNodes.push(node);
+            let link = new Link(cnn[curLayerIndex - 1][preNodeIndex],
+                node, [preNodeRow, preNodeCol]);
+
+            cnn[curLayerIndex - 1][preNodeIndex].outputLinks.push(link);
+            node.inputLinks.push(link);
+
+            curLayerNodes.push(node);
+          }
+
+          // Sort flatten layer based on the node TF index
+          curLayerNodes.sort((a, b) => a.index - b.index);
+          break;
         }
-
-        // Sort flatten layer based on the node TF index
-        curLayerNodes.sort((a, b) => a.index - b.index);
-        break;
+        default:
+          console.error('Encounter unknown layer type');
+          break;
       }
-      default:
-        console.error('Encounter unknown layer type');
-        break;
+
+      // Add current layer to the NN
+      cnn.push(curLayerNodes);
+      curLayerIndex++;
     }
-
-    // Add current layer to the NN
-    cnn.push(curLayerNodes);
-    console.log("cnn.length = " + cnn.length);
-    curLayerIndex++;
   }
-
   return cnn;
 }
 
 /**
  * Construct a CNN with given model and input.
- * 
+ *
  * @param {string} inputImageFile filename of input image.
  * @param {Model} model Loaded tf.js model.
  */
 export const constructCNN = async (inputImageFile, model) => {
 
-  console.log("constructCNN model.layers.length = " + model.layers.length);
   // Load the image file
   let inputImageTensor = await getInputImageArray(inputImageFile, true);
-
+  console.log(inputImageTensor);
   // Need to feed the model with a batch
   let inputImageTensorBatch = tf.stack([inputImageTensor]);
 
@@ -251,18 +260,14 @@ export const constructCNN = async (inputImageFile, model) => {
   // the model, and sequencially apply transformations.
   let preTensor = inputImageTensorBatch;
   let outputs = [];
-  console.log("model.layers.length >> " + model.layers.length);
   // Iterate through all layers, and build one model with that layer as output
   for (let l = 0; l < model.layers.length; l++) {
-    console.log(model.layers[l]);
     let curTensor = model.layers[l].apply(preTensor);
-    console.log("model.layers[l] = " + model.layers[l]);
     // Record the output tensor
     // Because there is only one element in the batch, we use squeeze()
     // We also want to use CHW order here
 
     let output = curTensor.squeeze();
-    console.log("output.shape.length = " + output.shape.length);
     if (output.shape.length === 3) {
       output = output.transpose([2, 0, 1]);
     }
@@ -280,7 +285,7 @@ export const constructCNN = async (inputImageFile, model) => {
 
 /**
  * Crop the largest central square of size 64x64x3 of a 3d array.
- * 
+ *
  * @param {[int8]} arr array that requires cropping and padding (if a 64x64 crop
  * is not present)
  * @returns 64x64x3 array
@@ -310,25 +315,25 @@ const cropCentralSquare = (arr) => {
  * Convert canvas image data into a 3D tensor with dimension [height, width, 3].
  * Recall that tensorflow uses NHWC order (batch, height, width, channel).
  * Each pixel is in 0-255 scale.
- * 
+ *
  * @param {[int8]} imageData Canvas image data
  * @param {int} width Canvas image width
  * @param {int} height Canvas image height
  */
 const imageDataTo3DTensor = (imageData, width, height, normalize=true) => {
-  // Create array placeholder for the 3d array
-  let imageArray = tf.fill([width, height, 3], 0).arraySync();
+  // Create array placeholder for the 3d array [width, height, 3] for rgb
+  let imageArray = tf.fill([width, height, inputShape], 0).arraySync();
 
   // Iterate through the data to fill out channel arrays above
   for (let i = 0; i < imageData.length; i++) {
     let pixelIndex = Math.floor(i / 4),
-      channelIndex = i % 4,
-      row = width === height ? Math.floor(pixelIndex / width)
-                              : pixelIndex % width,
-      column = width === height ? pixelIndex % width
-                              : Math.floor(pixelIndex / width);
-    
-    if (channelIndex < 3) {
+        channelIndex = i % 4,
+        row = width === height ? Math.floor(pixelIndex / width)
+            : pixelIndex % width,
+        column = width === height ? pixelIndex % width
+            : Math.floor(pixelIndex / width);
+
+    if (channelIndex < inputShape) {
       let curEntry  = imageData[i];
       // Normalize the original pixel value from [0, 255] to [0, 1]
       if (normalize) {
@@ -349,7 +354,7 @@ const imageDataTo3DTensor = (imageData, width, height, normalize=true) => {
 
 /**
  * Get the 3D pixel value array of the given image file.
- * 
+ *
  * @param {string} imgFile File path to the image file
  * @returns A promise with the corresponding 3D array
  */
@@ -379,7 +384,7 @@ const getInputImageArray = (imgFile, normalize=true) => {
         resizeCanvas.width = inputImage.width * resizeFactor;
         resizeCanvas.height = inputImage.height * resizeFactor;
         resizeContext.drawImage(inputImage, 0, 0, resizeCanvas.width,
-          resizeCanvas.height);
+            resizeCanvas.height);
 
         // Step 2 - Flip non-square images horizontally and rotate them 90deg since
         // non-square images are not stored upright.
@@ -397,12 +402,12 @@ const getInputImageArray = (imgFile, normalize=true) => {
           context.drawImage(resizeCanvas, 0, 0);
         }
         canvasImage = context.getImageData(0, 0, resizeCanvas.width,
-          resizeCanvas.height);
+            resizeCanvas.height);
 
       } else {
         context.drawImage(inputImage, 0, 0);
         canvasImage = context.getImageData(0, 0, inputImage.width,
-          inputImage.height);
+            inputImage.height);
       }
       // Get image data and convert it to a 3D array
       let imageData = canvasImage.data;
@@ -420,7 +425,7 @@ const getInputImageArray = (imgFile, normalize=true) => {
 
 /**
  * Wrapper to load a model.
- * 
+ *
  * @param {string} modelFile Filename of converted (through tensorflowjs.py)
  *  model json file.
  */

@@ -108,8 +108,8 @@ export const drawOutput = (d, i, g, range) => {
   // (canvas) into corresponding canvas
   bufferContext.putImageData(imageSingle, 0, 0);
   largeCanvasContext.drawImage(bufferCanvas, 0, 0, imageLength, imageLength,
-    0, 0, nodeLength * 3, nodeLength * 3);
-  
+      0, 0, nodeLength * 3, nodeLength * 3);
+
   let imageDataURL = largeCanvas.toDataURL();
   d3.select(image).attr('xlink:href', imageDataURL);
 
@@ -128,11 +128,11 @@ export const drawOutput = (d, i, g, range) => {
 const drawOutputScore = (d, i, g, scale) => {
   let group = d3.select(g[i]);
   group.select('rect.output-rect')
-    .transition('output')
-    .delay(500)
-    .duration(800)
-    .ease(d3.easeCubicIn)
-    .attr('width', scale(d.output))
+      .transition('output')
+      .delay(500)
+      .duration(800)
+      .ease(d3.easeCubicIn)
+      .attr('width', scale(d.output))
 }
 
 export const drawCustomImage = (image, inputLayer) => {
@@ -154,14 +154,21 @@ export const drawCustomImage = (image, inputLayer) => {
     let row = Math.floor(pixeIndex / imageLength);
     let column = pixeIndex % imageLength;
 
-    let red = inputLayer[0].output[row][column];
-    let green = inputLayer[1].output[row][column];
-    let blue = inputLayer[2].output[row][column];
 
-    imageSingleArray[i] = red * 255;
-    imageSingleArray[i + 1] = green * 255;
-    imageSingleArray[i + 2] = blue * 255;
-    imageSingleArray[i + 3] = 255;
+      let red = inputLayer[0].output[row][column];
+      imageSingleArray[i] = red * 255;
+      imageSingleArray[i] = red * 255;
+
+    if(overviewConfig.modeImg == 3){
+      let green = inputLayer[1].output[row][column];
+      let blue = inputLayer[2].output[row][column];
+      imageSingleArray[i + 1] = green * 255;
+      imageSingleArray[i + 2] = blue * 255;
+      imageSingleArray[i + 3] = 255;
+    }
+
+
+
   }
 
   // canvas.toDataURL() only exports image in 96 DPI, so we can hack it to have
@@ -175,8 +182,8 @@ export const drawCustomImage = (image, inputLayer) => {
   // (canvas) into corresponding canvas
   bufferContext.putImageData(imageSingle, 0, 0);
   largeCanvasContext.drawImage(bufferCanvas, 0, 0, imageLength, imageLength,
-    0, 0, imageWidth * 3, imageWidth * 3);
-  
+      0, 0, imageWidth * 3, imageWidth * 3);
+
   let imageDataURL = largeCanvas.toDataURL();
   // d3.select(image).attr('xlink:href', imageDataURL);
   image.src = imageDataURL;
@@ -198,21 +205,21 @@ const getLegendGradient = (g, colorScale, gradientName, min, max) => {
   if (min === undefined) { min = 0; }
   if (max === undefined) { max = 1; }
   let gradient = g.append('defs')
-    .append('svg:linearGradient')
-    .attr('id', `${gradientName}`)
-    .attr('x1', '0%')
-    .attr('y1', '100%')
-    .attr('x2', '100%')
-    .attr('y2', '100%')
-    .attr('spreadMethod', 'pad');
+      .append('svg:linearGradient')
+      .attr('id', `${gradientName}`)
+      .attr('x1', '0%')
+      .attr('y1', '100%')
+      .attr('x2', '100%')
+      .attr('y2', '100%')
+      .attr('spreadMethod', 'pad');
   let interpolation = 10
   for (let i = 0; i < interpolation; i++) {
     let curProgress = i / (interpolation - 1);
     let curColor = colorScale(curProgress * (max - min) + min);
     gradient.append('stop')
-      .attr('offset', `${curProgress * 100}%`)
-      .attr('stop-color', curColor)
-      .attr('stop-opacity', 1);
+        .attr('offset', `${curProgress * 100}%`)
+        .attr('stop-color', curColor)
+        .attr('stop-opacity', 1);
   }
 }
 
@@ -229,52 +236,52 @@ const drawLegends = (legends, legendHeight) => {
     let range2 = cnnLayerRanges.local[start + 2];
 
     let localLegendScale1 = d3.scaleLinear()
-      .range([0, 2 * nodeLength + hSpaceAroundGap - 1.2])
-      .domain([-range1 / 2, range1 / 2]);
-    
+        .range([0, 2 * nodeLength + hSpaceAroundGap - 1.2])
+        .domain([-range1 / 2, range1 / 2]);
+
     let localLegendScale2 = d3.scaleLinear()
-      .range([0, 3 * nodeLength + 2 * hSpaceAroundGap - 1.2])
-      .domain([-range2 / 2, range2 / 2]);
+        .range([0, 3 * nodeLength + 2 * hSpaceAroundGap - 1.2])
+        .domain([-range2 / 2, range2 / 2]);
 
     let localLegendAxis1 = d3.axisBottom()
-      .scale(localLegendScale1)
-      .tickFormat(d3.format('.2f'))
-      .tickValues([-range1 / 2, 0, range1 / 2]);
-    
+        .scale(localLegendScale1)
+        .tickFormat(d3.format('.2f'))
+        .tickValues([-range1 / 2, 0, range1 / 2]);
+
     let localLegendAxis2 = d3.axisBottom()
-      .scale(localLegendScale2)
-      .tickFormat(d3.format('.2f'))
-      .tickValues([-range2 / 2, 0, range2 / 2]);
+        .scale(localLegendScale2)
+        .tickFormat(d3.format('.2f'))
+        .tickValues([-range2 / 2, 0, range2 / 2]);
 
     let localLegend1 = legends.append('g')
-      .attr('class', 'legend local-legend')
-      .attr('id', `local-legend-${i}-1`)
-      .classed('hidden', !detailedMode || selectedScaleLevel !== 'local')
-      .attr('transform', `translate(${nodeCoordinate[start][0].x}, ${0})`);
+        .attr('class', 'legend local-legend')
+        .attr('id', `local-legend-${i}-1`)
+        .classed('hidden', !detailedMode || selectedScaleLevel !== 'local')
+        .attr('transform', `translate(${nodeCoordinate[start][0].x}, ${0})`);
 
     localLegend1.append('g')
-      .attr('transform', `translate(0, ${legendHeight - 3})`)
-      .call(localLegendAxis1)
+        .attr('transform', `translate(0, ${legendHeight - 3})`)
+        .call(localLegendAxis1)
 
     localLegend1.append('rect')
-      .attr('width', 2 * nodeLength + hSpaceAroundGap)
-      .attr('height', legendHeight)
-      .style('fill', 'url(#convGradient)');
+        .attr('width', 2 * nodeLength + hSpaceAroundGap)
+        .attr('height', legendHeight)
+        .style('fill', 'url(#convGradient)');
 
     let localLegend2 = legends.append('g')
-      .attr('class', 'legend local-legend')
-      .attr('id', `local-legend-${i}-2`)
-      .classed('hidden', !detailedMode || selectedScaleLevel !== 'local')
-      .attr('transform', `translate(${nodeCoordinate[start + 2][0].x}, ${0})`);
+        .attr('class', 'legend local-legend')
+        .attr('id', `local-legend-${i}-2`)
+        .classed('hidden', !detailedMode || selectedScaleLevel !== 'local')
+        .attr('transform', `translate(${nodeCoordinate[start + 2][0].x}, ${0})`);
 
     localLegend2.append('g')
-      .attr('transform', `translate(0, ${legendHeight - 3})`)
-      .call(localLegendAxis2)
+        .attr('transform', `translate(0, ${legendHeight - 3})`)
+        .call(localLegendAxis2)
 
     localLegend2.append('rect')
-      .attr('width', 3 * nodeLength + 2 * hSpaceAroundGap)
-      .attr('height', legendHeight)
-      .style('fill', 'url(#convGradient)');
+        .attr('width', 3 * nodeLength + 2 * hSpaceAroundGap)
+        .attr('height', legendHeight)
+        .style('fill', 'url(#convGradient)');
   }
 
   // Add module legends
@@ -283,30 +290,30 @@ const drawLegends = (legends, legendHeight) => {
     let range = cnnLayerRanges.module[start];
 
     let moduleLegendScale = d3.scaleLinear()
-      .range([0, 5 * nodeLength + 3 * hSpaceAroundGap +
+        .range([0, 5 * nodeLength + 3 * hSpaceAroundGap +
         1 * hSpaceAroundGap * gapRatio - 1.2])
-      .domain([-range / 2, range / 2]);
+        .domain([-range / 2, range / 2]);
 
     let moduleLegendAxis = d3.axisBottom()
-      .scale(moduleLegendScale)
-      .tickFormat(d3.format('.2f'))
-      .tickValues([-range / 2, -(range / 4), 0, range / 4, range / 2]);
+        .scale(moduleLegendScale)
+        .tickFormat(d3.format('.2f'))
+        .tickValues([-range / 2, -(range / 4), 0, range / 4, range / 2]);
 
     let moduleLegend = legends.append('g')
-      .attr('class', 'legend module-legend')
-      .attr('id', `module-legend-${i}`)
-      .classed('hidden', !detailedMode || selectedScaleLevel !== 'module')
-      .attr('transform', `translate(${nodeCoordinate[start][0].x}, ${0})`);
-    
+        .attr('class', 'legend module-legend')
+        .attr('id', `module-legend-${i}`)
+        .classed('hidden', !detailedMode || selectedScaleLevel !== 'module')
+        .attr('transform', `translate(${nodeCoordinate[start][0].x}, ${0})`);
+
     moduleLegend.append('g')
-      .attr('transform', `translate(0, ${legendHeight - 3})`)
-      .call(moduleLegendAxis)
+        .attr('transform', `translate(0, ${legendHeight - 3})`)
+        .call(moduleLegendAxis)
 
     moduleLegend.append('rect')
-      .attr('width', 5 * nodeLength + 3 * hSpaceAroundGap +
-        1 * hSpaceAroundGap * gapRatio)
-      .attr('height', legendHeight)
-      .style('fill', 'url(#convGradient)');
+        .attr('width', 5 * nodeLength + 3 * hSpaceAroundGap +
+            1 * hSpaceAroundGap * gapRatio)
+        .attr('height', legendHeight)
+        .style('fill', 'url(#convGradient)');
   }
 
   // Add global legends
@@ -314,84 +321,86 @@ const drawLegends = (legends, legendHeight) => {
   let range = cnnLayerRanges.global[start];
 
   let globalLegendScale = d3.scaleLinear()
-    .range([0, 10 * nodeLength + 6 * hSpaceAroundGap +
+      .range([0, 10 * nodeLength + 6 * hSpaceAroundGap +
       3 * hSpaceAroundGap * gapRatio - 1.2])
-    .domain([-range / 2, range / 2]);
+      .domain([-range / 2, range / 2]);
 
   let globalLegendAxis = d3.axisBottom()
-    .scale(globalLegendScale)
-    .tickFormat(d3.format('.2f'))
-    .tickValues([-range / 2, -(range / 4), 0, range / 4, range / 2]);
+      .scale(globalLegendScale)
+      .tickFormat(d3.format('.2f'))
+      .tickValues([-range / 2, -(range / 4), 0, range / 4, range / 2]);
 
   let globalLegend = legends.append('g')
-    .attr('class', 'legend global-legend')
-    .attr('id', 'global-legend')
-    .classed('hidden', !detailedMode || selectedScaleLevel !== 'global')
-    .attr('transform', `translate(${nodeCoordinate[start][0].x}, ${0})`);
+      .attr('class', 'legend global-legend')
+      .attr('id', 'global-legend')
+      .classed('hidden', !detailedMode || selectedScaleLevel !== 'global')
+      .attr('transform', `translate(${nodeCoordinate[start][0].x}, ${0})`);
 
   globalLegend.append('g')
-    .attr('transform', `translate(0, ${legendHeight - 3})`)
-    .call(globalLegendAxis)
+      .attr('transform', `translate(0, ${legendHeight - 3})`)
+      .call(globalLegendAxis)
 
   globalLegend.append('rect')
-    .attr('width', 10 * nodeLength + 6 * hSpaceAroundGap +
-      3 * hSpaceAroundGap * gapRatio)
-    .attr('height', legendHeight)
-    .style('fill', 'url(#convGradient)');
+      .attr('width', 10 * nodeLength + 6 * hSpaceAroundGap +
+          3 * hSpaceAroundGap * gapRatio)
+      .attr('height', legendHeight)
+      .style('fill', 'url(#convGradient)');
 
 
   // Add output legend
   let outputRectScale = d3.scaleLinear()
-        .domain(cnnLayerRanges.output)
-        .range([0, nodeLength - 1.2]);
+      .domain(cnnLayerRanges.output)
+      .range([0, nodeLength - 1.2]);
 
   let outputLegendAxis = d3.axisBottom()
-    .scale(outputRectScale)
-    .tickFormat(d3.format('.1f'))
-    .tickValues([0, cnnLayerRanges.output[1]])
-  
+      .scale(outputRectScale)
+      .tickFormat(d3.format('.1f'))
+      .tickValues([0, cnnLayerRanges.output[1]])
+
+  console.log(nodeCoordinate);
+
   let outputLegend = legends.append('g')
-    .attr('class', 'legend output-legend')
-    .attr('id', 'output-legend')
-    .classed('hidden', !detailedMode)
-    .attr('transform', `translate(${nodeCoordinate[11][0].x}, ${0})`);
-  
+      .attr('class', 'legend output-legend')
+      .attr('id', 'output-legend')
+      .classed('hidden', !detailedMode)
+      .attr('transform', `translate(${nodeCoordinate[11][0].x}, ${0})`);
+
   outputLegend.append('g')
-    .attr('transform', `translate(0, ${legendHeight - 3})`)
-    .call(outputLegendAxis);
+      .attr('transform', `translate(0, ${legendHeight - 3})`)
+      .call(outputLegendAxis);
 
   outputLegend.append('rect')
-    .attr('width', nodeLength)
-    .attr('height', legendHeight)
-    .style('fill', 'gray');
-  
+      .attr('width', nodeLength)
+      .attr('height', legendHeight)
+      .style('fill', 'gray');
+
   // Add input image legend
   let inputScale = d3.scaleLinear()
-    .range([0, nodeLength - 1.2])
-    .domain([0, 1]);
+      .range([0, nodeLength - 1.2])
+      .domain([0, 1]);
 
   let inputLegendAxis = d3.axisBottom()
-    .scale(inputScale)
-    .tickFormat(d3.format('.1f'))
-    .tickValues([0, 0.5, 1]);
+      .scale(inputScale)
+      .tickFormat(d3.format('.1f'))
+      .tickValues([0, 0.5, 1]);
 
   let inputLegend = legends.append('g')
-    .attr('class', 'legend input-legend')
-    .classed('hidden', !detailedMode)
-    .attr('transform', `translate(${nodeCoordinate[0][0].x}, ${0})`);
-  
+      .attr('class', 'legend input-legend')
+      .classed('hidden', !detailedMode)
+      .attr('transform', `translate(${nodeCoordinate[0][0].x}, ${0})`);
+
   inputLegend.append('g')
-    .attr('transform', `translate(0, ${legendHeight - 3})`)
-    .call(inputLegendAxis);
+      .attr('transform', `translate(0, ${legendHeight - 3})`)
+      .call(inputLegendAxis);
 
   inputLegend.append('rect')
-    .attr('x', 0.3)
-    .attr('width', nodeLength - 0.3)
-    .attr('height', legendHeight)
-    .attr('transform', `rotate(180, ${nodeLength/2}, ${legendHeight/2})`)
-    .style('stroke', 'rgb(20, 20, 20)')
-    .style('stroke-width', 0.3)
-    .style('fill', 'url(#inputGradient)');
+      .attr('x', 0.3)
+      .attr('width', nodeLength - 0.3)
+      .attr('height', legendHeight)
+      .attr('transform', `rotate(180, ${nodeLength/2}, ${legendHeight/2})`)
+      .style('stroke', 'rgb(20, 20, 20)')
+      .style('stroke-width', 0.3)
+      .style('fill', 'url(#inputGradient)');
 }
 
 /**
@@ -404,7 +413,7 @@ const drawLegends = (legends, legendHeight) => {
  * @param {function} nodeClickHandler Callback func for click
  */
 export const drawCNN = (width, height, cnnGroup, nodeMouseOverHandler,
-  nodeMouseLeaveHandler, nodeClickHandler) => {
+                        nodeMouseLeaveHandler, nodeClickHandler) => {
   // Draw the CNN
   // There are 8 short gaps and 5 long gaps
   hSpaceAroundGap = (width - nodeLength * numLayers) / (8 + 5 * gapRatio);
@@ -431,85 +440,85 @@ export const drawCNN = (width, height, cnnGroup, nodeMouseOverHandler,
     let left = leftAccuumulatedSpace;
 
     let layerGroup = cnnGroup.append('g')
-      .attr('class', 'cnn-layer-group')
-      .attr('id', `cnn-layer-group-${l}`);
+        .attr('class', 'cnn-layer-group')
+        .attr('id', `cnn-layer-group-${l}`);
 
     vSpaceAroundGap = (height - nodeLength * curLayer.length) /
-      (curLayer.length + 1);
+        (curLayer.length + 1);
     vSpaceAroundGapStore.set(vSpaceAroundGap);
 
     let nodeGroups = layerGroup.selectAll('g.node-group')
-      .data(curLayer, d => d.index)
-      .enter()
-      .append('g')
-      .attr('class', 'node-group')
-      .style('cursor', 'pointer')
-      .style('pointer-events', 'all')
-      .on('click', nodeClickHandler)
-      .on('mouseover', nodeMouseOverHandler)
-      .on('mouseleave', nodeMouseLeaveHandler)
-      .classed('node-output', isOutput)
-      .attr('id', (d, i) => {
-        // Compute the coordinate
-        // Not using transform on the group object because of a decade old
-        // bug on webkit (safari)
-        // https://bugs.webkit.org/show_bug.cgi?id=23113
-        let top = i * nodeLength + (i + 1) * vSpaceAroundGap;
-        top += svgPaddings.top;
-        nodeCoordinate[l].push({x: left, y: top});
-        return `layer-${l}-node-${i}`
-      });
-    
+        .data(curLayer, d => d.index)
+        .enter()
+        .append('g')
+        .attr('class', 'node-group')
+        .style('cursor', 'pointer')
+        .style('pointer-events', 'all')
+        .on('click', nodeClickHandler)
+        .on('mouseover', nodeMouseOverHandler)
+        .on('mouseleave', nodeMouseLeaveHandler)
+        .classed('node-output', isOutput)
+        .attr('id', (d, i) => {
+          // Compute the coordinate
+          // Not using transform on the group object because of a decade old
+          // bug on webkit (safari)
+          // https://bugs.webkit.org/show_bug.cgi?id=23113
+          let top = i * nodeLength + (i + 1) * vSpaceAroundGap;
+          top += svgPaddings.top;
+          nodeCoordinate[l].push({x: left, y: top});
+          return `layer-${l}-node-${i}`
+        });
+
     // Overwrite the mouseover and mouseleave function for output nodes to show
     // hover info in the UI
     layerGroup.selectAll('g.node-output')
-      .on('mouseover', (d, i, g) => {
-        nodeMouseOverHandler(d, i, g);
-        hoverInfoStore.set( {show: true, text: `Output value: ${formater(d.output)}`} );
-      })
-      .on('mouseleave', (d, i, g) => {
-        nodeMouseLeaveHandler(d, i, g);
-        hoverInfoStore.set( {show: false, text: `Output value: ${formater(d.output)}`} );
-      });
-    
+        .on('mouseover', (d, i, g) => {
+          nodeMouseOverHandler(d, i, g);
+          hoverInfoStore.set( {show: true, text: `Output value: ${formater(d.output)}`} );
+        })
+        .on('mouseleave', (d, i, g) => {
+          nodeMouseLeaveHandler(d, i, g);
+          hoverInfoStore.set( {show: false, text: `Output value: ${formater(d.output)}`} );
+        });
+
     if (curLayer[0].layerName !== 'output') {
       // Embed raster image in these groups
       nodeGroups.append('image')
-        .attr('class', 'node-image')
-        .attr('width', nodeLength)
-        .attr('height', nodeLength)
-        .attr('x', left)
-        .attr('y', (d, i) => nodeCoordinate[l][i].y);
-      
+          .attr('class', 'node-image')
+          .attr('width', nodeLength)
+          .attr('height', nodeLength)
+          .attr('x', left)
+          .attr('y', (d, i) => nodeCoordinate[l][i].y);
+
       // Add a rectangle to show the border
       nodeGroups.append('rect')
-        .attr('class', 'bounding')
-        .attr('width', nodeLength)
-        .attr('height', nodeLength)
-        .attr('x', left)
-        .attr('y', (d, i) => nodeCoordinate[l][i].y)
-        .style('fill', 'none')
-        .style('stroke', 'gray')
-        .style('stroke-width', 1)
-        .classed('hidden', true);
+          .attr('class', 'bounding')
+          .attr('width', nodeLength)
+          .attr('height', nodeLength)
+          .attr('x', left)
+          .attr('y', (d, i) => nodeCoordinate[l][i].y)
+          .style('fill', 'none')
+          .style('stroke', 'gray')
+          .style('stroke-width', 1)
+          .classed('hidden', true);
     } else {
       nodeGroups.append('rect')
-        .attr('class', 'output-rect')
-        .attr('x', left)
-        .attr('y', (d, i) => nodeCoordinate[l][i].y + nodeLength / 2 + 8)
-        .attr('height', nodeLength / 4)
-        .attr('width', 0)
-        .style('fill', 'gray');
+          .attr('class', 'output-rect')
+          .attr('x', left)
+          .attr('y', (d, i) => nodeCoordinate[l][i].y + nodeLength / 2 + 8)
+          .attr('height', nodeLength / 4)
+          .attr('width', 0)
+          .style('fill', 'gray');
       nodeGroups.append('text')
-        .attr('class', 'output-text')
-        .attr('x', left)
-        .attr('y', (d, i) => nodeCoordinate[l][i].y + nodeLength / 2)
-        .style('dominant-baseline', 'middle')
-        .style('font-size', '11px')
-        .style('fill', 'black')
-        .style('opacity', 0.5)
-        .text((d, i) => classLists[i]);
-      
+          .attr('class', 'output-text')
+          .attr('x', left)
+          .attr('y', (d, i) => nodeCoordinate[l][i].y + nodeLength / 2)
+          .style('dominant-baseline', 'middle')
+          .style('font-size', '11px')
+          .style('fill', 'black')
+          .style('opacity', 0.5)
+          .text((d, i) => classLists[i]);
+
       // Add annotation text to tell readers the exact output probability
       // nodeGroups.append('text')
       //   .attr('class', 'annotation-text')
@@ -527,19 +536,19 @@ export const drawCNN = (width, height, cnnGroup, nodeMouseOverHandler,
   // Compute the scale of the output score width (mapping the the node
   // width to the max output score)
   let outputRectScale = d3.scaleLinear()
-        .domain(cnnLayerRanges.output)
-        .range([0, nodeLength]);
+      .domain(cnnLayerRanges.output)
+      .range([0, nodeLength]);
 
   // Draw the canvas
   for (let l = 0; l < cnn.length; l++) {
     let range = cnnLayerRanges[selectedScaleLevel][l];
     svg.select(`g#cnn-layer-group-${l}`)
-      .selectAll('image.node-image')
-      .each((d, i, g) => drawOutput(d, i, g, range));
+        .selectAll('image.node-image')
+        .each((d, i, g) => drawOutput(d, i, g, range));
   }
 
   svg.selectAll('g.node-output').each(
-    (d, i, g) => drawOutputScore(d, i, g, outputRectScale)
+      (d, i, g) => drawOutputScore(d, i, g, outputRectScale)
   );
 
   // Add layer label
@@ -559,85 +568,85 @@ export const drawCNN = (width, height, cnnGroup, nodeMouseOverHandler,
 
   let svgHeight = Number(d3.select('#cnn-svg').style('height').replace('px', '')) + 150;
   let scroll = new SmoothScroll('a[href*="#"]', {offset: -svgHeight});
-  
+
   let detailedLabels = svg.selectAll('g.layer-detailed-label')
-    .data(layerNames)
-    .enter()
-    .append('g')
-    .attr('class', 'layer-detailed-label')
-    .attr('id', (d, i) => `layer-detailed-label-${i}`)
-    .classed('hidden', !detailedMode)
-    .attr('transform', (d, i) => {
-      let x = nodeCoordinate[i][0].x + nodeLength / 2;
-      let y = (svgPaddings.top + vSpaceAroundGap) / 2 - 6;
-      return `translate(${x}, ${y})`;
-    })
-    .style('cursor', d => d.name.includes('output') ? 'default' : 'help')
-    .on('click', (d) => {
-      let target = '';
-      if (d.name.includes('conv')) { target = 'convolution' }
-      if (d.name.includes('relu')) { target = 'relu' }
-      if (d.name.includes('max_pool')) { target = 'pooling'}
-      if (d.name.includes('input')) { target = 'input'}
+      .data(layerNames)
+      .enter()
+      .append('g')
+      .attr('class', 'layer-detailed-label')
+      .attr('id', (d, i) => `layer-detailed-label-${i}`)
+      .classed('hidden', !detailedMode)
+      .attr('transform', (d, i) => {
+        let x = nodeCoordinate[i][0].x + nodeLength / 2;
+        let y = (svgPaddings.top + vSpaceAroundGap) / 2 - 6;
+        return `translate(${x}, ${y})`;
+      })
+      .style('cursor', d => d.name.includes('output') ? 'default' : 'help')
+      .on('click', (d) => {
+        let target = '';
+        if (d.name.includes('conv')) { target = 'convolution' }
+        if (d.name.includes('relu')) { target = 'relu' }
+        if (d.name.includes('max_pool')) { target = 'pooling'}
+        if (d.name.includes('input')) { target = 'input'}
 
-      // Scroll to a article element
-      let anchor = document.querySelector(`#article-${target}`);
-      scroll.animateScroll(anchor);
-    });
-  
+        // Scroll to a article element
+        let anchor = document.querySelector(`#article-${target}`);
+        scroll.animateScroll(anchor);
+      });
+
   detailedLabels.append('title')
-    .text('Move to article section');
-    
-  detailedLabels.append('text')
-    .style('opacity', 0.7)
-    .style('dominant-baseline', 'middle')
-    .append('tspan')
-    .style('font-size', '12px')
-    .text(d => d.name)
-    .append('tspan')
-    .style('font-size', '8px')
-    .style('font-weight', 'normal')
-    .attr('x', 0)
-    .attr('dy', '1.5em')
-    .text(d => d.dimension);
-  
-  let labels = svg.selectAll('g.layer-label')
-    .data(layerNames)
-    .enter()
-    .append('g')
-    .attr('class', 'layer-label')
-    .attr('id', (d, i) => `layer-label-${i}`)
-    .classed('hidden', detailedMode)
-    .attr('transform', (d, i) => {
-      let x = nodeCoordinate[i][0].x + nodeLength / 2;
-      let y = (svgPaddings.top + vSpaceAroundGap) / 2 + 5;
-      return `translate(${x}, ${y})`;
-    })
-    .style('cursor', d => d.name.includes('output') ? 'default' : 'help')
-    .on('click', (d) => {
-      let target = '';
-      if (d.name.includes('conv')) { target = 'convolution' }
-      if (d.name.includes('relu')) { target = 'relu' }
-      if (d.name.includes('max_pool')) { target = 'pooling'}
-      if (d.name.includes('input')) { target = 'input'}
+      .text('Move to article section');
 
-      // Scroll to a article element
-      let anchor = document.querySelector(`#article-${target}`);
-      scroll.animateScroll(anchor);
-    });
-  
+  detailedLabels.append('text')
+      .style('opacity', 0.7)
+      .style('dominant-baseline', 'middle')
+      .append('tspan')
+      .style('font-size', '12px')
+      .text(d => d.name)
+      .append('tspan')
+      .style('font-size', '8px')
+      .style('font-weight', 'normal')
+      .attr('x', 0)
+      .attr('dy', '1.5em')
+      .text(d => d.dimension);
+
+  let labels = svg.selectAll('g.layer-label')
+      .data(layerNames)
+      .enter()
+      .append('g')
+      .attr('class', 'layer-label')
+      .attr('id', (d, i) => `layer-label-${i}`)
+      .classed('hidden', detailedMode)
+      .attr('transform', (d, i) => {
+        let x = nodeCoordinate[i][0].x + nodeLength / 2;
+        let y = (svgPaddings.top + vSpaceAroundGap) / 2 + 5;
+        return `translate(${x}, ${y})`;
+      })
+      .style('cursor', d => d.name.includes('output') ? 'default' : 'help')
+      .on('click', (d) => {
+        let target = '';
+        if (d.name.includes('conv')) { target = 'convolution' }
+        if (d.name.includes('relu')) { target = 'relu' }
+        if (d.name.includes('max_pool')) { target = 'pooling'}
+        if (d.name.includes('input')) { target = 'input'}
+
+        // Scroll to a article element
+        let anchor = document.querySelector(`#article-${target}`);
+        scroll.animateScroll(anchor);
+      });
+
   labels.append('title')
-    .text('Move to article section');
-  
+      .text('Move to article section');
+
   labels.append('text')
-    .style('dominant-baseline', 'middle')
-    .style('opacity', 0.8)
-    .text(d => {
-      if (d.name.includes('conv')) { return 'conv' }
-      if (d.name.includes('relu')) { return 'relu' }
-      if (d.name.includes('max_pool')) { return 'max_pool'}
-      return d.name
-    });
+      .style('dominant-baseline', 'middle')
+      .style('opacity', 0.8)
+      .text(d => {
+        if (d.name.includes('conv')) { return 'conv' }
+        if (d.name.includes('relu')) { return 'relu' }
+        if (d.name.includes('max_pool')) { return 'max_pool'}
+        return d.name
+      });
 
   // Add layer color scale legends
   getLegendGradient(svg, layerColorScales.conv, 'convGradient');
@@ -647,73 +656,75 @@ export const drawCNN = (width, height, cnnGroup, nodeMouseOverHandler,
   let legends = svg.append('g')
       .attr('class', 'color-legend')
       .attr('transform', `translate(${0}, ${
-        svgPaddings.top + vSpaceAroundGap * (classLists.length) + vSpaceAroundGap +
-        nodeLength * classLists.length
+          svgPaddings.top + vSpaceAroundGap * (classLists.length) + vSpaceAroundGap +
+          nodeLength * classLists.length
       })`);
-  
+
   drawLegends(legends, legendHeight);
 
   // Add edges between nodes
   let linkGen = d3.linkHorizontal()
-    .x(d => d.x)
-    .y(d => d.y);
-  
+      .x(d => d.x)
+      .y(d => d.y);
+
   let linkData = getLinkData(nodeCoordinate, cnn);
 
   let edgeGroup = cnnGroup.append('g')
-    .attr('class', 'edge-group');
-  
+      .attr('class', 'edge-group');
+
   edgeGroup.selectAll('path.edge')
-    .data(linkData)
-    .enter()
-    .append('path')
-    .attr('class', d =>
-      `edge edge-${d.targetLayerIndex} edge-${d.targetLayerIndex}-${d.targetNodeIndex}`)
-    .attr('id', d => 
-      `edge-${d.targetLayerIndex}-${d.targetNodeIndex}-${d.sourceNodeIndex}`)
-    .attr('d', d => linkGen({source: d.source, target: d.target}))
-    .style('fill', 'none')
-    .style('stroke-width', edgeStrokeWidth)
-    .style('opacity', edgeOpacity)
-    .style('stroke', edgeInitColor);
+      .data(linkData)
+      .enter()
+      .append('path')
+      .attr('class', d =>
+          `edge edge-${d.targetLayerIndex} edge-${d.targetLayerIndex}-${d.targetNodeIndex}`)
+      .attr('id', d =>
+          `edge-${d.targetLayerIndex}-${d.targetNodeIndex}-${d.sourceNodeIndex}`)
+      .attr('d', d => linkGen({source: d.source, target: d.target}))
+      .style('fill', 'none')
+      .style('stroke-width', edgeStrokeWidth)
+      .style('opacity', edgeOpacity)
+      .style('stroke', edgeInitColor);
 
   // Add input channel annotations
   let inputAnnotation = cnnGroup.append('g')
-    .attr('class', 'input-annotation');
+      .attr('class', 'input-annotation');
 
   let redChannel = inputAnnotation.append('text')
-    .attr('x', nodeCoordinate[0][0].x + nodeLength / 2)
-    .attr('y', nodeCoordinate[0][0].y + nodeLength + 5)
-    .attr('class', 'annotation-text')
-    .style('dominant-baseline', 'hanging')
-    .style('text-anchor', 'middle');
-  
-  redChannel.append('tspan')
-    .style('dominant-baseline', 'hanging')
-    .style('fill', '#C95E67')
-    .text('Red');
-  
-  redChannel.append('tspan')
-    .style('dominant-baseline', 'hanging')
-    .text(' channel');
+      .attr('x', nodeCoordinate[0][0].x + nodeLength / 2)
+      .attr('y', nodeCoordinate[0][0].y + nodeLength + 5)
+      .attr('class', 'annotation-text')
+      .style('dominant-baseline', 'hanging')
+      .style('text-anchor', 'middle');
 
-  inputAnnotation.append('text')
-    .attr('x', nodeCoordinate[0][1].x + nodeLength / 2)
-    .attr('y', nodeCoordinate[0][1].y + nodeLength + 5)
-    .attr('class', 'annotation-text')
-    .style('dominant-baseline', 'hanging')
-    .style('text-anchor', 'middle')
-    .style('fill', '#3DB665')
-    .text('Green');
+  redChannel.append('tspan')
+      .style('dominant-baseline', 'hanging')
+      .style('fill', '#C95E67')
+      .text('Red');
 
-  inputAnnotation.append('text')
-    .attr('x', nodeCoordinate[0][2].x + nodeLength / 2)
-    .attr('y', nodeCoordinate[0][2].y + nodeLength + 5)
-    .attr('class', 'annotation-text')
-    .style('dominant-baseline', 'hanging')
-    .style('text-anchor', 'middle')
-    .style('fill', '#3F7FBC')
-    .text('Blue');
+  redChannel.append('tspan')
+      .style('dominant-baseline', 'hanging')
+      .text(' channel');
+
+  if(overviewConfig.modeImg == 3){
+    inputAnnotation.append('text')
+        .attr('x', nodeCoordinate[0][1].x + nodeLength / 2)
+        .attr('y', nodeCoordinate[0][1].y + nodeLength + 5)
+        .attr('class', 'annotation-text')
+        .style('dominant-baseline', 'hanging')
+        .style('text-anchor', 'middle')
+        .style('fill', '#3DB665')
+        .text('Green');
+
+    inputAnnotation.append('text')
+        .attr('x', nodeCoordinate[0][2].x + nodeLength / 2)
+        .attr('y', nodeCoordinate[0][2].y + nodeLength + 5)
+        .attr('class', 'annotation-text')
+        .style('dominant-baseline', 'hanging')
+        .style('text-anchor', 'middle')
+        .style('fill', '#3F7FBC')
+        .text('Blue');
+  }
 }
 
 /**
@@ -733,26 +744,26 @@ export const updateCNN = () => {
     let layerGroup = svg.select(`g#cnn-layer-group-${l}`);
 
     let nodeGroups = layerGroup.selectAll('g.node-group')
-      .data(curLayer);
+        .data(curLayer);
 
     if (l < cnn.length - 1) {
       // Redraw the canvas and output node
       nodeGroups.transition('disappear')
-        .duration(300)
-        .ease(d3.easeCubicOut)
-        .style('opacity', 0)
-        .on('end', function() {
-          d3.select(this)
-            .select('image.node-image')
-            .each((d, i, g) => drawOutput(d, i, g, range));
-          d3.select(this).transition('appear')
-            .duration(700)
-            .ease(d3.easeCubicIn)
-            .style('opacity', 1);
-        });
+          .duration(300)
+          .ease(d3.easeCubicOut)
+          .style('opacity', 0)
+          .on('end', function() {
+            d3.select(this)
+                .select('image.node-image')
+                .each((d, i, g) => drawOutput(d, i, g, range));
+            d3.select(this).transition('appear')
+                .duration(700)
+                .ease(d3.easeCubicIn)
+                .style('opacity', 1);
+          });
     } else {
       nodeGroups.each(
-        (d, i, g) => drawOutputScore(d, i, g, outputRectScale)
+          (d, i, g) => drawOutputScore(d, i, g, outputRectScale)
       );
     }
   }
@@ -765,23 +776,23 @@ export const updateCNN = () => {
     let range2 = cnnLayerRanges.local[start + 2];
 
     let localLegendScale1 = d3.scaleLinear()
-      .range([0, 2 * nodeLength + hSpaceAroundGap])
-      .domain([-range1 / 2, range1 / 2]);
-    
+        .range([0, 2 * nodeLength + hSpaceAroundGap])
+        .domain([-range1 / 2, range1 / 2]);
+
     let localLegendScale2 = d3.scaleLinear()
-      .range([0, 3 * nodeLength + 2 * hSpaceAroundGap])
-      .domain([-range2 / 2, range2 / 2]);
+        .range([0, 3 * nodeLength + 2 * hSpaceAroundGap])
+        .domain([-range2 / 2, range2 / 2]);
 
     let localLegendAxis1 = d3.axisBottom()
-      .scale(localLegendScale1)
-      .tickFormat(d3.format('.2f'))
-      .tickValues([-range1 / 2, 0, range1 / 2]);
-    
+        .scale(localLegendScale1)
+        .tickFormat(d3.format('.2f'))
+        .tickValues([-range1 / 2, 0, range1 / 2]);
+
     let localLegendAxis2 = d3.axisBottom()
-      .scale(localLegendScale2)
-      .tickFormat(d3.format('.2f'))
-      .tickValues([-range2 / 2, 0, range2 / 2]);
-    
+        .scale(localLegendScale2)
+        .tickFormat(d3.format('.2f'))
+        .tickValues([-range2 / 2, 0, range2 / 2]);
+
     svg.select(`g#local-legend-${i}-1`).select('g').call(localLegendAxis1);
     svg.select(`g#local-legend-${i}-2`).select('g').call(localLegendAxis2);
   }
@@ -792,15 +803,15 @@ export const updateCNN = () => {
     let range = cnnLayerRanges.local[start];
 
     let moduleLegendScale = d3.scaleLinear()
-      .range([0, 5 * nodeLength + 3 * hSpaceAroundGap +
+        .range([0, 5 * nodeLength + 3 * hSpaceAroundGap +
         1 * hSpaceAroundGap * gapRatio - 1.2])
-      .domain([-range, range]);
+        .domain([-range, range]);
 
     let moduleLegendAxis = d3.axisBottom()
-      .scale(moduleLegendScale)
-      .tickFormat(d3.format('.2f'))
-      .tickValues([-range, -(range / 2), 0, range/2, range]);
-    
+        .scale(moduleLegendScale)
+        .tickFormat(d3.format('.2f'))
+        .tickValues([-range, -(range / 2), 0, range/2, range]);
+
     svg.select(`g#module-legend-${i}`).select('g').call(moduleLegendAxis);
   }
 
@@ -809,23 +820,23 @@ export const updateCNN = () => {
   let range = cnnLayerRanges.global[start];
 
   let globalLegendScale = d3.scaleLinear()
-    .range([0, 10 * nodeLength + 6 * hSpaceAroundGap +
+      .range([0, 10 * nodeLength + 6 * hSpaceAroundGap +
       3 * hSpaceAroundGap * gapRatio - 1.2])
-    .domain([-range, range]);
+      .domain([-range, range]);
 
   let globalLegendAxis = d3.axisBottom()
-    .scale(globalLegendScale)
-    .tickFormat(d3.format('.2f'))
-    .tickValues([-range, -(range / 2), 0, range/2, range]);
+      .scale(globalLegendScale)
+      .tickFormat(d3.format('.2f'))
+      .tickValues([-range, -(range / 2), 0, range/2, range]);
 
   svg.select(`g#global-legend`).select('g').call(globalLegendAxis);
 
   // Output legend
   let outputLegendAxis = d3.axisBottom()
-    .scale(outputRectScale)
-    .tickFormat(d3.format('.1f'))
-    .tickValues([0, cnnLayerRanges.output[1]]);
-  
+      .scale(outputRectScale)
+      .tickFormat(d3.format('.1f'))
+      .tickValues([0, cnnLayerRanges.output[1]]);
+
   svg.select('g#output-legend').select('g').call(outputLegendAxis);
 }
 
@@ -855,8 +866,8 @@ export const updateCNNLayerRanges = () => {
     if (curLayer[0].type === 'conv' || curLayer[0].type === 'fc') {
       aggregatedExtent = aggregatedExtent.map(Math.abs);
       // Plus 0.1 to offset the rounding error (avoid black color)
-      curRange = 2 * (0.1 + 
-        Math.round(Math.max(...aggregatedExtent) * 1000) / 1000);
+      curRange = 2 * (0.1 +
+          Math.round(Math.max(...aggregatedExtent) * 1000) / 1000);
     }
 
     if (curRange !== undefined){
@@ -882,7 +893,7 @@ export const updateCNNLayerRanges = () => {
 
   let cnnLayerRangesGlobal = [1];
   let maxRange = Math.max(...cnnLayerRangesLocal.slice(1,
-    cnnLayerRangesLocal.length - 1));
+      cnnLayerRangesLocal.length - 1));
   for (let i = 0; i < numLayers - 2; i++) {
     cnnLayerRangesGlobal.push(maxRange);
   }

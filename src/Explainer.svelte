@@ -1,17 +1,18 @@
 <script>
-  import Overview from './overview/Overview.svelte';
-  import { cnnStore } from './stores.js';
+    import Overview from './overview/Overview.svelte';
+    import {cnnStore} from './stores.js';
+    import Start from "./overview/Start.svelte";
 
-  // Enum to control the displaying view
-  const View = {
-    OVERVIEW: 'overview',
-    LAYERVIEW: 'layerview',
-    DETAILVIEW: 'detailview'
-  };
+    // Enum to control the displaying view
+    const View = {
+        OVERVIEW: 'overview',
+        LAYERVIEW: 'layerview',
+        DETAILVIEW: 'detailview'
+    };
 
-  let mainView = View.OVERVIEW;
+    let mainView = View.OVERVIEW;
 
-  /* Example to read loaded cnn in other components:
+    /* Example to read loaded cnn in other components:
   $: if ( $cnnStore.length != 0) {
     console.log($cnnStore);
   }
@@ -24,10 +25,16 @@
   width: 100%;
   padding: 0;
   margin: auto;
-  /* outline: 1px solid var(--g-dark-gray); */
+    position: absolute;
+    transition: left 2s;
+    left: 0px;
 }
 </style>
-
-<div id='explainer'>
-    <Overview />
-</div>
+<main>
+    <div id='start'>
+        <Start />
+    </div>
+    <div id='explainer'>
+        <Overview />
+    </div>
+</main>

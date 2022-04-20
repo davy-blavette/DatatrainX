@@ -12,13 +12,13 @@
     "svelte": "^3.31.0"
   },
   "dependencies": {
-    "@tensorflow/tfjs": "^1.4.0",
-    "sirv-cli": "^0.4.4"
+    "@tensorflow/tfjs": "^3.15.0",
+    "sirv-cli": "^2.0.2"
   },
   "scripts": {
     "build": "rollup -c",
     "dev": "rollup -c -w",
     "start": "sirv public --single",
-    "start:dev": "sirv public --dev --http2 --cert cert.pem --key key.pem --port 443"
+    "start:dev": "sirv public --dev --http2 --cert cert.pem --key privkey.pem --port 443 --host"
   }
 }

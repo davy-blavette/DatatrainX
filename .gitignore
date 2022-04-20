@@ -16,3 +16,6 @@
 /public/assets/data/test2
 /public/assets/data/ferme
 /tiny-vgg
+/dataset/fer2013/v3
+/dataset/fer2013/data/img
+/*.pem

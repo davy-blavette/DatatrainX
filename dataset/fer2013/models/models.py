@@ -3,11 +3,14 @@ from keras.layers import Dense, Dropout, Flatten, Input, Conv2D, MaxPooling2D, B
 from keras.losses import categorical_crossentropy
 from keras.regularizers import l2
 from keras.optimizers import Adam, SGD
-from keras.models import Sequential, Model
+from keras.models import Sequential, Model, load_model
 import keras.applications
 
 
 class Models:
+
+    def loadH5(self, path):
+        return load_model(path)
 
     def load(self, modelName, width, height, num_labels):
         base_model = getattr(keras.applications, modelName)(include_top=False,
@@ -25,44 +28,44 @@ class Models:
         return model
 
     # 65%
-    def cnn(self, width, height, num_features, num_labels):
+    def cnn(self, width, height, filters, num_labels):
         model = Sequential(name='CNN')
 
-        model.add(Conv2D(num_features, kernel_size=(3, 3), activation='relu', input_shape=(width, height, 1),
+        model.add(Conv2D(filters, kernel_size=(3, 3), activation='relu', input_shape=(width, height, 1),
                          data_format='channels_last', kernel_regularizer=l2(0.01)))
-        model.add(Conv2D(num_features, kernel_size=(3, 3), activation='relu', padding='same'))
+        model.add(Conv2D(filters, kernel_size=(3, 3), activation='relu', padding='same'))
         model.add(BatchNormalization())
         model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2)))
         model.add(Dropout(0.5))
 
-        model.add(Conv2D(2 * num_features, kernel_size=(3, 3), activation='relu', padding='same'))
+        model.add(Conv2D(2 * filters, kernel_size=(3, 3), activation='relu', padding='same'))
         model.add(BatchNormalization())
-        model.add(Conv2D(2 * num_features, kernel_size=(3, 3), activation='relu', padding='same'))
-        model.add(BatchNormalization())
-        model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2)))
-        model.add(Dropout(0.5))
-
-        model.add(Conv2D(2 * 2 * num_features, kernel_size=(3, 3), activation='relu', padding='same'))
-        model.add(BatchNormalization())
-        model.add(Conv2D(2 * 2 * num_features, kernel_size=(3, 3), activation='relu', padding='same'))
+        model.add(Conv2D(2 * filters, kernel_size=(3, 3), activation='relu', padding='same'))
         model.add(BatchNormalization())
         model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2)))
         model.add(Dropout(0.5))
 
-        model.add(Conv2D(2 * 2 * 2 * num_features, kernel_size=(3, 3), activation='relu', padding='same'))
+        model.add(Conv2D(2 * 2 * filters, kernel_size=(3, 3), activation='relu', padding='same'))
         model.add(BatchNormalization())
-        model.add(Conv2D(2 * 2 * 2 * num_features, kernel_size=(3, 3), activation='relu', padding='same'))
+        model.add(Conv2D(2 * 2 * filters, kernel_size=(3, 3), activation='relu', padding='same'))
+        model.add(BatchNormalization())
+        model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2)))
+        model.add(Dropout(0.5))
+
+        model.add(Conv2D(2 * 2 * 2 * filters, kernel_size=(3, 3), activation='relu', padding='same'))
+        model.add(BatchNormalization())
+        model.add(Conv2D(2 * 2 * 2 * filters, kernel_size=(3, 3), activation='relu', padding='same'))
         model.add(BatchNormalization())
         model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2)))
         model.add(Dropout(0.5))
 
         model.add(Flatten())
 
-        model.add(Dense(2 * 2 * 2 * num_features, activation='relu'))
+        model.add(Dense(2 * 2 * 2 * filters, activation='relu'))
         model.add(Dropout(0.4))
-        model.add(Dense(2 * 2 * num_features, activation='relu'))
+        model.add(Dense(2 * 2 * filters, activation='relu'))
         model.add(Dropout(0.4))
-        model.add(Dense(2 * num_features, activation='relu'))
+        model.add(Dense(2 * filters, activation='relu'))
         model.add(Dropout(0.5))
 
         model.add(Dense(num_labels, activation='softmax'))
@@ -73,32 +76,32 @@ class Models:
 
         return model
 
-    def dcnn(self, width, height, num_features, num_labels):
+    def dcnn(self, width, height, filters, num_labels):
         model = Sequential(name='DCNN')
 
-        model.add(Conv2D(filters=num_features, kernel_size=(5, 5), input_shape=(width, height, 1), activation='elu',
+        model.add(Conv2D(filters=filters, kernel_size=(5, 5), input_shape=(width, height, 1), activation='elu',
                          padding='same', kernel_initializer='he_normal', name='conv2d_1'))
         model.add(BatchNormalization(name='batchnorm_1'))
-        model.add(Conv2D(filters=num_features, kernel_size=(5, 5), activation='elu', padding='same',
+        model.add(Conv2D(filters=filters, kernel_size=(5, 5), activation='elu', padding='same',
                          kernel_initializer='he_normal', name='conv2d_2'))
         model.add(BatchNormalization(name='batchnorm_2'))
         model.add(MaxPooling2D(pool_size=(2, 2), name='maxpool2d_1'))
         model.add(Dropout(0.4, name='dropout_1'))
 
-        model.add(Conv2D(filters=2 * num_features, kernel_size=(3, 3), activation='elu', padding='same',
+        model.add(Conv2D(filters=2 * filters, kernel_size=(3, 3), activation='elu', padding='same',
                          kernel_initializer='he_normal', name='conv2d_3'))
         model.add(BatchNormalization(name='batchnorm_3'))
-        model.add(Conv2D(filters=2 * num_features, kernel_size=(3, 3), activation='elu', padding='same',
+        model.add(Conv2D(filters=2 * filters, kernel_size=(3, 3), activation='elu', padding='same',
                          kernel_initializer='he_normal', name='conv2d_4'))
         model.add(BatchNormalization(name='batchnorm_4'))
 
         model.add(MaxPooling2D(pool_size=(2, 2), name='maxpool2d_2'))
         model.add(Dropout(0.4, name='dropout_2'))
 
-        model.add(Conv2D(filters=2 * 2 * num_features, kernel_size=(3, 3), activation='elu', padding='same',
+        model.add(Conv2D(filters=2 * 2 * filters, kernel_size=(3, 3), activation='elu', padding='same',
                          kernel_initializer='he_normal', name='conv2d_5'))
         model.add(BatchNormalization(name='batchnorm_5'))
-        model.add(Conv2D(filters=2 * 2 * num_features, kernel_size=(3, 3), activation='elu', padding='same',
+        model.add(Conv2D(filters=2 * 2 * filters, kernel_size=(3, 3), activation='elu', padding='same',
                          kernel_initializer='he_normal', name='conv2d_6'))
         model.add(BatchNormalization(name='batchnorm_6'))
 
@@ -107,7 +110,7 @@ class Models:
 
         model.add(Flatten(name='flatten'))
 
-        model.add(Dense(2 * num_features, activation='elu', kernel_initializer='he_normal', name='dense_1'))
+        model.add(Dense(2 * filters, activation='elu', kernel_initializer='he_normal', name='dense_1'))
         model.add(BatchNormalization(name='batchnorm_7'))
 
         model.add(Dropout(0.6, name='dropout_4'))
@@ -120,7 +123,7 @@ class Models:
                       metrics=['accuracy'])
         return model
 
-    def ednn(self, width, height, num_features, num_labels):
+    def ednn(self, width, height, filters, num_labels):
         """
             EDNN model for FER by Deepak Kumar Jaina, Pourya Shamsolmoalib &
             Paramjit Sehdev, as it appears in "Extended deep neural network for
@@ -128,22 +131,22 @@ class Models:
             """
 
         x = Input(shape=(width, height, 1))
-        y = Conv2D(32, (5, 5), input_shape=(width, height, 1), strides=(2, 2),
+        y = Conv2D(filters, (5, 5), input_shape=(width, height, 1), strides=(2, 2),
                    data_format='channels_last')(x)
         y = MaxPooling2D(pool_size=(2, 2))(y)
-        y = Conv2D(64, (3, 3), strides=(1, 1))(y)
+        y = Conv2D(filters * 2, (3, 3), strides=(1, 1))(y)
         y = self.ResidualBlock(y)
-        y = Conv2D(128, (3, 3), strides=(1, 1), padding="same")(y)
+        y = Conv2D(filters * 4, (3, 3), strides=(1, 1), padding="same")(y)
         y = MaxPooling2D(pool_size=(2, 2))(y)
-        y = Conv2D(128, (3, 3), strides=(1, 1))(y)
+        y = Conv2D(filters * 4, (3, 3), strides=(1, 1))(y)
         y = self.ResidualBlock(y)
-        y = Conv2D(256, (3, 3), strides=(1, 1), padding="same")(y)
+        y = Conv2D(filters * 8, (3, 3), strides=(1, 1), padding="same")(y)
         y = MaxPooling2D(pool_size=(2, 2))(y)
-        y = Conv2D(512, (3, 3), strides=(1, 1), padding="same")(y)
+        y = Conv2D(filters * 16, (3, 3), strides=(1, 1), padding="same")(y)
         y = Flatten()(y)
-        y = Dense(1024, activation='relu')(y)
+        y = Dense(filters * 32, activation='relu')(y)
         y = Dropout(0.2)(y)
-        y = Dense(512, activation='relu')(y)
+        y = Dense(filters * 16, activation='relu')(y)
         y = Dropout(0.2)(y)
         y = Dense(num_labels, activation='softmax')(y)
 
@@ -171,42 +174,45 @@ class Models:
 
         return output
 
-    def deep(self, width, height, num_features, num_labels):
-
+    def deep(self, width, height, filters, num_labels):
         model = Sequential(name='DeepEmotion')
-        model.add(Conv2D(filters=num_features, kernel_size=(3, 3), input_shape=(width, height, 1), padding='same',
+        model.add(Conv2D(filters=filters, kernel_size=(3, 3), input_shape=(width, height, 1), padding='same',
                          kernel_initializer='he_normal'))
         model.add(BatchNormalization())
         model.add(Activation('relu'))
 
-        model.add(Conv2D(filters=num_features, kernel_size=(3, 3), padding='same', kernel_initializer="he_normal"))
+        model.add(Conv2D(filters=filters, kernel_size=(3, 3), padding='same', kernel_initializer="he_normal"))
         model.add(BatchNormalization())
         model.add(Activation('relu'))
         model.add(MaxPooling2D((2, 2)))
 
         model.add(Dropout(0.5))
-        model.add(Conv2D(filters=num_features*2, kernel_size=(3, 3), padding='same', kernel_initializer="he_normal"))
+        model.add(Conv2D(filters=filters * 2, kernel_size=(3, 3), padding='same', kernel_initializer="he_normal"))
         model.add(BatchNormalization())
         model.add(Activation('relu'))
-        model.add(Conv2D(filters=num_features*2, kernel_size=(3, 3), padding='same', kernel_initializer="he_normal"))
-        model.add(BatchNormalization())
-        model.add(Activation('relu'))
-        model.add(MaxPooling2D((2, 2)))
-
-        model.add(Dropout(0.5))
-        model.add(Conv2D(filters=num_features*2*2, kernel_size=(3, 3), padding='same', kernel_initializer="he_normal"))
-        model.add(BatchNormalization())
-        model.add(Activation('relu'))
-        model.add(Conv2D(filters=num_features*2*2, kernel_size=(3, 3), padding='same', kernel_initializer="he_normal"))
+        model.add(Conv2D(filters=filters * 2, kernel_size=(3, 3), padding='same', kernel_initializer="he_normal"))
         model.add(BatchNormalization())
         model.add(Activation('relu'))
         model.add(MaxPooling2D((2, 2)))
 
         model.add(Dropout(0.5))
-        model.add(Conv2D(filters=num_features*2*2*2, kernel_size=(3, 3), padding='same', kernel_initializer="he_normal"))
+        model.add(
+            Conv2D(filters=filters * 2 * 2, kernel_size=(3, 3), padding='same', kernel_initializer="he_normal"))
         model.add(BatchNormalization())
         model.add(Activation('relu'))
-        model.add(Conv2D(filters=num_features*2*2*2, kernel_size=(3, 3), padding='same', kernel_initializer="he_normal"))
+        model.add(
+            Conv2D(filters=filters * 2 * 2, kernel_size=(3, 3), padding='same', kernel_initializer="he_normal"))
+        model.add(BatchNormalization())
+        model.add(Activation('relu'))
+        model.add(MaxPooling2D((2, 2)))
+
+        model.add(Dropout(0.5))
+        model.add(Conv2D(filters=filters * 2 * 2 * 2, kernel_size=(3, 3), padding='same',
+                         kernel_initializer="he_normal"))
+        model.add(BatchNormalization())
+        model.add(Activation('relu'))
+        model.add(Conv2D(filters=filters * 2 * 2 * 2, kernel_size=(3, 3), padding='same',
+                         kernel_initializer="he_normal"))
         model.add(BatchNormalization())
         model.add(Activation('relu'))
         model.add(MaxPooling2D((2, 2)))
@@ -214,13 +220,46 @@ class Models:
         model.add(Flatten())
 
         model.add(Dropout(0.5))
-        model.add(Dense(num_features*2*2*2*2))
+        model.add(Dense(filters * 2 * 2 * 2 * 2))
         model.add(BatchNormalization())
         model.add(Activation('relu'))
 
         model.add(Dense(num_labels, activation='softmax'))
 
         # model.compile(optimizer=SGD(learning_rate=0.1, momentum=0.9, decay=0.0001))
+        model.compile(loss=categorical_crossentropy,
+                      optimizer=Adam(learning_rate=0.001, beta_1=0.9, beta_2=0.999, epsilon=1e-07),
+                      metrics=['accuracy'])
+
+        return model
+
+    # for CNN Explainer
+    def tinyVGG(self, width, height, filters, num_labels):
+        """
+        Tiny VGG structure is adapted from http://cs231n.stanford.edu:
+            > This particular network is classifying CIFAR-10 images into one of 10
+            > classes and was trained with ConvNetJS. Its exact architecture is
+            > [conv-relu-conv-relu-pool]x3-fc-softmax, for a total of 17 layers and
+            > 7000 parameters. It uses 3x3 convolutions and 2x2 pooling regions.
+        """
+        model = Sequential(name='tinyVGG')
+
+        model.add(Conv2D(filters=filters, kernel_size=(3, 3), input_shape=(width, height, 1), padding='same',
+                         kernel_initializer='he_normal', name='conv_1_1'))
+        model.add(Activation('relu', name='relu_1_1'))
+        model.add(Conv2D(filters=filters, kernel_size=(3, 3), padding='same', kernel_initializer="he_normal",
+                         name='conv_1_2'))
+        model.add(Activation('relu', name='relu_1_2'))
+        model.add(MaxPooling2D((2, 2), name='max_pool_1'))
+        model.add(Conv2D(filters=filters, kernel_size=(3, 3), padding='same', kernel_initializer="he_normal",
+                         name='conv_2_1'))
+        model.add(Activation('relu', name='relu_2_1'))
+        model.add(Conv2D(filters=filters, kernel_size=(3, 3), padding='same', kernel_initializer="he_normal",
+                         name='conv_2_2'))
+        model.add(Activation('relu', name='relu_2_2'))
+        model.add(MaxPooling2D((2, 2), name='max_pool_2'))
+        model.add(Flatten())
+        model.add(Dense(num_labels, activation='softmax', name='output'))
         model.compile(loss=categorical_crossentropy,
                       optimizer=Adam(learning_rate=0.001, beta_1=0.9, beta_2=0.999, epsilon=1e-07),
                       metrics=['accuracy'])
