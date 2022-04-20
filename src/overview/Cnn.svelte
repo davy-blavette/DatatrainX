@@ -1312,7 +1312,6 @@
   svg {
     margin: 0 auto;
     min-height: 490px;
-    max-height: 700px;
     height: calc(100vh - 100px);
     width: 100vw;
   }
@@ -1509,6 +1508,7 @@
         </div>
       {/each}
 
+      {#if overviewConfig.modeImg == 3}
       <!-- The plus button -->
         <div class="image-container"
           class:inactive={selectedImage !== 'custom'}
@@ -1529,7 +1529,7 @@
           </span>
 
         </div>
-
+      {/if}
       <button class="button is-very-small is-link is-light"
         id="hover-label"
         style="opacity:{hoverInfo.show ? 1 : 0}">
@@ -1591,8 +1591,6 @@
     <svg id="cnn-svg"></svg>
   </div>
 </div>
-
-<Article/>
 
 <div id='detailview'>
   {#if selectedNode.data && selectedNode.data.type === 'conv' && selectedNodeIndex != -1}

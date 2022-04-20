@@ -1,12 +1,12 @@
 <script>
-	import Explainer from './Explainer.svelte';
+	import Datatrainx from './Datatrainx.svelte';
 	import Header from './Header.svelte';
+	import Footer from "./Footer.svelte";
 </script>
 
 <style>
 </style>
 
-<div id="app-page">
-	<Header />
-	<Explainer />
-</div>
+<Header />
+<Datatrainx />
+<Footer />

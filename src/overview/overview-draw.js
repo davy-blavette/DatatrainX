@@ -697,10 +697,17 @@ export const drawCNN = (width, height, cnnGroup, nodeMouseOverHandler,
       .style('dominant-baseline', 'hanging')
       .style('text-anchor', 'middle');
 
+  let color1 = "Red";
+
+  if(overviewConfig.modeImg < 3){
+
+    color1 = "Gray";
+
+  }
   redChannel.append('tspan')
       .style('dominant-baseline', 'hanging')
       .style('fill', '#C95E67')
-      .text('Red');
+      .text(color1);
 
   redChannel.append('tspan')
       .style('dominant-baseline', 'hanging')

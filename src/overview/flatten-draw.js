@@ -203,12 +203,12 @@ const logitCircleMouseLeaveHandler = (i) => {
     .style('stroke', '#E5E5E5');
 }
 
-// This function is binded to the detail view in Overview.svelte
+// This function is binded to the detail view in Cnn.svelte
 export const softmaxDetailViewMouseOverHandler = (event) => {
   logitCircleMouseOverHandler(event.detail.curI);
 }
 
-// This function is binded to the detail view in Overview.svelte
+// This function is binded to the detail view in Cnn.svelte
 export const softmaxDetailViewMouseLeaveHandler = (event) => {
   logitCircleMouseLeaveHandler(event.detail.curI);
 }
