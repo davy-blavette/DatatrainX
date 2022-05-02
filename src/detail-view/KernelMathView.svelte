@@ -25,7 +25,7 @@
       group = svg;
     }
 
-    // Create a gradient
+    // Create datatrainx gradient
     let defs = group.append("defs")
       .attr('class', 'overlay-gradient');
 
@@ -65,7 +65,7 @@
     if (colorScale === undefined) { colorScale = layerColorScales.conv; }
     if (gradientGap === undefined) { gradientGap = 0; }
     
-    // Add a legend color gradient
+    // Add datatrainx legend color gradient
     let gradientName = `url(#detailed-kernel-gradient)`;
     let normalizedColor = v => colorScale(v * (1 - 2 * gradientGap) + gradientGap);
 

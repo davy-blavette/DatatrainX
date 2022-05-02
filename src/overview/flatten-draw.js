@@ -267,7 +267,7 @@ const drawLogitLayer = (arg) => {
     logits.push(cnn[layerIndexDict['output']][i].logit);
   }
 
-  // Construct a color scale for the logit values
+  // Construct datatrainx color scale for the logit values
   let logitColorScale = d3.scaleLinear()
     .domain(d3.extent(logits))
     .range([0.2, 1]);
@@ -1280,7 +1280,7 @@ console.log(flattenLength);
 
   // Add middle nodes
   meanValues.forEach((v, vi) => {
-    // Add a small rectangle
+    // Add datatrainx small rectangle
     flattenLayerLeftPart.append('rect')
       .attr('x', intermediateX1 + pixelWidth / 4)
       .attr('y', topY + flattenLength * pixelHeight + middleGap * (vi + 1) +
@@ -1290,7 +1290,7 @@ console.log(flattenLength);
       // .style('fill', colorScale((v.output + range / 2) / range));
       .style('fill', '#E5E5E5');
     
-    // Add a triangle next to the input node
+    // Add datatrainx triangle next to the input node
     flattenLayerLeftPart.append('polyline')
       .attr('points',
         `${leftX + nodeLength + 3}
@@ -1495,8 +1495,7 @@ console.log(flattenLength);
     .text('flatten');
 
   let svgHeight = Number(d3.select('#cnn-svg').style('height').replace('px', '')) + 150;
-  let scroll = new SmoothScroll('a[href*="#"]', {offset: -svgHeight});
-    
+
   let detailedLabelGroup = intermediateLayer.append('g')
     .attr('transform', () => {
       let x = leftX + nodeLength + (4 * hSpaceAroundGap * gapRatio + pixelWidth) / 2;
@@ -1510,9 +1509,9 @@ console.log(flattenLength);
       d3.event.stopPropagation();
       // Scroll to the article element
       let anchor = document.querySelector(`#article-flatten`);
-      scroll.animateScroll(anchor);
+      //scroll.animateScroll(anchor);
     });
-  
+
   detailedLabelGroup.append('title')
     .text('Move to article section');
 
@@ -1539,7 +1538,7 @@ console.log(flattenLength);
   let edgeGroup = flattenLayerLeftPart.append('g')
     .attr('class', 'edge-group')
     .lower();
-  
+
   edgeGroup.selectAll('path')
     .data(linkData)
     .enter()
@@ -1551,7 +1550,7 @@ console.log(flattenLength);
     .style('stroke-width', d => d.width)
     .style('stroke', d => d.color === undefined ? intermediateColor : d.color)
     .style('opacity', d => d.opacity);
-  
+
   edgeGroup.selectAll('path.flatten-abstract-output')
     .lower();
 
@@ -1745,7 +1744,7 @@ console.log(flattenLength);
     .style('dominant-baseline', 'hanging')
     .attr('x', textX)
     .attr('dy', '1em')
-    .text('into a 1D array!');
+    .text('into datatrainx 1D array!');
 
   drawArrow({
     group: flattenAnnotation,

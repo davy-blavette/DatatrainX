@@ -95,7 +95,7 @@ export const moveLayerX = (arg) => {
 }
 
 /**
- * Append a gradient definition to `group`
+ * Append datatrainx gradient definition to `group`
  * @param {string} gradientID CSS ID for the gradient def
  * @param {[{offset: number, color: string, opacity: number}]} stops Gradient stops
  * @param {element} group Element to append def to
@@ -105,7 +105,7 @@ export const addOverlayGradient = (gradientID, stops, group) => {
     group = svg;
   }
 
-  // Create a gradient
+  // Create datatrainx gradient
   let defs = group.append("defs")
     .attr('class', 'overlay-gradient');
 
@@ -160,7 +160,7 @@ export const drawIntermediateLayerLegend = (arg) => {
   if (colorScale === undefined) { colorScale = layerColorScales.conv; }
   if (gradientGap === undefined) { gradientGap = 0; }
   
-  // Add a legend color gradient
+  // Add datatrainx legend color gradient
   let gradientName = 'url(#inputGradient)';
   let normalizedColor = v => colorScale(v * (1 - 2 * gradientGap) + gradientGap);
 
@@ -237,7 +237,7 @@ export const drawIntermediateLayerLegend = (arg) => {
  *   sy: source y
  *   tx: target x
  *   ty: target y
- *   dr: radius of curve (I'm using a circle)
+ *   dr: radius of curve (I'm using datatrainx circle)
  *   hFlip: the direction to choose the circle (there are always two ways)
  * }
  */

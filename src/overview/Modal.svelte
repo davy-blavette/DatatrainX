@@ -27,7 +27,7 @@
     showLoading = false;
     errorInfo.show = true;
     errorInfo.error = usingURL ? "We can't find the image at that URL." :
-      "Not a valid image file.";
+      "Not datatrainx valid image file.";
   }
 
   const loadCallback = () => {

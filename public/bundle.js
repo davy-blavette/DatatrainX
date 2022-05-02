@@ -1,14790 +1,1645 @@
-var app = (function () {
-    'use strict';
-
-    function noop() { }
-    function add_location(element, file, line, column, char) {
-        element.__svelte_meta = {
-            loc: { file, line, column, char }
-        };
-    }
-    function run(fn) {
-        return fn();
-    }
-    function blank_object() {
-        return Object.create(null);
-    }
-    function run_all(fns) {
-        fns.forEach(run);
-    }
-    function is_function(thing) {
-        return typeof thing === 'function';
-    }
-    function safe_not_equal(a, b) {
-        return a != a ? b == b : a !== b || ((a && typeof a === 'object') || typeof a === 'function');
-    }
-    let src_url_equal_anchor;
-    function src_url_equal(element_src, url) {
-        if (!src_url_equal_anchor) {
-            src_url_equal_anchor = document.createElement('a');
-        }
-        src_url_equal_anchor.href = url;
-        return element_src === src_url_equal_anchor.href;
-    }
-    function is_empty(obj) {
-        return Object.keys(obj).length === 0;
-    }
-
-    const is_client = typeof window !== 'undefined';
-    let now = is_client
-        ? () => window.performance.now()
-        : () => Date.now();
-    let raf = is_client ? cb => requestAnimationFrame(cb) : noop;
-
-    const tasks = new Set();
-    function run_tasks(now) {
-        tasks.forEach(task => {
-            if (!task.c(now)) {
-                tasks.delete(task);
-                task.f();
-            }
-        });
-        if (tasks.size !== 0)
-            raf(run_tasks);
-    }
-    /**
-     * Creates a new task that runs on each raf frame
-     * until it returns a falsy value or is aborted
-     */
-    function loop(callback) {
-        let task;
-        if (tasks.size === 0)
-            raf(run_tasks);
-        return {
-            promise: new Promise(fulfill => {
-                tasks.add(task = { c: callback, f: fulfill });
-            }),
-            abort() {
-                tasks.delete(task);
-            }
-        };
-    }
-    function append(target, node) {
-        target.appendChild(node);
-    }
-    function insert(target, node, anchor) {
-        target.insertBefore(node, anchor || null);
-    }
-    function detach(node) {
-        node.parentNode.removeChild(node);
-    }
-    function destroy_each(iterations, detaching) {
-        for (let i = 0; i < iterations.length; i += 1) {
-            if (iterations[i])
-                iterations[i].d(detaching);
-        }
-    }
-    function element(name) {
-        return document.createElement(name);
-    }
-    function svg_element(name) {
-        return document.createElementNS('http://www.w3.org/2000/svg', name);
-    }
-    function text(data) {
-        return document.createTextNode(data);
-    }
-    function space() {
-        return text(' ');
-    }
-    function empty() {
-        return text('');
-    }
-    function listen(node, event, handler, options) {
-        node.addEventListener(event, handler, options);
-        return () => node.removeEventListener(event, handler, options);
-    }
-    function attr(node, attribute, value) {
-        if (value == null)
-            node.removeAttribute(attribute);
-        else if (node.getAttribute(attribute) !== value)
-            node.setAttribute(attribute, value);
-    }
-    function children(element) {
-        return Array.from(element.childNodes);
-    }
-    function set_input_value(input, value) {
-        input.value = value == null ? '' : value;
-    }
-    function set_style(node, key, value, important) {
-        if (value === null) {
-            node.style.removeProperty(key);
-        }
-        else {
-            node.style.setProperty(key, value, important ? 'important' : '');
-        }
-    }
-    function select_option(select, value) {
-        for (let i = 0; i < select.options.length; i += 1) {
-            const option = select.options[i];
-            if (option.__value === value) {
-                option.selected = true;
-                return;
-            }
-        }
-        select.selectedIndex = -1; // no option should be selected
-    }
-    function select_value(select) {
-        const selected_option = select.querySelector(':checked') || select.options[0];
-        return selected_option && selected_option.__value;
-    }
-    function toggle_class(element, name, toggle) {
-        element.classList[toggle ? 'add' : 'remove'](name);
-    }
-    function custom_event(type, detail, bubbles = false) {
-        const e = document.createEvent('CustomEvent');
-        e.initCustomEvent(type, bubbles, false, detail);
-        return e;
-    }
-
-    let current_component;
-    function set_current_component(component) {
-        current_component = component;
-    }
-    function get_current_component() {
-        if (!current_component)
-            throw new Error('Function called outside component initialization');
-        return current_component;
-    }
-    function beforeUpdate(fn) {
-        get_current_component().$$.before_update.push(fn);
-    }
-    function onMount(fn) {
-        get_current_component().$$.on_mount.push(fn);
-    }
-    function afterUpdate(fn) {
-        get_current_component().$$.after_update.push(fn);
-    }
-    function onDestroy(fn) {
-        get_current_component().$$.on_destroy.push(fn);
-    }
-    function createEventDispatcher() {
-        const component = get_current_component();
-        return (type, detail) => {
-            const callbacks = component.$$.callbacks[type];
-            if (callbacks) {
-                // TODO are there situations where events could be dispatched
-                // in a server (non-DOM) environment?
-                const event = custom_event(type, detail);
-                callbacks.slice().forEach(fn => {
-                    fn.call(component, event);
-                });
-            }
-        };
-    }
-
-    const dirty_components = [];
-    const binding_callbacks = [];
-    const render_callbacks = [];
-    const flush_callbacks = [];
-    const resolved_promise = Promise.resolve();
-    let update_scheduled = false;
-    function schedule_update() {
-        if (!update_scheduled) {
-            update_scheduled = true;
-            resolved_promise.then(flush);
-        }
-    }
-    function add_render_callback(fn) {
-        render_callbacks.push(fn);
-    }
-    // flush() calls callbacks in this order:
-    // 1. All beforeUpdate callbacks, in order: parents before children
-    // 2. All bind:this callbacks, in reverse order: children before parents.
-    // 3. All afterUpdate callbacks, in order: parents before children. EXCEPT
-    //    for afterUpdates called during the initial onMount, which are called in
-    //    reverse order: children before parents.
-    // Since callbacks might update component values, which could trigger another
-    // call to flush(), the following steps guard against this:
-    // 1. During beforeUpdate, any updated components will be added to the
-    //    dirty_components array and will cause a reentrant call to flush(). Because
-    //    the flush index is kept outside the function, the reentrant call will pick
-    //    up where the earlier call left off and go through all dirty components. The
-    //    current_component value is saved and restored so that the reentrant call will
-    //    not interfere with the "parent" flush() call.
-    // 2. bind:this callbacks cannot trigger new flush() calls.
-    // 3. During afterUpdate, any updated components will NOT have their afterUpdate
-    //    callback called a second time; the seen_callbacks set, outside the flush()
-    //    function, guarantees this behavior.
-    const seen_callbacks = new Set();
-    let flushidx = 0; // Do *not* move this inside the flush() function
-    function flush() {
-        const saved_component = current_component;
-        do {
-            // first, call beforeUpdate functions
-            // and update components
-            while (flushidx < dirty_components.length) {
-                const component = dirty_components[flushidx];
-                flushidx++;
-                set_current_component(component);
-                update(component.$$);
-            }
-            set_current_component(null);
-            dirty_components.length = 0;
-            flushidx = 0;
-            while (binding_callbacks.length)
-                binding_callbacks.pop()();
-            // then, once components are updated, call
-            // afterUpdate functions. This may cause
-            // subsequent updates...
-            for (let i = 0; i < render_callbacks.length; i += 1) {
-                const callback = render_callbacks[i];
-                if (!seen_callbacks.has(callback)) {
-                    // ...so guard against infinite loops
-                    seen_callbacks.add(callback);
-                    callback();
-                }
-            }
-            render_callbacks.length = 0;
-        } while (dirty_components.length);
-        while (flush_callbacks.length) {
-            flush_callbacks.pop()();
-        }
-        update_scheduled = false;
-        seen_callbacks.clear();
-        set_current_component(saved_component);
-    }
-    function update($$) {
-        if ($$.fragment !== null) {
-            $$.update();
-            run_all($$.before_update);
-            const dirty = $$.dirty;
-            $$.dirty = [-1];
-            $$.fragment && $$.fragment.p($$.ctx, dirty);
-            $$.after_update.forEach(add_render_callback);
-        }
-    }
-    const outroing = new Set();
-    let outros;
-    function group_outros() {
-        outros = {
-            r: 0,
-            c: [],
-            p: outros // parent group
-        };
-    }
-    function check_outros() {
-        if (!outros.r) {
-            run_all(outros.c);
-        }
-        outros = outros.p;
-    }
-    function transition_in(block, local) {
-        if (block && block.i) {
-            outroing.delete(block);
-            block.i(local);
-        }
-    }
-    function transition_out(block, local, detach, callback) {
-        if (block && block.o) {
-            if (outroing.has(block))
-                return;
-            outroing.add(block);
-            outros.c.push(() => {
-                outroing.delete(block);
-                if (callback) {
-                    if (detach)
-                        block.d(1);
-                    callback();
-                }
-            });
-            block.o(local);
-        }
-    }
-
-    const globals = (typeof window !== 'undefined'
-        ? window
-        : typeof globalThis !== 'undefined'
-            ? globalThis
-            : global);
-    function create_component(block) {
-        block && block.c();
-    }
-    function mount_component(component, target, anchor, customElement) {
-        const { fragment, on_mount, on_destroy, after_update } = component.$$;
-        fragment && fragment.m(target, anchor);
-        if (!customElement) {
-            // onMount happens before the initial afterUpdate
-            add_render_callback(() => {
-                const new_on_destroy = on_mount.map(run).filter(is_function);
-                if (on_destroy) {
-                    on_destroy.push(...new_on_destroy);
-                }
-                else {
-                    // Edge case - component was destroyed immediately,
-                    // most likely as a result of a binding initialising
-                    run_all(new_on_destroy);
-                }
-                component.$$.on_mount = [];
-            });
-        }
-        after_update.forEach(add_render_callback);
-    }
-    function destroy_component(component, detaching) {
-        const $$ = component.$$;
-        if ($$.fragment !== null) {
-            run_all($$.on_destroy);
-            $$.fragment && $$.fragment.d(detaching);
-            // TODO null out other refs, including component.$$ (but need to
-            // preserve final state?)
-            $$.on_destroy = $$.fragment = null;
-            $$.ctx = [];
-        }
-    }
-    function make_dirty(component, i) {
-        if (component.$$.dirty[0] === -1) {
-            dirty_components.push(component);
-            schedule_update();
-            component.$$.dirty.fill(0);
-        }
-        component.$$.dirty[(i / 31) | 0] |= (1 << (i % 31));
-    }
-    function init(component, options, instance, create_fragment, not_equal, props, append_styles, dirty = [-1]) {
-        const parent_component = current_component;
-        set_current_component(component);
-        const $$ = component.$$ = {
-            fragment: null,
-            ctx: null,
-            // state
-            props,
-            update: noop,
-            not_equal,
-            bound: blank_object(),
-            // lifecycle
-            on_mount: [],
-            on_destroy: [],
-            on_disconnect: [],
-            before_update: [],
-            after_update: [],
-            context: new Map(options.context || (parent_component ? parent_component.$$.context : [])),
-            // everything else
-            callbacks: blank_object(),
-            dirty,
-            skip_bound: false,
-            root: options.target || parent_component.$$.root
-        };
-        append_styles && append_styles($$.root);
-        let ready = false;
-        $$.ctx = instance
-            ? instance(component, options.props || {}, (i, ret, ...rest) => {
-                const value = rest.length ? rest[0] : ret;
-                if ($$.ctx && not_equal($$.ctx[i], $$.ctx[i] = value)) {
-                    if (!$$.skip_bound && $$.bound[i])
-                        $$.bound[i](value);
-                    if (ready)
-                        make_dirty(component, i);
-                }
-                return ret;
-            })
-            : [];
-        $$.update();
-        ready = true;
-        run_all($$.before_update);
-        // `false` as a special case of no DOM component
-        $$.fragment = create_fragment ? create_fragment($$.ctx) : false;
-        if (options.target) {
-            if (options.hydrate) {
-                const nodes = children(options.target);
-                // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-                $$.fragment && $$.fragment.l(nodes);
-                nodes.forEach(detach);
-            }
-            else {
-                // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-                $$.fragment && $$.fragment.c();
-            }
-            if (options.intro)
-                transition_in(component.$$.fragment);
-            mount_component(component, options.target, options.anchor, options.customElement);
-            flush();
-        }
-        set_current_component(parent_component);
-    }
-    /**
-     * Base class for Svelte components. Used when dev=false.
-     */
-    class SvelteComponent {
-        $destroy() {
-            destroy_component(this, 1);
-            this.$destroy = noop;
-        }
-        $on(type, callback) {
-            const callbacks = (this.$$.callbacks[type] || (this.$$.callbacks[type] = []));
-            callbacks.push(callback);
-            return () => {
-                const index = callbacks.indexOf(callback);
-                if (index !== -1)
-                    callbacks.splice(index, 1);
-            };
-        }
-        $set($$props) {
-            if (this.$$set && !is_empty($$props)) {
-                this.$$.skip_bound = true;
-                this.$$set($$props);
-                this.$$.skip_bound = false;
-            }
-        }
-    }
-
-    function dispatch_dev(type, detail) {
-        document.dispatchEvent(custom_event(type, Object.assign({ version: '3.47.0' }, detail), true));
-    }
-    function append_dev(target, node) {
-        dispatch_dev('SvelteDOMInsert', { target, node });
-        append(target, node);
-    }
-    function insert_dev(target, node, anchor) {
-        dispatch_dev('SvelteDOMInsert', { target, node, anchor });
-        insert(target, node, anchor);
-    }
-    function detach_dev(node) {
-        dispatch_dev('SvelteDOMRemove', { node });
-        detach(node);
-    }
-    function listen_dev(node, event, handler, options, has_prevent_default, has_stop_propagation) {
-        const modifiers = options === true ? ['capture'] : options ? Array.from(Object.keys(options)) : [];
-        if (has_prevent_default)
-            modifiers.push('preventDefault');
-        if (has_stop_propagation)
-            modifiers.push('stopPropagation');
-        dispatch_dev('SvelteDOMAddEventListener', { node, event, handler, modifiers });
-        const dispose = listen(node, event, handler, options);
-        return () => {
-            dispatch_dev('SvelteDOMRemoveEventListener', { node, event, handler, modifiers });
-            dispose();
-        };
-    }
-    function attr_dev(node, attribute, value) {
-        attr(node, attribute, value);
-        if (value == null)
-            dispatch_dev('SvelteDOMRemoveAttribute', { node, attribute });
-        else
-            dispatch_dev('SvelteDOMSetAttribute', { node, attribute, value });
-    }
-    function prop_dev(node, property, value) {
-        node[property] = value;
-        dispatch_dev('SvelteDOMSetProperty', { node, property, value });
-    }
-    function set_data_dev(text, data) {
-        data = '' + data;
-        if (text.wholeText === data)
-            return;
-        dispatch_dev('SvelteDOMSetData', { node: text, data });
-        text.data = data;
-    }
-    function validate_each_argument(arg) {
-        if (typeof arg !== 'string' && !(arg && typeof arg === 'object' && 'length' in arg)) {
-            let msg = '{#each} only iterates over array-like objects.';
-            if (typeof Symbol === 'function' && arg && Symbol.iterator in arg) {
-                msg += ' You can use a spread to convert this iterable into an array.';
-            }
-            throw new Error(msg);
-        }
-    }
-    function validate_slots(name, slot, keys) {
-        for (const slot_key of Object.keys(slot)) {
-            if (!~keys.indexOf(slot_key)) {
-                console.warn(`<${name}> received an unexpected slot "${slot_key}".`);
-            }
-        }
-    }
-    /**
-     * Base class for Svelte components with some minor dev-enhancements. Used when dev=true.
-     */
-    class SvelteComponentDev extends SvelteComponent {
-        constructor(options) {
-            if (!options || (!options.target && !options.$$inline)) {
-                throw new Error("'target' is a required option");
-            }
-            super();
-        }
-        $destroy() {
-            super.$destroy();
-            this.$destroy = () => {
-                console.warn('Component was already destroyed'); // eslint-disable-line no-console
-            };
-        }
-        $capture_state() { }
-        $inject_state() { }
-    }
-
-    const subscriber_queue = [];
-    /**
-     * Create a `Writable` store that allows both updating and reading by subscription.
-     * @param {*=}value initial value
-     * @param {StartStopNotifier=}start start and stop notifications for subscriptions
-     */
-    function writable(value, start = noop) {
-        let stop;
-        const subscribers = new Set();
-        function set(new_value) {
-            if (safe_not_equal(value, new_value)) {
-                value = new_value;
-                if (stop) { // store is ready
-                    const run_queue = !subscriber_queue.length;
-                    for (const subscriber of subscribers) {
-                        subscriber[1]();
-                        subscriber_queue.push(subscriber, value);
-                    }
-                    if (run_queue) {
-                        for (let i = 0; i < subscriber_queue.length; i += 2) {
-                            subscriber_queue[i][0](subscriber_queue[i + 1]);
-                        }
-                        subscriber_queue.length = 0;
-                    }
-                }
-            }
-        }
-        function update(fn) {
-            set(fn(value));
-        }
-        function subscribe(run, invalidate = noop) {
-            const subscriber = [run, invalidate];
-            subscribers.add(subscriber);
-            if (subscribers.size === 1) {
-                stop = start(set) || noop;
-            }
-            run(value);
-            return () => {
-                subscribers.delete(subscriber);
-                if (subscribers.size === 0) {
-                    stop();
-                    stop = null;
-                }
-            };
-        }
-        return { set, update, subscribe };
-    }
-
-    const cnnStore = writable([]);
-    const svgStore = writable(undefined);
-
-    const vSpaceAroundGapStore = writable(undefined);
-    const hSpaceAroundGapStore = writable(undefined);
-
-    const nodeCoordinateStore = writable([]);
-    const selectedScaleLevelStore = writable(undefined);
-
-    const cnnLayerRangesStore = writable({});
-    const cnnLayerMinMaxStore = writable([]);
-
-    const needRedrawStore = writable([undefined, undefined]);
-
-    const detailedModeStore = writable(true);
-
-    const shouldIntermediateAnimateStore = writable(false);
-
-    const isInSoftmaxStore = writable(false);
-    const softmaxDetailViewStore = writable({});
-    const allowsSoftmaxAnimationStore = writable(false);
-
-    const hoverInfoStore = writable({});
-
-    const modalStore = writable({});
-
-    const intermediateLayerPositionStore = writable({});
-
-    const leftStartStore = writable(0);
-
-    // Enum of node types
-
-    // Helper functions
-
-    /**
-     * Create a 2D array (matrix) with given size and default value.
-     * 
-     * @param {int} height Height (number of rows) for the matrix
-     * @param {int} width Width (number of columns) for the matrix
-     * @param {int} fill Default value to fill this matrix
-     */
-    const init2DArray = (height, width, fill) => {
-      let array = [];
-      // Itereate through rows
-      for (let r = 0; r < height; r++) {
-        let row = new Array(width).fill(fill);
-        array.push(row);
-      }
-      return array;
-    };
-
-    /**
-     * Dot product of two matrices.
-     * @param {[[number]]} mat1 Matrix 1
-     * @param {[[number]]} mat2 Matrix 2
-     */
-    const matrixDot = (mat1, mat2) => {
-      console.assert(mat1.length === mat2.length, 'Dimension not matching');
-      console.assert(mat1[0].length === mat2[0].length, 'Dimension not matching');
-
-      let result = 0;
-      for (let i = 0; i < mat1.length; i++){
-        for (let j = 0; j < mat1[0].length; j++){
-          result += mat1[i][j] * mat2[i][j];
-        }
-      }
-      
-      return result;
-    };
-
-    /**
-     * 2D slice on a matrix.
-     * @param {[[number]]} mat Matrix
-     * @param {int} xs First dimension (row) starting index
-     * @param {int} xe First dimension (row) ending index
-     * @param {int} ys Second dimension (column) starting index
-     * @param {int} ye Second dimension (column) ending index
-     */
-    const matrixSlice = (mat, xs, xe, ys, ye) => {
-      return mat.slice(xs, xe).map(s => s.slice(ys, ye));
-    };
-
-    /**
-     * Compute the maximum of a matrix.
-     * @param {[[number]]} mat Matrix
-     */
-    const matrixMax = (mat) => {
-      let curMax = -Infinity;
-      for (let i = 0; i < mat.length; i++) {
-        for (let j = 0; j < mat[0].length; j++) {
-          if (mat[i][j] > curMax) {
-            curMax = mat[i][j];
-          }
-        }
-      }
-      return curMax;
-    };
-
-    /**
-     * Compute convolutions of one kernel on one matrix (one slice of a tensor).
-     * @param {[[number]]} input Input, square matrix
-     * @param {[[number]]} kernel Kernel weights, square matrix
-     * @param {int} stride Stride size
-     * @param {int} padding Padding size
-     */
-    const singleConv = (input, kernel, stride=1, padding=0) => {
-      // TODO: implement padding
-
-      // Only support square input and kernel
-      console.assert(input.length === input[0].length,
-         'Conv input is not square');
-      console.assert(kernel.length === kernel[0].length,
-        'Conv kernel is not square');
-
-      let stepSize = (input.length - kernel.length) / stride + 1;
-
-      let result = init2DArray(stepSize, stepSize, 0);
-
-      // Window sliding
-      for (let r = 0; r < stepSize; r++) {
-        for (let c = 0; c < stepSize; c++) {
-          let curWindow = matrixSlice(input, r * stride, r * stride + kernel.length,
-            c * stride, c * stride + kernel.length);
-          let dot = matrixDot(curWindow, kernel);
-          result[r][c] = dot;
-        }
-      }
-      return result;
-    };
-
-    /**
-     * Max pool one matrix.
-     * @param {[[number]]} mat Matrix
-     * @param {int} kernelWidth Pooling kernel length (only supports 2)
-     * @param {int} stride Pooling sliding stride (only supports 2)
-     * @param {string} padding Pading method when encountering odd number mat,
-     * currently this function only supports 'VALID'
-     */
-    const singleMaxPooling = (mat, kernelWidth=2, stride=2, padding='VALID') => {
-      console.assert(kernelWidth === 2, 'Only supports kernen = [2,2]');
-      console.assert(stride === 2, 'Only supports stride = 2');
-      console.assert(padding === 'VALID', 'Only support valid padding');
-
-      // Handle odd length mat
-      // 'VALID': ignore edge rows and columns
-      // 'SAME': add zero padding to make the mat have even length
-      if (mat.length % 2 === 1 && padding === 'VALID') {
-        mat = matrixSlice(mat, 0, mat.length - 1, 0, mat.length - 1);
-      }
-
-      let stepSize = (mat.length - kernelWidth) / stride + 1;
-      let result = init2DArray(stepSize, stepSize, 0);
-
-      for (let r = 0; r < stepSize; r++) {
-        for (let c = 0; c < stepSize; c++) {
-          let curWindow = matrixSlice(mat, r * stride, r * stride + kernelWidth,
-            c * stride, c * stride + kernelWidth);
-          result[r][c] = matrixMax(curWindow);
-        }
-     }
-     return result;
-    };
-
-    function array1d(length, f) {
-      return Array.from({length: length}, f ? ((v, i) => f(i)) : undefined);
-    }
-
-    function array2d(height, width, f) {
-      return Array.from({length: height}, (v, i) => Array.from({length: width}, f ? ((w, j) => f(i, j)) : undefined));
-    }
-
-    function generateOutputMappings(stride, output, kernelLength, padded_input_size, dilation) {
-      const outputMapping = array2d(output.length, output.length, (i, j) => array2d(kernelLength, kernelLength));
-      for (let h_out = 0; h_out < output.length; h_out++) {
-        for (let w_out = 0; w_out < output.length; w_out++) {
-          for (let h_kern = 0; h_kern < kernelLength; h_kern++) {
-            for (let w_kern = 0; w_kern < kernelLength; w_kern++) {
-              const h_im = h_out * stride + h_kern * dilation;
-              const w_im = w_out * stride + w_kern * dilation;
-              outputMapping[h_out][w_out][h_kern][w_kern] = h_im * padded_input_size + w_im;
-            }
-          }
-        }
-      }
-      return outputMapping;
-    }
-
-    function compute_input_multiplies_with_weight(hoverH, hoverW, 
-                                                  padded_input_size, weight_dims, outputMappings, kernelLength) {
-      const input_multiplies_with_weight = array1d(padded_input_size * padded_input_size);
-      for (let h_weight = 0; h_weight < kernelLength; h_weight++) {
-        for (let w_weight = 0; w_weight < kernelLength; w_weight++) {
-          const flat_input = outputMappings[hoverH][hoverW][h_weight][w_weight];
-          if (typeof flat_input === "undefined") continue;
-          input_multiplies_with_weight[flat_input] = [h_weight, w_weight];
-        }
-      }
-      return input_multiplies_with_weight;
-    }
-
-    function getMatrixSliceFromInputHighlights(matrix, highlights, kernelLength) {
-      var indices = highlights.reduce((total, value, index) => {
-      if (value != undefined) total.push(index);
-        return total;
-      }, []);
-      return matrixSlice(matrix, Math.floor(indices[0] / matrix.length), Math.floor(indices[0] / matrix.length) + kernelLength, indices[0] % matrix.length, indices[0] % matrix.length + kernelLength);
-    }
-
-    function getMatrixSliceFromOutputHighlights(matrix, highlights) {
-      var indices = highlights.reduce((total, value, index) => {
-      if (value != false) total.push(index);
-        return total;
-      }, []);
-      return matrixSlice(matrix, Math.floor(indices[0] / matrix.length), Math.floor(indices[0] / matrix.length) + 1, indices[0] % matrix.length, indices[0] % matrix.length + 1);
-    }
-
-    // Edit these values to change size of low-level conv visualization.
-    function getVisualizationSizeConstraint(imageLength) {
-      let sizeOfGrid = 150;
-      let maxSizeOfGridCell = 20;
-      return sizeOfGrid / imageLength > maxSizeOfGridCell ? maxSizeOfGridCell : sizeOfGrid / imageLength;
-    }
-
-    function getDataRange(image) {
-      let maxRow = image.map(function(row){ return Math.max.apply(Math, row); });
-      let max = Math.max.apply(null, maxRow);
-      let minRow = image.map(function(row){ return Math.min.apply(Math, row); });
-      let min = Math.min.apply(null, minRow);
-      let range = {
-        range: 2 * Math.max(Math.abs(min), Math.abs(max)),
-        min: min,
-        max: max
-      };
-      return range;
-    }
-
-    function gridData(image, constraint=getVisualizationSizeConstraint(image.length)) {
-      // Constrain grids based on input image size.
-      var data = new Array();
-      var xpos = 1;
-      var ypos = 1;
-      var width = constraint;
-      var height = constraint;
-      for (var row = 0; row < image.length; row++) {
-        data.push( new Array() );
-        for (var column = 0; column < image[0].length; column++) {
-          data[row].push({
-            text: Math.round(image[row][column] * 100) / 100,
-            row: row,
-            col: column,
-            x: xpos,
-            y: ypos,
-            width: width,
-            height: height
-          });
-          xpos += width;
-        }
-        xpos = 1;
-        ypos += height; 
-      }
-      return data;
-    }
-
-    /* src\detail-view\Dataview.svelte generated by Svelte v3.47.0 */
-    const file = "src\\detail-view\\Dataview.svelte";
-
-    function create_fragment(ctx) {
-    	let div;
-    	let svg;
-
-    	const block = {
-    		c: function create() {
-    			div = element("div");
-    			svg = svg_element("svg");
-    			attr_dev(svg, "id", "grid");
-    			attr_dev(svg, "width", "100%");
-    			attr_dev(svg, "height", "100%");
-    			add_location(svg, file, 120, 2, 3869);
-    			set_style(div, "display", "inline-block");
-    			set_style(div, "vertical-align", "middle");
-    			attr_dev(div, "class", "grid");
-    			add_location(div, file, 118, 0, 3768);
-    		},
-    		l: function claim(nodes) {
-    			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
-    		},
-    		m: function mount(target, anchor) {
-    			insert_dev(target, div, anchor);
-    			append_dev(div, svg);
-    			/*div_binding*/ ctx[10](div);
-    		},
-    		p: noop,
-    		i: noop,
-    		o: noop,
-    		d: function destroy(detaching) {
-    			if (detaching) detach_dev(div);
-    			/*div_binding*/ ctx[10](null);
-    		}
-    	};
-
-    	dispatch_dev("SvelteRegisterBlock", {
-    		block,
-    		id: create_fragment.name,
-    		type: "component",
-    		source: "",
-    		ctx
-    	});
-
-    	return block;
-    }
-
-    const textConstraintDivisor = 2.6;
-    const standardCellColor = "ddd";
-
-    function instance($$self, $$props, $$invalidate) {
-    	let { $$slots: slots = {}, $$scope } = $$props;
-    	validate_slots('Dataview', slots, []);
-    	let { data } = $$props;
-    	let { highlights } = $$props;
-    	let { isKernelMath } = $$props;
-    	let { constraint } = $$props;
-    	let { dataRange } = $$props;
-    	let { outputLength = undefined } = $$props;
-    	let { stride = undefined } = $$props;
-    	let { colorScale = d3.interpolateRdBu } = $$props;
-    	let { isInputLayer = false } = $$props;
-    	let grid_final;
-    	const dispatch = createEventDispatcher();
-    	let oldHighlight = highlights;
-    	let oldData = data;
-
-    	const redraw = () => {
-    		d3.select(grid_final).selectAll("#grid > *").remove();
-    		const constrainedSvgSize = data.length * constraint + 2;
-    		var grid = d3.select(grid_final).select("#grid").attr("width", constrainedSvgSize + "px").attr("height", constrainedSvgSize + "px").append("svg").attr("width", constrainedSvgSize + "px").attr("height", constrainedSvgSize + "px");
-    		var row = grid.selectAll(".row").data(data).enter().append("g").attr("class", "row");
-
-    		var column = row.selectAll(".square").data(function (d) {
-    			return d;
-    		}).enter().append("rect").attr("class", "square").attr("x", function (d) {
-    			return d.x;
-    		}).attr("y", function (d) {
-    			return d.y;
-    		}).attr("width", function (d) {
-    			return d.width;
-    		}).attr("height", function (d) {
-    			return d.height;
-    		}).style("opacity", 0.8).style("fill", function (d) {
-    			let normalizedValue = d.text;
-
-    			if (isInputLayer) {
-    				normalizedValue = 1 - d.text;
-    			} else {
-    				normalizedValue = (d.text + dataRange / 2) / dataRange;
-    			}
-
-    			return colorScale(normalizedValue);
-    		}).on('mouseover', function (d) {
-    			if (data.length != outputLength) {
-    				dispatch('message', {
-    					hoverH: Math.min(Math.floor(d.row / stride), outputLength - 1),
-    					hoverW: Math.min(Math.floor(d.col / stride), outputLength - 1)
-    				});
-    			} else {
-    				dispatch('message', {
-    					hoverH: Math.min(Math.floor(d.row / 1), outputLength - 1),
-    					hoverW: Math.min(Math.floor(d.col / 1), outputLength - 1)
-    				});
-    			}
-    		});
-
-    		if (isKernelMath) {
-    			var text = row.selectAll(".text").data(function (d) {
-    				return d;
-    			}).enter().append("text").attr("class", "text").style("font-size", Math.floor(constraint / textConstraintDivisor) + "px").attr("x", function (d) {
-    				return d.x + d.width / 2;
-    			}).attr("y", function (d) {
-    				return d.y + d.height / 2;
-    			}).style("fill", function (d) {
-    				let normalizedValue = d.text;
-
-    				if (isInputLayer) {
-    					normalizedValue = 1 - d.text;
-    				} else {
-    					normalizedValue = (d.text + dataRange / 2) / dataRange;
-    				}
-
-    				if (normalizedValue < 0.2 || normalizedValue > 0.8) {
-    					return 'white';
-    				} else {
-    					return 'black';
-    				}
-    			}).style("text-anchor", "middle").style("dominant-baseline", "middle").text(function (d) {
-    				return d.text.toString().replace('-', '－');
-    			});
-    		}
-    	};
-
-    	afterUpdate(() => {
-    		if (data != oldData) {
-    			redraw();
-    			oldData = data;
-    		}
-
-    		if (highlights != oldHighlight) {
-    			var grid = d3.select(grid_final).select('#grid').select("svg");
-
-    			grid.selectAll(".square").style("stroke", d => isKernelMath || highlights.length && highlights[d.row * data.length + d.col]
-    			? "black"
-    			: null);
-
-    			oldHighlight = highlights;
-    		}
-    	});
-
-    	onMount(() => {
-    		redraw();
-    	});
-
-    	const writable_props = [
-    		'data',
-    		'highlights',
-    		'isKernelMath',
-    		'constraint',
-    		'dataRange',
-    		'outputLength',
-    		'stride',
-    		'colorScale',
-    		'isInputLayer'
-    	];
-
-    	Object.keys($$props).forEach(key => {
-    		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== '$$' && key !== 'slot') console.warn(`<Dataview> was created with unknown prop '${key}'`);
-    	});
-
-    	function div_binding($$value) {
-    		binding_callbacks[$$value ? 'unshift' : 'push'](() => {
-    			grid_final = $$value;
-    			$$invalidate(0, grid_final);
-    		});
-    	}
-
-    	$$self.$$set = $$props => {
-    		if ('data' in $$props) $$invalidate(1, data = $$props.data);
-    		if ('highlights' in $$props) $$invalidate(2, highlights = $$props.highlights);
-    		if ('isKernelMath' in $$props) $$invalidate(3, isKernelMath = $$props.isKernelMath);
-    		if ('constraint' in $$props) $$invalidate(4, constraint = $$props.constraint);
-    		if ('dataRange' in $$props) $$invalidate(5, dataRange = $$props.dataRange);
-    		if ('outputLength' in $$props) $$invalidate(6, outputLength = $$props.outputLength);
-    		if ('stride' in $$props) $$invalidate(7, stride = $$props.stride);
-    		if ('colorScale' in $$props) $$invalidate(8, colorScale = $$props.colorScale);
-    		if ('isInputLayer' in $$props) $$invalidate(9, isInputLayer = $$props.isInputLayer);
-    	};
-
-    	$$self.$capture_state = () => ({
-    		data,
-    		highlights,
-    		isKernelMath,
-    		constraint,
-    		dataRange,
-    		outputLength,
-    		stride,
-    		colorScale,
-    		isInputLayer,
-    		onMount,
-    		onDestroy,
-    		beforeUpdate,
-    		afterUpdate,
-    		createEventDispatcher,
-    		grid_final,
-    		textConstraintDivisor,
-    		standardCellColor,
-    		dispatch,
-    		oldHighlight,
-    		oldData,
-    		redraw
-    	});
-
-    	$$self.$inject_state = $$props => {
-    		if ('data' in $$props) $$invalidate(1, data = $$props.data);
-    		if ('highlights' in $$props) $$invalidate(2, highlights = $$props.highlights);
-    		if ('isKernelMath' in $$props) $$invalidate(3, isKernelMath = $$props.isKernelMath);
-    		if ('constraint' in $$props) $$invalidate(4, constraint = $$props.constraint);
-    		if ('dataRange' in $$props) $$invalidate(5, dataRange = $$props.dataRange);
-    		if ('outputLength' in $$props) $$invalidate(6, outputLength = $$props.outputLength);
-    		if ('stride' in $$props) $$invalidate(7, stride = $$props.stride);
-    		if ('colorScale' in $$props) $$invalidate(8, colorScale = $$props.colorScale);
-    		if ('isInputLayer' in $$props) $$invalidate(9, isInputLayer = $$props.isInputLayer);
-    		if ('grid_final' in $$props) $$invalidate(0, grid_final = $$props.grid_final);
-    		if ('oldHighlight' in $$props) oldHighlight = $$props.oldHighlight;
-    		if ('oldData' in $$props) oldData = $$props.oldData;
-    	};
-
-    	if ($$props && "$$inject" in $$props) {
-    		$$self.$inject_state($$props.$$inject);
-    	}
-
-    	return [
-    		grid_final,
-    		data,
-    		highlights,
-    		isKernelMath,
-    		constraint,
-    		dataRange,
-    		outputLength,
-    		stride,
-    		colorScale,
-    		isInputLayer,
-    		div_binding
-    	];
-    }
-
-    class Dataview extends SvelteComponentDev {
-    	constructor(options) {
-    		super(options);
-
-    		init(this, options, instance, create_fragment, safe_not_equal, {
-    			data: 1,
-    			highlights: 2,
-    			isKernelMath: 3,
-    			constraint: 4,
-    			dataRange: 5,
-    			outputLength: 6,
-    			stride: 7,
-    			colorScale: 8,
-    			isInputLayer: 9
-    		});
-
-    		dispatch_dev("SvelteRegisterComponent", {
-    			component: this,
-    			tagName: "Dataview",
-    			options,
-    			id: create_fragment.name
-    		});
-
-    		const { ctx } = this.$$;
-    		const props = options.props || {};
-
-    		if (/*data*/ ctx[1] === undefined && !('data' in props)) {
-    			console.warn("<Dataview> was created without expected prop 'data'");
-    		}
-
-    		if (/*highlights*/ ctx[2] === undefined && !('highlights' in props)) {
-    			console.warn("<Dataview> was created without expected prop 'highlights'");
-    		}
-
-    		if (/*isKernelMath*/ ctx[3] === undefined && !('isKernelMath' in props)) {
-    			console.warn("<Dataview> was created without expected prop 'isKernelMath'");
-    		}
-
-    		if (/*constraint*/ ctx[4] === undefined && !('constraint' in props)) {
-    			console.warn("<Dataview> was created without expected prop 'constraint'");
-    		}
-
-    		if (/*dataRange*/ ctx[5] === undefined && !('dataRange' in props)) {
-    			console.warn("<Dataview> was created without expected prop 'dataRange'");
-    		}
-    	}
-
-    	get data() {
-    		throw new Error("<Dataview>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set data(value) {
-    		throw new Error("<Dataview>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get highlights() {
-    		throw new Error("<Dataview>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set highlights(value) {
-    		throw new Error("<Dataview>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get isKernelMath() {
-    		throw new Error("<Dataview>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set isKernelMath(value) {
-    		throw new Error("<Dataview>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get constraint() {
-    		throw new Error("<Dataview>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set constraint(value) {
-    		throw new Error("<Dataview>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get dataRange() {
-    		throw new Error("<Dataview>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set dataRange(value) {
-    		throw new Error("<Dataview>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get outputLength() {
-    		throw new Error("<Dataview>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set outputLength(value) {
-    		throw new Error("<Dataview>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get stride() {
-    		throw new Error("<Dataview>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set stride(value) {
-    		throw new Error("<Dataview>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get colorScale() {
-    		throw new Error("<Dataview>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set colorScale(value) {
-    		throw new Error("<Dataview>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get isInputLayer() {
-    		throw new Error("<Dataview>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set isInputLayer(value) {
-    		throw new Error("<Dataview>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-    }
-
-    /* src\detail-view\KernelMathView.svelte generated by Svelte v3.47.0 */
-    const file$1 = "src\\detail-view\\KernelMathView.svelte";
-
-    function create_fragment$1(ctx) {
-    	let div0;
-    	let t;
-    	let div1;
-    	let svg_1;
-
-    	const block = {
-    		c: function create() {
-    			div0 = element("div");
-    			t = space();
-    			div1 = element("div");
-    			svg_1 = svg_element("svg");
-    			attr_dev(div0, "class", "legend");
-    			add_location(div0, file$1, 282, 0, 10542);
-    			attr_dev(svg_1, "id", "grid");
-    			attr_dev(svg_1, "width", "100%");
-    			attr_dev(svg_1, "height", "100%");
-    			add_location(svg_1, file$1, 289, 2, 10700);
-    			attr_dev(div1, "class", "grid");
-    			add_location(div1, file$1, 287, 0, 10655);
-    		},
-    		l: function claim(nodes) {
-    			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
-    		},
-    		m: function mount(target, anchor) {
-    			insert_dev(target, div0, anchor);
-    			/*div0_binding*/ ctx[10](div0);
-    			insert_dev(target, t, anchor);
-    			insert_dev(target, div1, anchor);
-    			append_dev(div1, svg_1);
-    			/*div1_binding*/ ctx[11](div1);
-    		},
-    		p: noop,
-    		i: noop,
-    		o: noop,
-    		d: function destroy(detaching) {
-    			if (detaching) detach_dev(div0);
-    			/*div0_binding*/ ctx[10](null);
-    			if (detaching) detach_dev(t);
-    			if (detaching) detach_dev(div1);
-    			/*div1_binding*/ ctx[11](null);
-    		}
-    	};
-
-    	dispatch_dev("SvelteRegisterBlock", {
-    		block,
-    		id: create_fragment$1.name,
-    		type: "component",
-    		source: "",
-    		ctx
-    	});
-
-    	return block;
-    }
-
-    const textConstraintDivisor$1 = 2.6;
-
-    function instance$1($$self, $$props, $$invalidate) {
-    	let { $$slots: slots = {}, $$scope } = $$props;
-    	validate_slots('KernelMathView', slots, []);
-    	let { data } = $$props;
-    	let { kernel } = $$props;
-    	let { constraint } = $$props;
-    	let { dataRange } = $$props;
-    	let { kernelRange } = $$props;
-    	let { colorScale = d3.interpolateRdBu } = $$props;
-    	let { kernelColorScale = d3.interpolateBrBG } = $$props;
-    	let { isInputLayer = false } = $$props;
-    	let gridFinal;
-    	let legendFinal;
-    	const multiplicationSymbolPadding = Math.floor(constraint / 3);
-    	let oldData = data;
-    	let oldKernel = kernel;
-
-    	// Legend drawn similarly to legends in overview/intermediate-view.
-    	const addOverlayGradient = (gradientID, stops, group) => {
-    		if (group === undefined) {
-    			group = svg;
-    		}
-
-    		// Create a gradient
-    		let defs = group.append("defs").attr('class', 'overlay-gradient');
-
-    		let gradient = defs.append("linearGradient").attr("id", gradientID).attr("x1", "0%").attr("x2", "100%").attr("y1", "100%").attr("y2", "100%");
-
-    		stops.forEach(s => {
-    			gradient.append('stop').attr('offset', s.offset).attr('stop-color', s.color).attr('stop-opacity', s.opacity);
-    		});
-    	};
-
-    	// Draw the legend for intermediate layer
-    	const redrawDetailedConvViewLegend = arg => {
-    		let legendHeight = arg.legendHeight,
-    			range = arg.range,
-    			minMax = arg.minMax,
-    			width = arg.width,
-    			colorScale = arg.colorScale,
-    			gradientGap = arg.gradientGap;
-
-    		d3.select(legendFinal).selectAll("#legend > *").remove();
-    		let legend = d3.select(legendFinal).select("#legend").attr("width", 150 + "px").attr("height", 25 + "px").attr("align", "center").style("dominant-baseline", "middle");
-    		let detailedViewKernel = legend.append('g').attr('transform', `translate(10, 0)`);
-
-    		if (colorScale === undefined) {
-    			colorScale = layerColorScales.conv;
-    		}
-
-    		if (gradientGap === undefined) {
-    			gradientGap = 0;
-    		}
-
-    		// Add a legend color gradient
-    		let gradientName = `url(#detailed-kernel-gradient)`;
-
-    		let normalizedColor = v => colorScale(v * (1 - 2 * gradientGap) + gradientGap);
-
-    		let leftValue = (minMax.min + range / 2) / range,
-    			zeroValue = (0 + range / 2) / range,
-    			rightValue = (minMax.max + range / 2) / range,
-    			totalRange = minMax.max - minMax.min,
-    			zeroLocation = (0 - minMax.min) / totalRange,
-    			leftMidValue = leftValue + (zeroValue - leftValue) / 2,
-    			rightMidValue = zeroValue + (rightValue - zeroValue) / 2;
-
-    		let stops = [
-    			{
-    				offset: 0,
-    				color: normalizedColor(leftValue),
-    				opacity: 1
-    			},
-    			{
-    				offset: zeroLocation / 2,
-    				color: normalizedColor(leftMidValue),
-    				opacity: 1
-    			},
-    			{
-    				offset: zeroLocation,
-    				color: normalizedColor(zeroValue),
-    				opacity: 1
-    			},
-    			{
-    				offset: zeroLocation + (1 - zeroValue) / 2,
-    				color: normalizedColor(rightMidValue),
-    				opacity: 1
-    			},
-    			{
-    				offset: 1,
-    				color: normalizedColor(rightValue),
-    				opacity: 1
-    			}
-    		];
-
-    		addOverlayGradient(`detailed-kernel-gradient`, stops, detailedViewKernel);
-    		let legendScale = d3.scaleLinear().range([0, width - 1.2]).domain([minMax.min, minMax.max]);
-    		let legendAxis = d3.axisBottom().scale(legendScale).tickFormat(d3.format('.2f')).tickValues([minMax.min, 0, minMax.max]);
-    		let detailedLegend = detailedViewKernel.append('g').attr('id', `detailed-legend-0`);
-    		let legendGroup = detailedLegend.append('g').attr('transform', `translate(0, ${legendHeight - 3})`).call(legendAxis);
-    		legendGroup.selectAll('text').style('font-size', '9px').style('fill', "black");
-    		legendGroup.selectAll('path, line').style('stroke', "black");
-    		detailedLegend.append('rect').attr('width', width).attr('height', legendHeight).style('fill', gradientName);
-    	};
-
-    	// Draw the elementwise dot-product math.
-    	const redraw = () => {
-    		d3.select(gridFinal).selectAll("#grid > *").remove();
-
-    		const constrainedSvgSize = kernel
-    		? 2 * (data.length * constraint) + 2
-    		: data.length * constraint + 2;
-
-    		var grid = d3.select(gridFinal).select("#grid").attr("width", constrainedSvgSize + "px").attr("height", constrainedSvgSize + "px").append("svg").attr("width", constrainedSvgSize + "px").attr("height", constrainedSvgSize + "px");
-    		var row = grid.selectAll(".row").data(data).enter().append("g").attr("class", "row");
-
-    		var columns = row.selectAll(".square").data(function (d) {
-    			return d;
-    		}).enter();
-
-    		// Draw cells for slice from input matrix.
-    		columns.append("rect").attr("class", "square").attr("x", function (d) {
-    			return d.x === 1
-    			? d.x + multiplicationSymbolPadding
-    			: d.x * 2 + multiplicationSymbolPadding;
-    		}).attr("y", function (d) {
-    			return d.y === 1 ? d.y : d.y * 2;
-    		}).attr("width", function (d) {
-    			return d.width;
-    		}).attr("height", function (d) {
-    			return d.height;
-    		}).style("opacity", 0.5).style("fill", function (d) {
-    			let normalizedValue = d.text;
-
-    			if (isInputLayer) {
-    				normalizedValue = 1 - d.text;
-    			} else {
-    				normalizedValue = (d.text + dataRange / 2) / dataRange;
-    			}
-
-    			return colorScale(normalizedValue);
-    		}).style("stroke", "black");
-
-    		// Draw cells for the kernel.
-    		columns.append("rect").attr("class", "square").attr("x", function (d) {
-    			return d.x === 1
-    			? d.x + multiplicationSymbolPadding
-    			: d.x * 2 + multiplicationSymbolPadding;
-    		}).attr("y", function (d) {
-    			return d.y === 1 ? d.y + d.height : d.y * 2 + d.height;
-    		}).attr("width", function (d) {
-    			return d.width;
-    		}).attr("height", function (d) {
-    			return d.height / 2;
-    		}).style("opacity", 0.5).// Same colorscale as is used for the flatten layers.
-    		style("fill", function (d) {
-    			let normalizedValue = (kernel[d.row][d.col].text + kernelRange.range / 2) / kernelRange.range;
-    			const gap = 0.2;
-    			let normalizedValueWithGap = normalizedValue * (1 - 2 * gap) + gap;
-    			return kernelColorScale(normalizedValueWithGap);
-    		});
-
-    		var texts = row.selectAll(".text").data(function (d) {
-    			return d;
-    		}).enter();
-
-    		// Draw numbers from input matrix slice.
-    		texts.append("text").attr("class", "text").style("font-size", Math.floor(constraint / textConstraintDivisor$1) + "px").attr("x", function (d) {
-    			return d.x === 1
-    			? d.x + d.width / 2 + multiplicationSymbolPadding
-    			: d.x * 2 + d.width / 2 + multiplicationSymbolPadding;
-    		}).attr("y", function (d) {
-    			return d.y === 1 ? d.y + d.height / 2 : d.y * 2 + d.height / 2;
-    		}).style("fill", function (d) {
-    			let normalizedValue = d.text;
-
-    			if (isInputLayer) {
-    				normalizedValue = 1 - d.text;
-    			} else {
-    				normalizedValue = (d.text + dataRange / 2) / dataRange;
-    			}
-
-    			if (normalizedValue < 0.2 || normalizedValue > 0.8) {
-    				if (isInputLayer && normalizedValue < 0.2) {
-    					return 'black';
-    				}
-
-    				return 'white';
-    			} else {
-    				return 'black';
-    			}
-    		}).style("text-anchor", "middle").style("dominant-baseline", "middle").text(function (d) {
-    			return d.text;
-    		});
-
-    		// Attempted to use FontAwesome icons for the 'x', '+', and '=', but none of these strategies work: https://github.com/FortAwesome/Font-Awesome/issues/12268
-    		// Draw 'x' to signify multiplication.
-    		texts.append("text").attr("class", "text").style("font-size", Math.floor(constraint / textConstraintDivisor$1) + "px").attr('font-weight', 600).attr("x", function (d) {
-    			return d.x === 1
-    			? d.x + multiplicationSymbolPadding / 2
-    			: d.x * 2 + multiplicationSymbolPadding / 2;
-    		}).attr("y", function (d) {
-    			return d.y === 1
-    			? d.y + d.height + d.height / 4
-    			: d.y * 2 + d.height + d.height / 4;
-    		}).style("fill", "black").style("text-anchor", "middle").style("dominant-baseline", "middle").text(function (d) {
-    			return '×';
-    		});
-
-    		// Draw kernel values.
-    		texts.append("text").attr("class", "text").style("font-size", Math.floor(constraint / textConstraintDivisor$1) + "px").attr("x", function (d) {
-    			return d.x === 1
-    			? d.x + d.width / 2 + multiplicationSymbolPadding
-    			: d.x * 2 + d.width / 2 + multiplicationSymbolPadding;
-    		}).attr("y", function (d) {
-    			return d.y === 1
-    			? d.y + d.height + d.height / 4
-    			: d.y * 2 + d.height + d.height / 4;
-    		}).style("fill", function (d) {
-    			let normalizedValue = (kernel[d.row][d.col].text + kernelRange.range / 2) / kernelRange.range;
-    			const gap = 0.2;
-    			let normalizedValueWithGap = normalizedValue * (1 - 2 * gap) + gap;
-
-    			if (normalizedValueWithGap < 0.2 || normalizedValueWithGap > 0.8) {
-    				return 'white';
-    			} else {
-    				return 'black';
-    			}
-    		}).style("text-anchor", "middle").style("dominant-baseline", "middle").text(function (d) {
-    			return kernel[d.row][d.col].text;
-    		});
-
-    		// Draw '+' to signify the summing of products except for the last kernel cell where '=' is drawn.
-    		texts.append("text").attr("class", "text").style("font-size", Math.floor(constraint / (textConstraintDivisor$1 - 1)) + "px").attr("x", function (d) {
-    			return d.x === 1
-    			? d.x + d.width + d.width / 2 + multiplicationSymbolPadding
-    			: d.x * 2 + d.width + d.width / 2 + multiplicationSymbolPadding;
-    		}).attr("y", function (d) {
-    			return d.y === 1 ? d.y + d.height / 2 : d.y * 2 + d.height / 2;
-    		}).style("text-anchor", "middle").style("dominant-baseline", "middle").text(function (d) {
-    			return d.row == kernel.length - 1 && d.col == kernel.length - 1
-    			? '='
-    			: '+';
-    		});
-    	};
-
-    	afterUpdate(() => {
-    		if (data != oldData) {
-    			redraw();
-    			oldData = data;
-    		}
-
-    		if (kernel != oldKernel) {
-    			/*
-    redrawDetailedConvViewLegend({
-        legendHeight: 5,
-        range: kernelRange.range,
-        minMax: {min: kernelRange.min, max: kernelRange.max},
-        width: 130,
-        colorScale: kernelColorScale,
-        gradientGap: 0.35,
-    });
-    */
-    			oldKernel = kernel;
-    		}
-    	});
-
-    	onMount(() => {
-    		redraw();
-    	}); /*
-    redrawDetailedConvViewLegend({
-          legendHeight: 5,
-          range: kernelRange.range,
-          minMax: {min: kernelRange.min, max: kernelRange.max},
-          width: 130,
-          colorScale: kernelColorScale,
-          gradientGap: 0.35,
-    });
-    */
-
-    	const writable_props = [
-    		'data',
-    		'kernel',
-    		'constraint',
-    		'dataRange',
-    		'kernelRange',
-    		'colorScale',
-    		'kernelColorScale',
-    		'isInputLayer'
-    	];
-
-    	Object.keys($$props).forEach(key => {
-    		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== '$$' && key !== 'slot') console.warn(`<KernelMathView> was created with unknown prop '${key}'`);
-    	});
-
-    	function div0_binding($$value) {
-    		binding_callbacks[$$value ? 'unshift' : 'push'](() => {
-    			legendFinal = $$value;
-    			$$invalidate(1, legendFinal);
-    		});
-    	}
-
-    	function div1_binding($$value) {
-    		binding_callbacks[$$value ? 'unshift' : 'push'](() => {
-    			gridFinal = $$value;
-    			$$invalidate(0, gridFinal);
-    		});
-    	}
-
-    	$$self.$$set = $$props => {
-    		if ('data' in $$props) $$invalidate(2, data = $$props.data);
-    		if ('kernel' in $$props) $$invalidate(3, kernel = $$props.kernel);
-    		if ('constraint' in $$props) $$invalidate(4, constraint = $$props.constraint);
-    		if ('dataRange' in $$props) $$invalidate(5, dataRange = $$props.dataRange);
-    		if ('kernelRange' in $$props) $$invalidate(6, kernelRange = $$props.kernelRange);
-    		if ('colorScale' in $$props) $$invalidate(7, colorScale = $$props.colorScale);
-    		if ('kernelColorScale' in $$props) $$invalidate(8, kernelColorScale = $$props.kernelColorScale);
-    		if ('isInputLayer' in $$props) $$invalidate(9, isInputLayer = $$props.isInputLayer);
-    	};
-
-    	$$self.$capture_state = () => ({
-    		data,
-    		kernel,
-    		constraint,
-    		dataRange,
-    		kernelRange,
-    		colorScale,
-    		kernelColorScale,
-    		isInputLayer,
-    		onMount,
-    		afterUpdate,
-    		gridFinal,
-    		legendFinal,
-    		textConstraintDivisor: textConstraintDivisor$1,
-    		multiplicationSymbolPadding,
-    		oldData,
-    		oldKernel,
-    		addOverlayGradient,
-    		redrawDetailedConvViewLegend,
-    		redraw
-    	});
-
-    	$$self.$inject_state = $$props => {
-    		if ('data' in $$props) $$invalidate(2, data = $$props.data);
-    		if ('kernel' in $$props) $$invalidate(3, kernel = $$props.kernel);
-    		if ('constraint' in $$props) $$invalidate(4, constraint = $$props.constraint);
-    		if ('dataRange' in $$props) $$invalidate(5, dataRange = $$props.dataRange);
-    		if ('kernelRange' in $$props) $$invalidate(6, kernelRange = $$props.kernelRange);
-    		if ('colorScale' in $$props) $$invalidate(7, colorScale = $$props.colorScale);
-    		if ('kernelColorScale' in $$props) $$invalidate(8, kernelColorScale = $$props.kernelColorScale);
-    		if ('isInputLayer' in $$props) $$invalidate(9, isInputLayer = $$props.isInputLayer);
-    		if ('gridFinal' in $$props) $$invalidate(0, gridFinal = $$props.gridFinal);
-    		if ('legendFinal' in $$props) $$invalidate(1, legendFinal = $$props.legendFinal);
-    		if ('oldData' in $$props) oldData = $$props.oldData;
-    		if ('oldKernel' in $$props) oldKernel = $$props.oldKernel;
-    	};
-
-    	if ($$props && "$$inject" in $$props) {
-    		$$self.$inject_state($$props.$$inject);
-    	}
-
-    	return [
-    		gridFinal,
-    		legendFinal,
-    		data,
-    		kernel,
-    		constraint,
-    		dataRange,
-    		kernelRange,
-    		colorScale,
-    		kernelColorScale,
-    		isInputLayer,
-    		div0_binding,
-    		div1_binding
-    	];
-    }
-
-    class KernelMathView extends SvelteComponentDev {
-    	constructor(options) {
-    		super(options);
-
-    		init(this, options, instance$1, create_fragment$1, safe_not_equal, {
-    			data: 2,
-    			kernel: 3,
-    			constraint: 4,
-    			dataRange: 5,
-    			kernelRange: 6,
-    			colorScale: 7,
-    			kernelColorScale: 8,
-    			isInputLayer: 9
-    		});
-
-    		dispatch_dev("SvelteRegisterComponent", {
-    			component: this,
-    			tagName: "KernelMathView",
-    			options,
-    			id: create_fragment$1.name
-    		});
-
-    		const { ctx } = this.$$;
-    		const props = options.props || {};
-
-    		if (/*data*/ ctx[2] === undefined && !('data' in props)) {
-    			console.warn("<KernelMathView> was created without expected prop 'data'");
-    		}
-
-    		if (/*kernel*/ ctx[3] === undefined && !('kernel' in props)) {
-    			console.warn("<KernelMathView> was created without expected prop 'kernel'");
-    		}
-
-    		if (/*constraint*/ ctx[4] === undefined && !('constraint' in props)) {
-    			console.warn("<KernelMathView> was created without expected prop 'constraint'");
-    		}
-
-    		if (/*dataRange*/ ctx[5] === undefined && !('dataRange' in props)) {
-    			console.warn("<KernelMathView> was created without expected prop 'dataRange'");
-    		}
-
-    		if (/*kernelRange*/ ctx[6] === undefined && !('kernelRange' in props)) {
-    			console.warn("<KernelMathView> was created without expected prop 'kernelRange'");
-    		}
-    	}
-
-    	get data() {
-    		throw new Error("<KernelMathView>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set data(value) {
-    		throw new Error("<KernelMathView>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get kernel() {
-    		throw new Error("<KernelMathView>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set kernel(value) {
-    		throw new Error("<KernelMathView>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get constraint() {
-    		throw new Error("<KernelMathView>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set constraint(value) {
-    		throw new Error("<KernelMathView>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get dataRange() {
-    		throw new Error("<KernelMathView>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set dataRange(value) {
-    		throw new Error("<KernelMathView>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get kernelRange() {
-    		throw new Error("<KernelMathView>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set kernelRange(value) {
-    		throw new Error("<KernelMathView>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get colorScale() {
-    		throw new Error("<KernelMathView>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set colorScale(value) {
-    		throw new Error("<KernelMathView>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get kernelColorScale() {
-    		throw new Error("<KernelMathView>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set kernelColorScale(value) {
-    		throw new Error("<KernelMathView>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get isInputLayer() {
-    		throw new Error("<KernelMathView>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set isInputLayer(value) {
-    		throw new Error("<KernelMathView>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-    }
-
-    /* src\detail-view\ConvolutionAnimator.svelte generated by Svelte v3.47.0 */
-    const file$2 = "src\\detail-view\\ConvolutionAnimator.svelte";
-
-    function create_fragment$2(ctx) {
-    	let div1;
-    	let div0;
-    	let t0;
-    	let t1_value = /*image*/ ctx[2].length + "";
-    	let t1;
-    	let t2;
-    	let t3_value = /*image*/ ctx[2][0].length + "";
-    	let t3;
-    	let t4;
-    	let t5;
-    	let dataview0;
-    	let t6;
-    	let div2;
-    	let kernelmathview;
-    	let t7;
-    	let dataview1;
-    	let t8;
-    	let div4;
-    	let div3;
-    	let t9;
-    	let t10_value = /*output*/ ctx[3].length + "";
-    	let t10;
-    	let t11;
-    	let t12_value = /*output*/ ctx[3][0].length + "";
-    	let t12;
-    	let t13;
-    	let t14;
-    	let dataview2;
-    	let current;
-
-    	dataview0 = new Dataview({
-    			props: {
-    				data: /*testImage*/ ctx[11],
-    				highlights: /*inputHighlights*/ ctx[7],
-    				outputLength: /*output*/ ctx[3].length,
-    				isKernelMath: false,
-    				constraint: getVisualizationSizeConstraint(/*image*/ ctx[2].length),
-    				dataRange: /*dataRange*/ ctx[4],
-    				stride: /*stride*/ ctx[0],
-    				colorScale: /*colorScale*/ ctx[5],
-    				isInputLayer: /*isInputInputLayer*/ ctx[6]
-    			},
-    			$$inline: true
-    		});
-
-    	dataview0.$on("message", /*handleMouseover*/ ctx[14]);
-
-    	kernelmathview = new KernelMathView({
-    			props: {
-    				data: /*testInputMatrixSlice*/ ctx[9],
-    				kernel: /*testKernel*/ ctx[13],
-    				constraint: getVisualizationSizeConstraint(/*kernel*/ ctx[1].length),
-    				dataRange: /*dataRange*/ ctx[4],
-    				kernelRange: getDataRange(/*kernel*/ ctx[1]),
-    				colorScale: /*colorScale*/ ctx[5],
-    				isInputLayer: /*isInputInputLayer*/ ctx[6]
-    			},
-    			$$inline: true
-    		});
-
-    	dataview1 = new Dataview({
-    			props: {
-    				data: /*testOutputMatrixSlice*/ ctx[10],
-    				highlights: /*outputHighlights*/ ctx[8],
-    				isKernelMath: true,
-    				constraint: getVisualizationSizeConstraint(/*kernel*/ ctx[1].length),
-    				dataRange: /*dataRange*/ ctx[4]
-    			},
-    			$$inline: true
-    		});
-
-    	dataview2 = new Dataview({
-    			props: {
-    				data: /*testOutput*/ ctx[12],
-    				highlights: /*outputHighlights*/ ctx[8],
-    				isKernelMath: false,
-    				outputLength: /*output*/ ctx[3].length,
-    				constraint: getVisualizationSizeConstraint(/*output*/ ctx[3].length),
-    				dataRange: /*dataRange*/ ctx[4],
-    				stride: /*stride*/ ctx[0]
-    			},
-    			$$inline: true
-    		});
-
-    	dataview2.$on("message", /*handleMouseover*/ ctx[14]);
-
-    	const block = {
-    		c: function create() {
-    			div1 = element("div");
-    			div0 = element("div");
-    			t0 = text("Input (");
-    			t1 = text(t1_value);
-    			t2 = text(", ");
-    			t3 = text(t3_value);
-    			t4 = text(")");
-    			t5 = space();
-    			create_component(dataview0.$$.fragment);
-    			t6 = space();
-    			div2 = element("div");
-    			create_component(kernelmathview.$$.fragment);
-    			t7 = space();
-    			create_component(dataview1.$$.fragment);
-    			t8 = space();
-    			div4 = element("div");
-    			div3 = element("div");
-    			t9 = text("Output (");
-    			t10 = text(t10_value);
-    			t11 = text(", ");
-    			t12 = text(t12_value);
-    			t13 = text(")");
-    			t14 = space();
-    			create_component(dataview2.$$.fragment);
-    			attr_dev(div0, "class", "header-text");
-    			add_location(div0, file$2, 106, 2, 4018);
-    			attr_dev(div1, "class", "column has-text-centered svelte-gz7a6i");
-    			add_location(div1, file$2, 105, 0, 3977);
-    			attr_dev(div2, "class", "column has-text-centered svelte-gz7a6i");
-    			add_location(div2, file$2, 114, 0, 4416);
-    			attr_dev(div3, "class", "header-text");
-    			add_location(div3, file$2, 122, 2, 4961);
-    			attr_dev(div4, "class", "column has-text-centered svelte-gz7a6i");
-    			add_location(div4, file$2, 121, 0, 4920);
-    		},
-    		l: function claim(nodes) {
-    			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
-    		},
-    		m: function mount(target, anchor) {
-    			insert_dev(target, div1, anchor);
-    			append_dev(div1, div0);
-    			append_dev(div0, t0);
-    			append_dev(div0, t1);
-    			append_dev(div0, t2);
-    			append_dev(div0, t3);
-    			append_dev(div0, t4);
-    			append_dev(div1, t5);
-    			mount_component(dataview0, div1, null);
-    			insert_dev(target, t6, anchor);
-    			insert_dev(target, div2, anchor);
-    			mount_component(kernelmathview, div2, null);
-    			append_dev(div2, t7);
-    			mount_component(dataview1, div2, null);
-    			insert_dev(target, t8, anchor);
-    			insert_dev(target, div4, anchor);
-    			append_dev(div4, div3);
-    			append_dev(div3, t9);
-    			append_dev(div3, t10);
-    			append_dev(div3, t11);
-    			append_dev(div3, t12);
-    			append_dev(div3, t13);
-    			append_dev(div4, t14);
-    			mount_component(dataview2, div4, null);
-    			current = true;
-    		},
-    		p: function update(ctx, [dirty]) {
-    			if ((!current || dirty & /*image*/ 4) && t1_value !== (t1_value = /*image*/ ctx[2].length + "")) set_data_dev(t1, t1_value);
-    			if ((!current || dirty & /*image*/ 4) && t3_value !== (t3_value = /*image*/ ctx[2][0].length + "")) set_data_dev(t3, t3_value);
-    			const dataview0_changes = {};
-    			if (dirty & /*testImage*/ 2048) dataview0_changes.data = /*testImage*/ ctx[11];
-    			if (dirty & /*inputHighlights*/ 128) dataview0_changes.highlights = /*inputHighlights*/ ctx[7];
-    			if (dirty & /*output*/ 8) dataview0_changes.outputLength = /*output*/ ctx[3].length;
-    			if (dirty & /*image*/ 4) dataview0_changes.constraint = getVisualizationSizeConstraint(/*image*/ ctx[2].length);
-    			if (dirty & /*dataRange*/ 16) dataview0_changes.dataRange = /*dataRange*/ ctx[4];
-    			if (dirty & /*stride*/ 1) dataview0_changes.stride = /*stride*/ ctx[0];
-    			if (dirty & /*colorScale*/ 32) dataview0_changes.colorScale = /*colorScale*/ ctx[5];
-    			if (dirty & /*isInputInputLayer*/ 64) dataview0_changes.isInputLayer = /*isInputInputLayer*/ ctx[6];
-    			dataview0.$set(dataview0_changes);
-    			const kernelmathview_changes = {};
-    			if (dirty & /*testInputMatrixSlice*/ 512) kernelmathview_changes.data = /*testInputMatrixSlice*/ ctx[9];
-    			if (dirty & /*testKernel*/ 8192) kernelmathview_changes.kernel = /*testKernel*/ ctx[13];
-    			if (dirty & /*kernel*/ 2) kernelmathview_changes.constraint = getVisualizationSizeConstraint(/*kernel*/ ctx[1].length);
-    			if (dirty & /*dataRange*/ 16) kernelmathview_changes.dataRange = /*dataRange*/ ctx[4];
-    			if (dirty & /*kernel*/ 2) kernelmathview_changes.kernelRange = getDataRange(/*kernel*/ ctx[1]);
-    			if (dirty & /*colorScale*/ 32) kernelmathview_changes.colorScale = /*colorScale*/ ctx[5];
-    			if (dirty & /*isInputInputLayer*/ 64) kernelmathview_changes.isInputLayer = /*isInputInputLayer*/ ctx[6];
-    			kernelmathview.$set(kernelmathview_changes);
-    			const dataview1_changes = {};
-    			if (dirty & /*testOutputMatrixSlice*/ 1024) dataview1_changes.data = /*testOutputMatrixSlice*/ ctx[10];
-    			if (dirty & /*outputHighlights*/ 256) dataview1_changes.highlights = /*outputHighlights*/ ctx[8];
-    			if (dirty & /*kernel*/ 2) dataview1_changes.constraint = getVisualizationSizeConstraint(/*kernel*/ ctx[1].length);
-    			if (dirty & /*dataRange*/ 16) dataview1_changes.dataRange = /*dataRange*/ ctx[4];
-    			dataview1.$set(dataview1_changes);
-    			if ((!current || dirty & /*output*/ 8) && t10_value !== (t10_value = /*output*/ ctx[3].length + "")) set_data_dev(t10, t10_value);
-    			if ((!current || dirty & /*output*/ 8) && t12_value !== (t12_value = /*output*/ ctx[3][0].length + "")) set_data_dev(t12, t12_value);
-    			const dataview2_changes = {};
-    			if (dirty & /*testOutput*/ 4096) dataview2_changes.data = /*testOutput*/ ctx[12];
-    			if (dirty & /*outputHighlights*/ 256) dataview2_changes.highlights = /*outputHighlights*/ ctx[8];
-    			if (dirty & /*output*/ 8) dataview2_changes.outputLength = /*output*/ ctx[3].length;
-    			if (dirty & /*output*/ 8) dataview2_changes.constraint = getVisualizationSizeConstraint(/*output*/ ctx[3].length);
-    			if (dirty & /*dataRange*/ 16) dataview2_changes.dataRange = /*dataRange*/ ctx[4];
-    			if (dirty & /*stride*/ 1) dataview2_changes.stride = /*stride*/ ctx[0];
-    			dataview2.$set(dataview2_changes);
-    		},
-    		i: function intro(local) {
-    			if (current) return;
-    			transition_in(dataview0.$$.fragment, local);
-    			transition_in(kernelmathview.$$.fragment, local);
-    			transition_in(dataview1.$$.fragment, local);
-    			transition_in(dataview2.$$.fragment, local);
-    			current = true;
-    		},
-    		o: function outro(local) {
-    			transition_out(dataview0.$$.fragment, local);
-    			transition_out(kernelmathview.$$.fragment, local);
-    			transition_out(dataview1.$$.fragment, local);
-    			transition_out(dataview2.$$.fragment, local);
-    			current = false;
-    		},
-    		d: function destroy(detaching) {
-    			if (detaching) detach_dev(div1);
-    			destroy_component(dataview0);
-    			if (detaching) detach_dev(t6);
-    			if (detaching) detach_dev(div2);
-    			destroy_component(kernelmathview);
-    			destroy_component(dataview1);
-    			if (detaching) detach_dev(t8);
-    			if (detaching) detach_dev(div4);
-    			destroy_component(dataview2);
-    		}
-    	};
-
-    	dispatch_dev("SvelteRegisterBlock", {
-    		block,
-    		id: create_fragment$2.name,
-    		type: "component",
-    		source: "",
-    		ctx
-    	});
-
-    	return block;
-    }
-
-    const padding = 0;
-
-    function instance$2($$self, $$props, $$invalidate) {
-    	let { $$slots: slots = {}, $$scope } = $$props;
-    	validate_slots('ConvolutionAnimator', slots, []);
-    	let { stride } = $$props;
-    	let { dilation } = $$props;
-    	let { kernel } = $$props;
-    	let { image } = $$props;
-    	let { output } = $$props;
-    	let { isPaused } = $$props;
-    	let { dataRange } = $$props;
-    	let { colorScale } = $$props;
-    	let { isInputInputLayer = false } = $$props;
-    	const dispatch = createEventDispatcher();
-    	let padded_input_size = image.length + padding * 2;
-
-    	// Dummy data for original state of component.
-    	let testInputMatrixSlice = [];
-
-    	for (let i = 0; i < kernel.length; i++) {
-    		testInputMatrixSlice.push([]);
-
-    		for (let j = 0; j < kernel.length; j++) {
-    			testInputMatrixSlice[i].push(0);
-    		}
-    	}
-
-    	testInputMatrixSlice = gridData(testInputMatrixSlice);
-    	let testOutputMatrixSlice = gridData([0]);
-    	let inputHighlights = [];
-    	let outputHighlights = array1d(output.length * output.length, i => true);
-    	let interval;
-    	let counter;
-
-    	// lots of replication between mouseover and start-conv. TODO: fix this.
-    	function startConvolution(stride) {
-    		counter = 0;
-    		let outputMappings = generateOutputMappings(stride, output, kernel.length, padded_input_size, dilation);
-    		if (stride <= 0) return;
-    		if (interval) clearInterval(interval);
-
-    		$$invalidate(17, interval = setInterval(
-    			() => {
-    				if (isPaused) return;
-    				const flat_animated = counter % (output.length * output.length);
-    				$$invalidate(8, outputHighlights = array1d(output.length * output.length, i => false));
-    				const animatedH = Math.floor(flat_animated / output.length);
-    				const animatedW = flat_animated % output.length;
-    				$$invalidate(8, outputHighlights[animatedH * output.length + animatedW] = true, outputHighlights);
-    				$$invalidate(7, inputHighlights = compute_input_multiplies_with_weight(animatedH, animatedW, padded_input_size, kernel.length, outputMappings, kernel.length));
-    				const inputMatrixSlice = getMatrixSliceFromInputHighlights(image, inputHighlights, kernel.length);
-    				$$invalidate(9, testInputMatrixSlice = gridData(inputMatrixSlice));
-    				const outputMatrixSlice = getMatrixSliceFromOutputHighlights(output, outputHighlights);
-    				$$invalidate(10, testOutputMatrixSlice = gridData(outputMatrixSlice));
-    				counter++;
-    			},
-    			250
-    		));
-    	}
-
-    	function handleMouseover(event) {
-    		let outputMappings = generateOutputMappings(stride, output, kernel.length, padded_input_size, dilation);
-    		$$invalidate(8, outputHighlights = array1d(output.length * output.length, i => false));
-    		const animatedH = event.detail.hoverH;
-    		const animatedW = event.detail.hoverW;
-    		$$invalidate(8, outputHighlights[animatedH * output.length + animatedW] = true, outputHighlights);
-    		$$invalidate(7, inputHighlights = compute_input_multiplies_with_weight(animatedH, animatedW, padded_input_size, kernel.length, outputMappings, kernel.length));
-    		const inputMatrixSlice = getMatrixSliceFromInputHighlights(image, inputHighlights, kernel.length);
-    		$$invalidate(9, testInputMatrixSlice = gridData(inputMatrixSlice));
-    		const outputMatrixSlice = getMatrixSliceFromOutputHighlights(output, outputHighlights);
-    		$$invalidate(10, testOutputMatrixSlice = gridData(outputMatrixSlice));
-    		$$invalidate(15, isPaused = true);
-    		dispatch('message', { text: isPaused });
-    	}
-
-    	startConvolution(stride);
-    	let testImage = gridData(image);
-    	let testOutput = gridData(output);
-    	let testKernel = gridData(kernel);
-
-    	const writable_props = [
-    		'stride',
-    		'dilation',
-    		'kernel',
-    		'image',
-    		'output',
-    		'isPaused',
-    		'dataRange',
-    		'colorScale',
-    		'isInputInputLayer'
-    	];
-
-    	Object.keys($$props).forEach(key => {
-    		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== '$$' && key !== 'slot') console.warn(`<ConvolutionAnimator> was created with unknown prop '${key}'`);
-    	});
-
-    	$$self.$$set = $$props => {
-    		if ('stride' in $$props) $$invalidate(0, stride = $$props.stride);
-    		if ('dilation' in $$props) $$invalidate(16, dilation = $$props.dilation);
-    		if ('kernel' in $$props) $$invalidate(1, kernel = $$props.kernel);
-    		if ('image' in $$props) $$invalidate(2, image = $$props.image);
-    		if ('output' in $$props) $$invalidate(3, output = $$props.output);
-    		if ('isPaused' in $$props) $$invalidate(15, isPaused = $$props.isPaused);
-    		if ('dataRange' in $$props) $$invalidate(4, dataRange = $$props.dataRange);
-    		if ('colorScale' in $$props) $$invalidate(5, colorScale = $$props.colorScale);
-    		if ('isInputInputLayer' in $$props) $$invalidate(6, isInputInputLayer = $$props.isInputInputLayer);
-    	};
-
-    	$$self.$capture_state = () => ({
-    		createEventDispatcher,
-    		array1d,
-    		getMatrixSliceFromOutputHighlights,
-    		compute_input_multiplies_with_weight,
-    		getDataRange,
-    		getVisualizationSizeConstraint,
-    		generateOutputMappings,
-    		getMatrixSliceFromInputHighlights,
-    		gridData,
-    		Dataview,
-    		KernelMathView,
-    		stride,
-    		dilation,
-    		kernel,
-    		image,
-    		output,
-    		isPaused,
-    		dataRange,
-    		colorScale,
-    		isInputInputLayer,
-    		dispatch,
-    		padding,
-    		padded_input_size,
-    		testInputMatrixSlice,
-    		testOutputMatrixSlice,
-    		inputHighlights,
-    		outputHighlights,
-    		interval,
-    		counter,
-    		startConvolution,
-    		handleMouseover,
-    		testImage,
-    		testOutput,
-    		testKernel
-    	});
-
-    	$$self.$inject_state = $$props => {
-    		if ('stride' in $$props) $$invalidate(0, stride = $$props.stride);
-    		if ('dilation' in $$props) $$invalidate(16, dilation = $$props.dilation);
-    		if ('kernel' in $$props) $$invalidate(1, kernel = $$props.kernel);
-    		if ('image' in $$props) $$invalidate(2, image = $$props.image);
-    		if ('output' in $$props) $$invalidate(3, output = $$props.output);
-    		if ('isPaused' in $$props) $$invalidate(15, isPaused = $$props.isPaused);
-    		if ('dataRange' in $$props) $$invalidate(4, dataRange = $$props.dataRange);
-    		if ('colorScale' in $$props) $$invalidate(5, colorScale = $$props.colorScale);
-    		if ('isInputInputLayer' in $$props) $$invalidate(6, isInputInputLayer = $$props.isInputInputLayer);
-    		if ('padded_input_size' in $$props) padded_input_size = $$props.padded_input_size;
-    		if ('testInputMatrixSlice' in $$props) $$invalidate(9, testInputMatrixSlice = $$props.testInputMatrixSlice);
-    		if ('testOutputMatrixSlice' in $$props) $$invalidate(10, testOutputMatrixSlice = $$props.testOutputMatrixSlice);
-    		if ('inputHighlights' in $$props) $$invalidate(7, inputHighlights = $$props.inputHighlights);
-    		if ('outputHighlights' in $$props) $$invalidate(8, outputHighlights = $$props.outputHighlights);
-    		if ('interval' in $$props) $$invalidate(17, interval = $$props.interval);
-    		if ('counter' in $$props) counter = $$props.counter;
-    		if ('testImage' in $$props) $$invalidate(11, testImage = $$props.testImage);
-    		if ('testOutput' in $$props) $$invalidate(12, testOutput = $$props.testOutput);
-    		if ('testKernel' in $$props) $$invalidate(13, testKernel = $$props.testKernel);
-    	};
-
-    	if ($$props && "$$inject" in $$props) {
-    		$$self.$inject_state($$props.$$inject);
-    	}
-
-    	$$self.$$.update = () => {
-    		if ($$self.$$.dirty & /*image*/ 4) {
-    			 padded_input_size = image.length + padding * 2;
-    		}
-
-    		if ($$self.$$.dirty & /*output*/ 8) {
-    			 {
-    				let outputHighlights = array1d(output.length * output.length, i => true);
-    			}
-    		}
-
-    		if ($$self.$$.dirty & /*stride, image, output, kernel*/ 15) {
-    			 {
-    				startConvolution(stride);
-    				$$invalidate(11, testImage = gridData(image));
-    				$$invalidate(12, testOutput = gridData(output));
-    				$$invalidate(13, testKernel = gridData(kernel));
-    			}
-    		}
-    	};
-
-    	return [
-    		stride,
-    		kernel,
-    		image,
-    		output,
-    		dataRange,
-    		colorScale,
-    		isInputInputLayer,
-    		inputHighlights,
-    		outputHighlights,
-    		testInputMatrixSlice,
-    		testOutputMatrixSlice,
-    		testImage,
-    		testOutput,
-    		testKernel,
-    		handleMouseover,
-    		isPaused,
-    		dilation,
-    		interval
-    	];
-    }
-
-    class ConvolutionAnimator extends SvelteComponentDev {
-    	constructor(options) {
-    		super(options);
-
-    		init(this, options, instance$2, create_fragment$2, safe_not_equal, {
-    			stride: 0,
-    			dilation: 16,
-    			kernel: 1,
-    			image: 2,
-    			output: 3,
-    			isPaused: 15,
-    			dataRange: 4,
-    			colorScale: 5,
-    			isInputInputLayer: 6
-    		});
-
-    		dispatch_dev("SvelteRegisterComponent", {
-    			component: this,
-    			tagName: "ConvolutionAnimator",
-    			options,
-    			id: create_fragment$2.name
-    		});
-
-    		const { ctx } = this.$$;
-    		const props = options.props || {};
-
-    		if (/*stride*/ ctx[0] === undefined && !('stride' in props)) {
-    			console.warn("<ConvolutionAnimator> was created without expected prop 'stride'");
-    		}
-
-    		if (/*dilation*/ ctx[16] === undefined && !('dilation' in props)) {
-    			console.warn("<ConvolutionAnimator> was created without expected prop 'dilation'");
-    		}
-
-    		if (/*kernel*/ ctx[1] === undefined && !('kernel' in props)) {
-    			console.warn("<ConvolutionAnimator> was created without expected prop 'kernel'");
-    		}
-
-    		if (/*image*/ ctx[2] === undefined && !('image' in props)) {
-    			console.warn("<ConvolutionAnimator> was created without expected prop 'image'");
-    		}
-
-    		if (/*output*/ ctx[3] === undefined && !('output' in props)) {
-    			console.warn("<ConvolutionAnimator> was created without expected prop 'output'");
-    		}
-
-    		if (/*isPaused*/ ctx[15] === undefined && !('isPaused' in props)) {
-    			console.warn("<ConvolutionAnimator> was created without expected prop 'isPaused'");
-    		}
-
-    		if (/*dataRange*/ ctx[4] === undefined && !('dataRange' in props)) {
-    			console.warn("<ConvolutionAnimator> was created without expected prop 'dataRange'");
-    		}
-
-    		if (/*colorScale*/ ctx[5] === undefined && !('colorScale' in props)) {
-    			console.warn("<ConvolutionAnimator> was created without expected prop 'colorScale'");
-    		}
-    	}
-
-    	get stride() {
-    		throw new Error("<ConvolutionAnimator>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set stride(value) {
-    		throw new Error("<ConvolutionAnimator>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get dilation() {
-    		throw new Error("<ConvolutionAnimator>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set dilation(value) {
-    		throw new Error("<ConvolutionAnimator>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get kernel() {
-    		throw new Error("<ConvolutionAnimator>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set kernel(value) {
-    		throw new Error("<ConvolutionAnimator>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get image() {
-    		throw new Error("<ConvolutionAnimator>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set image(value) {
-    		throw new Error("<ConvolutionAnimator>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get output() {
-    		throw new Error("<ConvolutionAnimator>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set output(value) {
-    		throw new Error("<ConvolutionAnimator>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get isPaused() {
-    		throw new Error("<ConvolutionAnimator>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set isPaused(value) {
-    		throw new Error("<ConvolutionAnimator>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get dataRange() {
-    		throw new Error("<ConvolutionAnimator>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set dataRange(value) {
-    		throw new Error("<ConvolutionAnimator>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get colorScale() {
-    		throw new Error("<ConvolutionAnimator>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set colorScale(value) {
-    		throw new Error("<ConvolutionAnimator>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get isInputInputLayer() {
-    		throw new Error("<ConvolutionAnimator>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set isInputInputLayer(value) {
-    		throw new Error("<ConvolutionAnimator>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-    }
-
-    /* src\detail-view\Convolutionview.svelte generated by Svelte v3.47.0 */
-
-    const { console: console_1 } = globals;
-    const file$3 = "src\\detail-view\\Convolutionview.svelte";
-
-    // (110:0) {#if !isExited}
-    function create_if_block(ctx) {
-    	let div10;
-    	let div9;
-    	let div5;
-    	let div0;
-    	let t1;
-    	let div4;
-    	let div1;
-    	let i0;
-    	let t2;
-    	let div2;
-
-    	let raw_value = (/*isPaused*/ ctx[6]
-    	? '<i class="fas fa-play-circle play-icon"></i>'
-    	: '<i class="fas fa-pause-circle"></i>') + "";
-
-    	let t3;
-    	let div3;
-    	let i1;
-    	let t4;
-    	let div6;
-    	let convolutionanimator;
-    	let t5;
-    	let div8;
-    	let img;
-    	let img_src_value;
-    	let t6;
-    	let div7;
-    	let span;
-    	let t8;
-    	let current;
-    	let mounted;
-    	let dispose;
-
-    	convolutionanimator = new ConvolutionAnimator({
-    			props: {
-    				kernel: /*kernel*/ ctx[2],
-    				image: /*input*/ ctx[1],
-    				output: /*outputFinal*/ ctx[7],
-    				stride: /*stride*/ ctx[8],
-    				dilation,
-    				isPaused: /*isPaused*/ ctx[6],
-    				dataRange: /*dataRange*/ ctx[3],
-    				colorScale: /*colorScale*/ ctx[4],
-    				isInputInputLayer: /*isInputInputLayer*/ ctx[5]
-    			},
-    			$$inline: true
-    		});
-
-    	convolutionanimator.$on("message", /*handlePauseFromInteraction*/ ctx[10]);
-
-    	const block = {
-    		c: function create() {
-    			div10 = element("div");
-    			div9 = element("div");
-    			div5 = element("div");
-    			div0 = element("div");
-    			div0.textContent = "Convolution";
-    			t1 = space();
-    			div4 = element("div");
-    			div1 = element("div");
-    			i0 = element("i");
-    			t2 = space();
-    			div2 = element("div");
-    			t3 = space();
-    			div3 = element("div");
-    			i1 = element("i");
-    			t4 = space();
-    			div6 = element("div");
-    			create_component(convolutionanimator.$$.fragment);
-    			t5 = space();
-    			div8 = element("div");
-    			img = element("img");
-    			t6 = space();
-    			div7 = element("div");
-    			span = element("span");
-    			span.textContent = "Hover over";
-    			t8 = text(" the matrices to change kernel position.");
-    			attr_dev(div0, "class", "title-text svelte-1j8mhv0");
-    			add_location(div0, file$3, 132, 8, 2833);
-    			attr_dev(i0, "class", "fas fa-info-circle");
-    			add_location(i0, file$3, 138, 12, 3033);
-    			attr_dev(div1, "class", "control-button svelte-1j8mhv0");
-    			attr_dev(div1, "title", "Jump to article section");
-    			add_location(div1, file$3, 137, 10, 2936);
-    			attr_dev(div2, "class", "play-button control-button svelte-1j8mhv0");
-    			attr_dev(div2, "title", "Play animation");
-    			add_location(div2, file$3, 141, 10, 3096);
-    			attr_dev(i1, "class", "fas control-icon fa-times-circle");
-    			add_location(i1, file$3, 148, 12, 3455);
-    			attr_dev(div3, "class", "delete-button control-button svelte-1j8mhv0");
-    			attr_dev(div3, "title", "Close");
-    			add_location(div3, file$3, 147, 10, 3362);
-    			attr_dev(div4, "class", "buttons svelte-1j8mhv0");
-    			add_location(div4, file$3, 136, 8, 2904);
-    			attr_dev(div5, "class", "control-pannel svelte-1j8mhv0");
-    			add_location(div5, file$3, 130, 6, 2795);
-    			attr_dev(div6, "class", "container is-centered svelte-1j8mhv0");
-    			add_location(div6, file$3, 153, 6, 3556);
-    			if (!src_url_equal(img.src, img_src_value = "/assets/img/pointer.svg")) attr_dev(img, "src", img_src_value);
-    			attr_dev(img, "alt", "pointer icon");
-    			attr_dev(img, "class", "svelte-1j8mhv0");
-    			add_location(img, file$3, 162, 8, 3950);
-    			set_style(span, "font-weight", "600");
-    			add_location(span, file$3, 164, 10, 4063);
-    			attr_dev(div7, "class", "annotation-text");
-    			add_location(div7, file$3, 163, 8, 4023);
-    			attr_dev(div8, "class", "annotation svelte-1j8mhv0");
-    			add_location(div8, file$3, 161, 6, 3917);
-    			attr_dev(div9, "class", "box svelte-1j8mhv0");
-    			add_location(div9, file$3, 128, 4, 2770);
-    			attr_dev(div10, "class", "container svelte-1j8mhv0");
-    			attr_dev(div10, "id", "detailview-container");
-    			add_location(div10, file$3, 110, 2, 2186);
-    		},
-    		m: function mount(target, anchor) {
-    			insert_dev(target, div10, anchor);
-    			append_dev(div10, div9);
-    			append_dev(div9, div5);
-    			append_dev(div5, div0);
-    			append_dev(div5, t1);
-    			append_dev(div5, div4);
-    			append_dev(div4, div1);
-    			append_dev(div1, i0);
-    			append_dev(div4, t2);
-    			append_dev(div4, div2);
-    			div2.innerHTML = raw_value;
-    			append_dev(div4, t3);
-    			append_dev(div4, div3);
-    			append_dev(div3, i1);
-    			append_dev(div9, t4);
-    			append_dev(div9, div6);
-    			mount_component(convolutionanimator, div6, null);
-    			append_dev(div9, t5);
-    			append_dev(div9, div8);
-    			append_dev(div8, img);
-    			append_dev(div8, t6);
-    			append_dev(div8, div7);
-    			append_dev(div7, span);
-    			append_dev(div7, t8);
-    			current = true;
-
-    			if (!mounted) {
-    				dispose = [
-    					listen_dev(div1, "click", handleScroll, false, false, false),
-    					listen_dev(div2, "click", /*handleClickPause*/ ctx[9], false, false, false),
-    					listen_dev(div3, "click", /*handleClickX*/ ctx[11], false, false, false)
-    				];
-
-    				mounted = true;
-    			}
-    		},
-    		p: function update(ctx, dirty) {
-    			if ((!current || dirty & /*isPaused*/ 64) && raw_value !== (raw_value = (/*isPaused*/ ctx[6]
-    			? '<i class="fas fa-play-circle play-icon"></i>'
-    			: '<i class="fas fa-pause-circle"></i>') + "")) div2.innerHTML = raw_value;
-    			const convolutionanimator_changes = {};
-    			if (dirty & /*kernel*/ 4) convolutionanimator_changes.kernel = /*kernel*/ ctx[2];
-    			if (dirty & /*input*/ 2) convolutionanimator_changes.image = /*input*/ ctx[1];
-    			if (dirty & /*outputFinal*/ 128) convolutionanimator_changes.output = /*outputFinal*/ ctx[7];
-    			if (dirty & /*isPaused*/ 64) convolutionanimator_changes.isPaused = /*isPaused*/ ctx[6];
-    			if (dirty & /*dataRange*/ 8) convolutionanimator_changes.dataRange = /*dataRange*/ ctx[3];
-    			if (dirty & /*colorScale*/ 16) convolutionanimator_changes.colorScale = /*colorScale*/ ctx[4];
-    			if (dirty & /*isInputInputLayer*/ 32) convolutionanimator_changes.isInputInputLayer = /*isInputInputLayer*/ ctx[5];
-    			convolutionanimator.$set(convolutionanimator_changes);
-    		},
-    		i: function intro(local) {
-    			if (current) return;
-    			transition_in(convolutionanimator.$$.fragment, local);
-    			current = true;
-    		},
-    		o: function outro(local) {
-    			transition_out(convolutionanimator.$$.fragment, local);
-    			current = false;
-    		},
-    		d: function destroy(detaching) {
-    			if (detaching) detach_dev(div10);
-    			destroy_component(convolutionanimator);
-    			mounted = false;
-    			run_all(dispose);
-    		}
-    	};
-
-    	dispatch_dev("SvelteRegisterBlock", {
-    		block,
-    		id: create_if_block.name,
-    		type: "if",
-    		source: "(110:0) {#if !isExited}",
-    		ctx
-    	});
-
-    	return block;
-    }
-
-    function create_fragment$3(ctx) {
-    	let if_block_anchor;
-    	let current;
-    	let if_block = !/*isExited*/ ctx[0] && create_if_block(ctx);
-
-    	const block = {
-    		c: function create() {
-    			if (if_block) if_block.c();
-    			if_block_anchor = empty();
-    		},
-    		l: function claim(nodes) {
-    			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
-    		},
-    		m: function mount(target, anchor) {
-    			if (if_block) if_block.m(target, anchor);
-    			insert_dev(target, if_block_anchor, anchor);
-    			current = true;
-    		},
-    		p: function update(ctx, [dirty]) {
-    			if (!/*isExited*/ ctx[0]) {
-    				if (if_block) {
-    					if_block.p(ctx, dirty);
-
-    					if (dirty & /*isExited*/ 1) {
-    						transition_in(if_block, 1);
-    					}
-    				} else {
-    					if_block = create_if_block(ctx);
-    					if_block.c();
-    					transition_in(if_block, 1);
-    					if_block.m(if_block_anchor.parentNode, if_block_anchor);
-    				}
-    			} else if (if_block) {
-    				group_outros();
-
-    				transition_out(if_block, 1, 1, () => {
-    					if_block = null;
-    				});
-
-    				check_outros();
-    			}
-    		},
-    		i: function intro(local) {
-    			if (current) return;
-    			transition_in(if_block);
-    			current = true;
-    		},
-    		o: function outro(local) {
-    			transition_out(if_block);
-    			current = false;
-    		},
-    		d: function destroy(detaching) {
-    			if (if_block) if_block.d(detaching);
-    			if (detaching) detach_dev(if_block_anchor);
-    		}
-    	};
-
-    	dispatch_dev("SvelteRegisterBlock", {
-    		block,
-    		id: create_fragment$3.name,
-    		type: "component",
-    		source: "",
-    		ctx
-    	});
-
-    	return block;
-    }
-
-    const dilation = 1;
-
-    function handleScroll() {
-    	let svgHeight = Number(d3.select('#cnn-svg').style('height').replace('px', '')) + 150;
-    	let scroll = new SmoothScroll('a[href*="#"]', { offset: -svgHeight });
-    	let anchor = document.querySelector(`#article-convolution`);
-    	scroll.animateScroll(anchor);
-    }
-
-    function instance$3($$self, $$props, $$invalidate) {
-    	let { $$slots: slots = {}, $$scope } = $$props;
-    	validate_slots('Convolutionview', slots, []);
-    	let { input } = $$props;
-    	let { kernel } = $$props;
-    	let { dataRange } = $$props;
-    	let { colorScale = d3.interpolateRdBu } = $$props;
-    	let { isInputInputLayer = false } = $$props;
-    	let { isExited = false } = $$props;
-
-    	// export let output;
-    	const dispatch = createEventDispatcher();
-
-    	let stride = 1;
-    	var isPaused = false;
-    	var outputFinal = singleConv(input, kernel, stride);
-
-    	function handleClickPause() {
-    		$$invalidate(6, isPaused = !isPaused);
-    	}
-
-    	function handlePauseFromInteraction(event) {
-    		$$invalidate(6, isPaused = event.detail.text);
-    	}
-
-    	function handleClickX() {
-    		$$invalidate(0, isExited = true);
-    		dispatch('message', { text: isExited });
-    	}
-
-    	const writable_props = ['input', 'kernel', 'dataRange', 'colorScale', 'isInputInputLayer', 'isExited'];
-
-    	Object.keys($$props).forEach(key => {
-    		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== '$$' && key !== 'slot') console_1.warn(`<Convolutionview> was created with unknown prop '${key}'`);
-    	});
-
-    	$$self.$$set = $$props => {
-    		if ('input' in $$props) $$invalidate(1, input = $$props.input);
-    		if ('kernel' in $$props) $$invalidate(2, kernel = $$props.kernel);
-    		if ('dataRange' in $$props) $$invalidate(3, dataRange = $$props.dataRange);
-    		if ('colorScale' in $$props) $$invalidate(4, colorScale = $$props.colorScale);
-    		if ('isInputInputLayer' in $$props) $$invalidate(5, isInputInputLayer = $$props.isInputInputLayer);
-    		if ('isExited' in $$props) $$invalidate(0, isExited = $$props.isExited);
-    	};
-
-    	$$self.$capture_state = () => ({
-    		ConvolutionAnimator,
-    		singleConv,
-    		createEventDispatcher,
-    		input,
-    		kernel,
-    		dataRange,
-    		colorScale,
-    		isInputInputLayer,
-    		isExited,
-    		dispatch,
-    		stride,
-    		dilation,
-    		isPaused,
-    		outputFinal,
-    		handleClickPause,
-    		handleScroll,
-    		handlePauseFromInteraction,
-    		handleClickX
-    	});
-
-    	$$self.$inject_state = $$props => {
-    		if ('input' in $$props) $$invalidate(1, input = $$props.input);
-    		if ('kernel' in $$props) $$invalidate(2, kernel = $$props.kernel);
-    		if ('dataRange' in $$props) $$invalidate(3, dataRange = $$props.dataRange);
-    		if ('colorScale' in $$props) $$invalidate(4, colorScale = $$props.colorScale);
-    		if ('isInputInputLayer' in $$props) $$invalidate(5, isInputInputLayer = $$props.isInputInputLayer);
-    		if ('isExited' in $$props) $$invalidate(0, isExited = $$props.isExited);
-    		if ('stride' in $$props) $$invalidate(8, stride = $$props.stride);
-    		if ('isPaused' in $$props) $$invalidate(6, isPaused = $$props.isPaused);
-    		if ('outputFinal' in $$props) $$invalidate(7, outputFinal = $$props.outputFinal);
-    	};
-
-    	if ($$props && "$$inject" in $$props) {
-    		$$self.$inject_state($$props.$$inject);
-    	}
-
-    	$$self.$$.update = () => {
-    		if ($$self.$$.dirty & /*input, kernel*/ 6) {
-    			 if (stride > 0) {
-    				try {
-    					$$invalidate(7, outputFinal = singleConv(input, kernel, stride));
-    				} catch {
-    					console.log("Cannot handle stride of " + stride);
-    				}
-    			}
-    		}
-    	};
-
-    	return [
-    		isExited,
-    		input,
-    		kernel,
-    		dataRange,
-    		colorScale,
-    		isInputInputLayer,
-    		isPaused,
-    		outputFinal,
-    		stride,
-    		handleClickPause,
-    		handlePauseFromInteraction,
-    		handleClickX
-    	];
-    }
-
-    class Convolutionview extends SvelteComponentDev {
-    	constructor(options) {
-    		super(options);
-
-    		init(this, options, instance$3, create_fragment$3, safe_not_equal, {
-    			input: 1,
-    			kernel: 2,
-    			dataRange: 3,
-    			colorScale: 4,
-    			isInputInputLayer: 5,
-    			isExited: 0
-    		});
-
-    		dispatch_dev("SvelteRegisterComponent", {
-    			component: this,
-    			tagName: "Convolutionview",
-    			options,
-    			id: create_fragment$3.name
-    		});
-
-    		const { ctx } = this.$$;
-    		const props = options.props || {};
-
-    		if (/*input*/ ctx[1] === undefined && !('input' in props)) {
-    			console_1.warn("<Convolutionview> was created without expected prop 'input'");
-    		}
-
-    		if (/*kernel*/ ctx[2] === undefined && !('kernel' in props)) {
-    			console_1.warn("<Convolutionview> was created without expected prop 'kernel'");
-    		}
-
-    		if (/*dataRange*/ ctx[3] === undefined && !('dataRange' in props)) {
-    			console_1.warn("<Convolutionview> was created without expected prop 'dataRange'");
-    		}
-    	}
-
-    	get input() {
-    		throw new Error("<Convolutionview>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set input(value) {
-    		throw new Error("<Convolutionview>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get kernel() {
-    		throw new Error("<Convolutionview>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set kernel(value) {
-    		throw new Error("<Convolutionview>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get dataRange() {
-    		throw new Error("<Convolutionview>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set dataRange(value) {
-    		throw new Error("<Convolutionview>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get colorScale() {
-    		throw new Error("<Convolutionview>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set colorScale(value) {
-    		throw new Error("<Convolutionview>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get isInputInputLayer() {
-    		throw new Error("<Convolutionview>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set isInputInputLayer(value) {
-    		throw new Error("<Convolutionview>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get isExited() {
-    		throw new Error("<Convolutionview>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set isExited(value) {
-    		throw new Error("<Convolutionview>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-    }
-
-    /* src\detail-view\ActivationAnimator.svelte generated by Svelte v3.47.0 */
-    const file$4 = "src\\detail-view\\ActivationAnimator.svelte";
-
-    function create_fragment$4(ctx) {
-    	let div1;
-    	let div0;
-    	let t0;
-    	let t1_value = /*image*/ ctx[0].length + "";
-    	let t1;
-    	let t2;
-    	let t3_value = /*image*/ ctx[0][0].length + "";
-    	let t3;
-    	let t4;
-    	let t5;
-    	let dataview0;
-    	let t6;
-    	let div2;
-    	let span;
-    	let t7;
-    	let dataview1;
-    	let t8;
-    	let dataview2;
-    	let t9;
-    	let dataview3;
-    	let t10;
-    	let div4;
-    	let div3;
-    	let t11;
-    	let t12_value = /*output*/ ctx[1].length + "";
-    	let t12;
-    	let t13;
-    	let t14_value = /*output*/ ctx[1][0].length + "";
-    	let t14;
-    	let t15;
-    	let t16;
-    	let dataview4;
-    	let current;
-
-    	dataview0 = new Dataview({
-    			props: {
-    				data: /*gridImage*/ ctx[7],
-    				highlights: /*inputHighlights*/ ctx[3],
-    				outputLength: /*output*/ ctx[1].length,
-    				isKernelMath: false,
-    				constraint: getVisualizationSizeConstraint(/*image*/ ctx[0].length),
-    				dataRange: /*dataRange*/ ctx[2],
-    				stride: 1
-    			},
-    			$$inline: true
-    		});
-
-    	dataview0.$on("message", /*handleMouseover*/ ctx[9]);
-
-    	dataview1 = new Dataview({
-    			props: {
-    				data: gridData([[0]]),
-    				highlights: /*outputHighlights*/ ctx[4],
-    				isKernelMath: true,
-    				constraint: 20,
-    				dataRange: /*dataRange*/ ctx[2]
-    			},
-    			$$inline: true
-    		});
-
-    	dataview2 = new Dataview({
-    			props: {
-    				data: /*gridInputMatrixSlice*/ ctx[5],
-    				highlights: /*outputHighlights*/ ctx[4],
-    				isKernelMath: true,
-    				constraint: 20,
-    				dataRange: /*dataRange*/ ctx[2]
-    			},
-    			$$inline: true
-    		});
-
-    	dataview3 = new Dataview({
-    			props: {
-    				data: /*gridOutputMatrixSlice*/ ctx[6],
-    				highlights: /*outputHighlights*/ ctx[4],
-    				isKernelMath: true,
-    				constraint: 20,
-    				dataRange: /*dataRange*/ ctx[2]
-    			},
-    			$$inline: true
-    		});
-
-    	dataview4 = new Dataview({
-    			props: {
-    				data: /*gridOutput*/ ctx[8],
-    				highlights: /*outputHighlights*/ ctx[4],
-    				isKernelMath: false,
-    				outputLength: /*output*/ ctx[1].length,
-    				constraint: getVisualizationSizeConstraint(/*output*/ ctx[1].length),
-    				dataRange: /*dataRange*/ ctx[2],
-    				stride: 1
-    			},
-    			$$inline: true
-    		});
-
-    	dataview4.$on("message", /*handleMouseover*/ ctx[9]);
-
-    	const block = {
-    		c: function create() {
-    			div1 = element("div");
-    			div0 = element("div");
-    			t0 = text("Input (");
-    			t1 = text(t1_value);
-    			t2 = text(", ");
-    			t3 = text(t3_value);
-    			t4 = text(")");
-    			t5 = space();
-    			create_component(dataview0.$$.fragment);
-    			t6 = space();
-    			div2 = element("div");
-    			span = element("span");
-    			t7 = text("max(\n    ");
-    			create_component(dataview1.$$.fragment);
-    			t8 = text("\n    ,\n    ");
-    			create_component(dataview2.$$.fragment);
-    			t9 = text("\n    )\n    =\n    ");
-    			create_component(dataview3.$$.fragment);
-    			t10 = space();
-    			div4 = element("div");
-    			div3 = element("div");
-    			t11 = text("Output (");
-    			t12 = text(t12_value);
-    			t13 = text(", ");
-    			t14 = text(t14_value);
-    			t15 = text(")");
-    			t16 = space();
-    			create_component(dataview4.$$.fragment);
-    			attr_dev(div0, "class", "header-text");
-    			add_location(div0, file$4, 85, 2, 3124);
-    			attr_dev(div1, "class", "column has-text-centered svelte-gz7a6i");
-    			add_location(div1, file$4, 84, 0, 3083);
-    			add_location(span, file$4, 92, 2, 3491);
-    			attr_dev(div2, "class", "column has-text-centered svelte-gz7a6i");
-    			add_location(div2, file$4, 91, 0, 3450);
-    			attr_dev(div3, "class", "header-text");
-    			add_location(div3, file$4, 106, 2, 3993);
-    			attr_dev(div4, "class", "column has-text-centered svelte-gz7a6i");
-    			add_location(div4, file$4, 105, 0, 3952);
-    		},
-    		l: function claim(nodes) {
-    			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
-    		},
-    		m: function mount(target, anchor) {
-    			insert_dev(target, div1, anchor);
-    			append_dev(div1, div0);
-    			append_dev(div0, t0);
-    			append_dev(div0, t1);
-    			append_dev(div0, t2);
-    			append_dev(div0, t3);
-    			append_dev(div0, t4);
-    			append_dev(div1, t5);
-    			mount_component(dataview0, div1, null);
-    			insert_dev(target, t6, anchor);
-    			insert_dev(target, div2, anchor);
-    			append_dev(div2, span);
-    			append_dev(span, t7);
-    			mount_component(dataview1, span, null);
-    			append_dev(span, t8);
-    			mount_component(dataview2, span, null);
-    			append_dev(span, t9);
-    			mount_component(dataview3, span, null);
-    			insert_dev(target, t10, anchor);
-    			insert_dev(target, div4, anchor);
-    			append_dev(div4, div3);
-    			append_dev(div3, t11);
-    			append_dev(div3, t12);
-    			append_dev(div3, t13);
-    			append_dev(div3, t14);
-    			append_dev(div3, t15);
-    			append_dev(div4, t16);
-    			mount_component(dataview4, div4, null);
-    			current = true;
-    		},
-    		p: function update(ctx, [dirty]) {
-    			if ((!current || dirty & /*image*/ 1) && t1_value !== (t1_value = /*image*/ ctx[0].length + "")) set_data_dev(t1, t1_value);
-    			if ((!current || dirty & /*image*/ 1) && t3_value !== (t3_value = /*image*/ ctx[0][0].length + "")) set_data_dev(t3, t3_value);
-    			const dataview0_changes = {};
-    			if (dirty & /*gridImage*/ 128) dataview0_changes.data = /*gridImage*/ ctx[7];
-    			if (dirty & /*inputHighlights*/ 8) dataview0_changes.highlights = /*inputHighlights*/ ctx[3];
-    			if (dirty & /*output*/ 2) dataview0_changes.outputLength = /*output*/ ctx[1].length;
-    			if (dirty & /*image*/ 1) dataview0_changes.constraint = getVisualizationSizeConstraint(/*image*/ ctx[0].length);
-    			if (dirty & /*dataRange*/ 4) dataview0_changes.dataRange = /*dataRange*/ ctx[2];
-    			dataview0.$set(dataview0_changes);
-    			const dataview1_changes = {};
-    			if (dirty & /*outputHighlights*/ 16) dataview1_changes.highlights = /*outputHighlights*/ ctx[4];
-    			if (dirty & /*dataRange*/ 4) dataview1_changes.dataRange = /*dataRange*/ ctx[2];
-    			dataview1.$set(dataview1_changes);
-    			const dataview2_changes = {};
-    			if (dirty & /*gridInputMatrixSlice*/ 32) dataview2_changes.data = /*gridInputMatrixSlice*/ ctx[5];
-    			if (dirty & /*outputHighlights*/ 16) dataview2_changes.highlights = /*outputHighlights*/ ctx[4];
-    			if (dirty & /*dataRange*/ 4) dataview2_changes.dataRange = /*dataRange*/ ctx[2];
-    			dataview2.$set(dataview2_changes);
-    			const dataview3_changes = {};
-    			if (dirty & /*gridOutputMatrixSlice*/ 64) dataview3_changes.data = /*gridOutputMatrixSlice*/ ctx[6];
-    			if (dirty & /*outputHighlights*/ 16) dataview3_changes.highlights = /*outputHighlights*/ ctx[4];
-    			if (dirty & /*dataRange*/ 4) dataview3_changes.dataRange = /*dataRange*/ ctx[2];
-    			dataview3.$set(dataview3_changes);
-    			if ((!current || dirty & /*output*/ 2) && t12_value !== (t12_value = /*output*/ ctx[1].length + "")) set_data_dev(t12, t12_value);
-    			if ((!current || dirty & /*output*/ 2) && t14_value !== (t14_value = /*output*/ ctx[1][0].length + "")) set_data_dev(t14, t14_value);
-    			const dataview4_changes = {};
-    			if (dirty & /*gridOutput*/ 256) dataview4_changes.data = /*gridOutput*/ ctx[8];
-    			if (dirty & /*outputHighlights*/ 16) dataview4_changes.highlights = /*outputHighlights*/ ctx[4];
-    			if (dirty & /*output*/ 2) dataview4_changes.outputLength = /*output*/ ctx[1].length;
-    			if (dirty & /*output*/ 2) dataview4_changes.constraint = getVisualizationSizeConstraint(/*output*/ ctx[1].length);
-    			if (dirty & /*dataRange*/ 4) dataview4_changes.dataRange = /*dataRange*/ ctx[2];
-    			dataview4.$set(dataview4_changes);
-    		},
-    		i: function intro(local) {
-    			if (current) return;
-    			transition_in(dataview0.$$.fragment, local);
-    			transition_in(dataview1.$$.fragment, local);
-    			transition_in(dataview2.$$.fragment, local);
-    			transition_in(dataview3.$$.fragment, local);
-    			transition_in(dataview4.$$.fragment, local);
-    			current = true;
-    		},
-    		o: function outro(local) {
-    			transition_out(dataview0.$$.fragment, local);
-    			transition_out(dataview1.$$.fragment, local);
-    			transition_out(dataview2.$$.fragment, local);
-    			transition_out(dataview3.$$.fragment, local);
-    			transition_out(dataview4.$$.fragment, local);
-    			current = false;
-    		},
-    		d: function destroy(detaching) {
-    			if (detaching) detach_dev(div1);
-    			destroy_component(dataview0);
-    			if (detaching) detach_dev(t6);
-    			if (detaching) detach_dev(div2);
-    			destroy_component(dataview1);
-    			destroy_component(dataview2);
-    			destroy_component(dataview3);
-    			if (detaching) detach_dev(t10);
-    			if (detaching) detach_dev(div4);
-    			destroy_component(dataview4);
-    		}
-    	};
-
-    	dispatch_dev("SvelteRegisterBlock", {
-    		block,
-    		id: create_fragment$4.name,
-    		type: "component",
-    		source: "",
-    		ctx
-    	});
-
-    	return block;
-    }
-
-    const padding$1 = 0;
-
-    function instance$4($$self, $$props, $$invalidate) {
-    	let { $$slots: slots = {}, $$scope } = $$props;
-    	validate_slots('ActivationAnimator', slots, []);
-    	let { image } = $$props;
-    	let { output } = $$props;
-    	let { isPaused } = $$props;
-    	let { dataRange } = $$props;
-    	const dispatch = createEventDispatcher();
-    	let padded_input_size = image.length + padding$1 * 2;
-    	let gridInputMatrixSlice = gridData([[0]]);
-    	let gridOutputMatrixSlice = gridData([[0]]);
-    	let inputHighlights = array1d(image.length * image.length, i => true);
-    	let outputHighlights = array1d(output.length * output.length, i => true);
-    	let interval;
-    	let counter;
-
-    	// lots of replication between mouseover and start-relu. TODO: fix this.
-    	function startRelu() {
-    		counter = 0;
-    		if (interval) clearInterval(interval);
-
-    		$$invalidate(11, interval = setInterval(
-    			() => {
-    				if (isPaused) return;
-    				const flat_animated = counter % (output.length * output.length);
-    				$$invalidate(4, outputHighlights = array1d(output.length * output.length, i => false));
-    				$$invalidate(3, inputHighlights = array1d(image.length * image.length, i => undefined));
-    				const animatedH = Math.floor(flat_animated / output.length);
-    				const animatedW = flat_animated % output.length;
-    				$$invalidate(4, outputHighlights[animatedH * output.length + animatedW] = true, outputHighlights);
-    				$$invalidate(3, inputHighlights[animatedH * output.length + animatedW] = true, inputHighlights);
-    				const inputMatrixSlice = getMatrixSliceFromInputHighlights(image, inputHighlights, 1);
-    				$$invalidate(5, gridInputMatrixSlice = gridData(inputMatrixSlice));
-    				const outputMatrixSlice = getMatrixSliceFromOutputHighlights(output, outputHighlights);
-    				$$invalidate(6, gridOutputMatrixSlice = gridData(outputMatrixSlice));
-    				counter++;
-    			},
-    			250
-    		));
-    	}
-
-    	function handleMouseover(event) {
-    		$$invalidate(4, outputHighlights = array1d(output.length * output.length, i => false));
-    		const animatedH = event.detail.hoverH;
-    		const animatedW = event.detail.hoverW;
-    		$$invalidate(4, outputHighlights[animatedH * output.length + animatedW] = true, outputHighlights);
-    		$$invalidate(3, inputHighlights = array1d(image.length * image.length, i => undefined));
-    		$$invalidate(3, inputHighlights[animatedH * output.length + animatedW] = true, inputHighlights);
-    		const inputMatrixSlice = getMatrixSliceFromInputHighlights(image, inputHighlights, 1);
-    		$$invalidate(5, gridInputMatrixSlice = gridData(inputMatrixSlice));
-    		const outputMatrixSlice = getMatrixSliceFromOutputHighlights(output, outputHighlights);
-    		$$invalidate(6, gridOutputMatrixSlice = gridData(outputMatrixSlice));
-    		$$invalidate(10, isPaused = true);
-    		dispatch('message', { text: isPaused });
-    	}
-
-    	startRelu();
-    	let gridImage = gridData(image);
-    	let gridOutput = gridData(output);
-    	const writable_props = ['image', 'output', 'isPaused', 'dataRange'];
-
-    	Object.keys($$props).forEach(key => {
-    		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== '$$' && key !== 'slot') console.warn(`<ActivationAnimator> was created with unknown prop '${key}'`);
-    	});
-
-    	$$self.$$set = $$props => {
-    		if ('image' in $$props) $$invalidate(0, image = $$props.image);
-    		if ('output' in $$props) $$invalidate(1, output = $$props.output);
-    		if ('isPaused' in $$props) $$invalidate(10, isPaused = $$props.isPaused);
-    		if ('dataRange' in $$props) $$invalidate(2, dataRange = $$props.dataRange);
-    	};
-
-    	$$self.$capture_state = () => ({
-    		createEventDispatcher,
-    		array1d,
-    		getMatrixSliceFromOutputHighlights,
-    		getVisualizationSizeConstraint,
-    		getMatrixSliceFromInputHighlights,
-    		gridData,
-    		Dataview,
-    		image,
-    		output,
-    		isPaused,
-    		dataRange,
-    		dispatch,
-    		padding: padding$1,
-    		padded_input_size,
-    		gridInputMatrixSlice,
-    		gridOutputMatrixSlice,
-    		inputHighlights,
-    		outputHighlights,
-    		interval,
-    		counter,
-    		startRelu,
-    		handleMouseover,
-    		gridImage,
-    		gridOutput
-    	});
-
-    	$$self.$inject_state = $$props => {
-    		if ('image' in $$props) $$invalidate(0, image = $$props.image);
-    		if ('output' in $$props) $$invalidate(1, output = $$props.output);
-    		if ('isPaused' in $$props) $$invalidate(10, isPaused = $$props.isPaused);
-    		if ('dataRange' in $$props) $$invalidate(2, dataRange = $$props.dataRange);
-    		if ('padded_input_size' in $$props) padded_input_size = $$props.padded_input_size;
-    		if ('gridInputMatrixSlice' in $$props) $$invalidate(5, gridInputMatrixSlice = $$props.gridInputMatrixSlice);
-    		if ('gridOutputMatrixSlice' in $$props) $$invalidate(6, gridOutputMatrixSlice = $$props.gridOutputMatrixSlice);
-    		if ('inputHighlights' in $$props) $$invalidate(3, inputHighlights = $$props.inputHighlights);
-    		if ('outputHighlights' in $$props) $$invalidate(4, outputHighlights = $$props.outputHighlights);
-    		if ('interval' in $$props) $$invalidate(11, interval = $$props.interval);
-    		if ('counter' in $$props) counter = $$props.counter;
-    		if ('gridImage' in $$props) $$invalidate(7, gridImage = $$props.gridImage);
-    		if ('gridOutput' in $$props) $$invalidate(8, gridOutput = $$props.gridOutput);
-    	};
-
-    	if ($$props && "$$inject" in $$props) {
-    		$$self.$inject_state($$props.$$inject);
-    	}
-
-    	$$self.$$.update = () => {
-    		if ($$self.$$.dirty & /*image*/ 1) {
-    			 padded_input_size = image.length + padding$1 * 2;
-    		}
-
-    		if ($$self.$$.dirty & /*image, output*/ 3) {
-    			 {
-    				let inputHighlights = array1d(image.length * image.length, i => true);
-    				let outputHighlights = array1d(output.length * output.length, i => true);
-    			}
-    		}
-
-    		if ($$self.$$.dirty & /*image, output*/ 3) {
-    			 {
-    				startRelu();
-    				$$invalidate(7, gridImage = gridData(image));
-    				$$invalidate(8, gridOutput = gridData(output));
-    			}
-    		}
-    	};
-
-    	return [
-    		image,
-    		output,
-    		dataRange,
-    		inputHighlights,
-    		outputHighlights,
-    		gridInputMatrixSlice,
-    		gridOutputMatrixSlice,
-    		gridImage,
-    		gridOutput,
-    		handleMouseover,
-    		isPaused,
-    		interval
-    	];
-    }
-
-    class ActivationAnimator extends SvelteComponentDev {
-    	constructor(options) {
-    		super(options);
-
-    		init(this, options, instance$4, create_fragment$4, safe_not_equal, {
-    			image: 0,
-    			output: 1,
-    			isPaused: 10,
-    			dataRange: 2
-    		});
-
-    		dispatch_dev("SvelteRegisterComponent", {
-    			component: this,
-    			tagName: "ActivationAnimator",
-    			options,
-    			id: create_fragment$4.name
-    		});
-
-    		const { ctx } = this.$$;
-    		const props = options.props || {};
-
-    		if (/*image*/ ctx[0] === undefined && !('image' in props)) {
-    			console.warn("<ActivationAnimator> was created without expected prop 'image'");
-    		}
-
-    		if (/*output*/ ctx[1] === undefined && !('output' in props)) {
-    			console.warn("<ActivationAnimator> was created without expected prop 'output'");
-    		}
-
-    		if (/*isPaused*/ ctx[10] === undefined && !('isPaused' in props)) {
-    			console.warn("<ActivationAnimator> was created without expected prop 'isPaused'");
-    		}
-
-    		if (/*dataRange*/ ctx[2] === undefined && !('dataRange' in props)) {
-    			console.warn("<ActivationAnimator> was created without expected prop 'dataRange'");
-    		}
-    	}
-
-    	get image() {
-    		throw new Error("<ActivationAnimator>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set image(value) {
-    		throw new Error("<ActivationAnimator>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get output() {
-    		throw new Error("<ActivationAnimator>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set output(value) {
-    		throw new Error("<ActivationAnimator>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get isPaused() {
-    		throw new Error("<ActivationAnimator>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set isPaused(value) {
-    		throw new Error("<ActivationAnimator>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get dataRange() {
-    		throw new Error("<ActivationAnimator>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set dataRange(value) {
-    		throw new Error("<ActivationAnimator>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-    }
-
-    /* src\detail-view\Activationview.svelte generated by Svelte v3.47.0 */
-    const file$5 = "src\\detail-view\\Activationview.svelte";
-
-    // (95:0) {#if !isExited}
-    function create_if_block$1(ctx) {
-    	let div10;
-    	let div9;
-    	let div5;
-    	let div0;
-    	let t1;
-    	let div4;
-    	let div1;
-    	let i0;
-    	let t2;
-    	let div2;
-
-    	let raw_value = (/*isPaused*/ ctx[4]
-    	? '<i class="fas fa-play-circle play-icon"></i>'
-    	: '<i class="fas fa-pause-circle"></i>') + "";
-
-    	let t3;
-    	let div3;
-    	let i1;
-    	let t4;
-    	let div6;
-    	let activationanimator;
-    	let t5;
-    	let div8;
-    	let img;
-    	let img_src_value;
-    	let t6;
-    	let div7;
-    	let span;
-    	let t8;
-    	let current;
-    	let mounted;
-    	let dispose;
-
-    	activationanimator = new ActivationAnimator({
-    			props: {
-    				image: /*input*/ ctx[0],
-    				output: /*output*/ ctx[1],
-    				isPaused: /*isPaused*/ ctx[4],
-    				dataRange: /*dataRange*/ ctx[2]
-    			},
-    			$$inline: true
-    		});
-
-    	activationanimator.$on("message", /*handlePauseFromInteraction*/ ctx[6]);
-
-    	const block = {
-    		c: function create() {
-    			div10 = element("div");
-    			div9 = element("div");
-    			div5 = element("div");
-    			div0 = element("div");
-    			div0.textContent = "ReLU Activation";
-    			t1 = space();
-    			div4 = element("div");
-    			div1 = element("div");
-    			i0 = element("i");
-    			t2 = space();
-    			div2 = element("div");
-    			t3 = space();
-    			div3 = element("div");
-    			i1 = element("i");
-    			t4 = space();
-    			div6 = element("div");
-    			create_component(activationanimator.$$.fragment);
-    			t5 = space();
-    			div8 = element("div");
-    			img = element("img");
-    			t6 = space();
-    			div7 = element("div");
-    			span = element("span");
-    			span.textContent = "Hover over";
-    			t8 = text(" the matrices to change pixel.");
-    			attr_dev(div0, "class", "title-text svelte-1lq7956");
-    			add_location(div0, file$5, 100, 8, 1810);
-    			attr_dev(i0, "class", "fas fa-info-circle");
-    			add_location(i0, file$5, 107, 12, 2015);
-    			attr_dev(div1, "class", "control-button svelte-1lq7956");
-    			attr_dev(div1, "title", "Jump to article section");
-    			add_location(div1, file$5, 106, 10, 1918);
-    			attr_dev(div2, "class", "play-button control-button svelte-1lq7956");
-    			attr_dev(div2, "title", "Play animation");
-    			add_location(div2, file$5, 110, 10, 2078);
-    			attr_dev(i1, "class", "fas control-icon fa-times-circle");
-    			add_location(i1, file$5, 117, 14, 2439);
-    			attr_dev(div3, "class", "delete-button control-button svelte-1lq7956");
-    			attr_dev(div3, "title", "Close");
-    			add_location(div3, file$5, 116, 10, 2344);
-    			attr_dev(div4, "class", "buttons svelte-1lq7956");
-    			add_location(div4, file$5, 104, 8, 1885);
-    			attr_dev(div5, "class", "control-pannel svelte-1lq7956");
-    			add_location(div5, file$5, 98, 6, 1772);
-    			attr_dev(div6, "class", "container is-centered is-vcentered svelte-1lq7956");
-    			add_location(div6, file$5, 123, 6, 2541);
-    			if (!src_url_equal(img.src, img_src_value = "/assets/img/pointer.svg")) attr_dev(img, "src", img_src_value);
-    			attr_dev(img, "alt", "pointer icon");
-    			attr_dev(img, "class", "svelte-1lq7956");
-    			add_location(img, file$5, 130, 8, 2806);
-    			set_style(span, "font-weight", "600");
-    			add_location(span, file$5, 132, 10, 2919);
-    			attr_dev(div7, "class", "annotation-text");
-    			add_location(div7, file$5, 131, 8, 2879);
-    			attr_dev(div8, "class", "annotation svelte-1lq7956");
-    			add_location(div8, file$5, 129, 6, 2773);
-    			attr_dev(div9, "class", "box svelte-1lq7956");
-    			add_location(div9, file$5, 96, 4, 1747);
-    			attr_dev(div10, "class", "container svelte-1lq7956");
-    			add_location(div10, file$5, 95, 2, 1719);
-    		},
-    		m: function mount(target, anchor) {
-    			insert_dev(target, div10, anchor);
-    			append_dev(div10, div9);
-    			append_dev(div9, div5);
-    			append_dev(div5, div0);
-    			append_dev(div5, t1);
-    			append_dev(div5, div4);
-    			append_dev(div4, div1);
-    			append_dev(div1, i0);
-    			append_dev(div4, t2);
-    			append_dev(div4, div2);
-    			div2.innerHTML = raw_value;
-    			append_dev(div4, t3);
-    			append_dev(div4, div3);
-    			append_dev(div3, i1);
-    			append_dev(div9, t4);
-    			append_dev(div9, div6);
-    			mount_component(activationanimator, div6, null);
-    			append_dev(div9, t5);
-    			append_dev(div9, div8);
-    			append_dev(div8, img);
-    			append_dev(div8, t6);
-    			append_dev(div8, div7);
-    			append_dev(div7, span);
-    			append_dev(div7, t8);
-    			current = true;
-
-    			if (!mounted) {
-    				dispose = [
-    					listen_dev(div1, "click", handleScroll$1, false, false, false),
-    					listen_dev(div2, "click", /*handleClickPause*/ ctx[5], false, false, false),
-    					listen_dev(div3, "click", /*handleClickX*/ ctx[7], false, false, false)
-    				];
-
-    				mounted = true;
-    			}
-    		},
-    		p: function update(ctx, dirty) {
-    			if ((!current || dirty & /*isPaused*/ 16) && raw_value !== (raw_value = (/*isPaused*/ ctx[4]
-    			? '<i class="fas fa-play-circle play-icon"></i>'
-    			: '<i class="fas fa-pause-circle"></i>') + "")) div2.innerHTML = raw_value;
-    			const activationanimator_changes = {};
-    			if (dirty & /*input*/ 1) activationanimator_changes.image = /*input*/ ctx[0];
-    			if (dirty & /*output*/ 2) activationanimator_changes.output = /*output*/ ctx[1];
-    			if (dirty & /*isPaused*/ 16) activationanimator_changes.isPaused = /*isPaused*/ ctx[4];
-    			if (dirty & /*dataRange*/ 4) activationanimator_changes.dataRange = /*dataRange*/ ctx[2];
-    			activationanimator.$set(activationanimator_changes);
-    		},
-    		i: function intro(local) {
-    			if (current) return;
-    			transition_in(activationanimator.$$.fragment, local);
-    			current = true;
-    		},
-    		o: function outro(local) {
-    			transition_out(activationanimator.$$.fragment, local);
-    			current = false;
-    		},
-    		d: function destroy(detaching) {
-    			if (detaching) detach_dev(div10);
-    			destroy_component(activationanimator);
-    			mounted = false;
-    			run_all(dispose);
-    		}
-    	};
-
-    	dispatch_dev("SvelteRegisterBlock", {
-    		block,
-    		id: create_if_block$1.name,
-    		type: "if",
-    		source: "(95:0) {#if !isExited}",
-    		ctx
-    	});
-
-    	return block;
-    }
-
-    function create_fragment$5(ctx) {
-    	let if_block_anchor;
-    	let current;
-    	let if_block = !/*isExited*/ ctx[3] && create_if_block$1(ctx);
-
-    	const block = {
-    		c: function create() {
-    			if (if_block) if_block.c();
-    			if_block_anchor = empty();
-    		},
-    		l: function claim(nodes) {
-    			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
-    		},
-    		m: function mount(target, anchor) {
-    			if (if_block) if_block.m(target, anchor);
-    			insert_dev(target, if_block_anchor, anchor);
-    			current = true;
-    		},
-    		p: function update(ctx, [dirty]) {
-    			if (!/*isExited*/ ctx[3]) {
-    				if (if_block) {
-    					if_block.p(ctx, dirty);
-
-    					if (dirty & /*isExited*/ 8) {
-    						transition_in(if_block, 1);
-    					}
-    				} else {
-    					if_block = create_if_block$1(ctx);
-    					if_block.c();
-    					transition_in(if_block, 1);
-    					if_block.m(if_block_anchor.parentNode, if_block_anchor);
-    				}
-    			} else if (if_block) {
-    				group_outros();
-
-    				transition_out(if_block, 1, 1, () => {
-    					if_block = null;
-    				});
-
-    				check_outros();
-    			}
-    		},
-    		i: function intro(local) {
-    			if (current) return;
-    			transition_in(if_block);
-    			current = true;
-    		},
-    		o: function outro(local) {
-    			transition_out(if_block);
-    			current = false;
-    		},
-    		d: function destroy(detaching) {
-    			if (if_block) if_block.d(detaching);
-    			if (detaching) detach_dev(if_block_anchor);
-    		}
-    	};
-
-    	dispatch_dev("SvelteRegisterBlock", {
-    		block,
-    		id: create_fragment$5.name,
-    		type: "component",
-    		source: "",
-    		ctx
-    	});
-
-    	return block;
-    }
-
-    function handleScroll$1() {
-    	let svgHeight = Number(d3.select('#cnn-svg').style('height').replace('px', '')) + 150;
-    	let scroll = new SmoothScroll('a[href*="#"]', { offset: -svgHeight });
-    	let anchor = document.querySelector(`#article-relu`);
-    	scroll.animateScroll(anchor);
-    }
-
-    function instance$5($$self, $$props, $$invalidate) {
-    	let { $$slots: slots = {}, $$scope } = $$props;
-    	validate_slots('Activationview', slots, []);
-    	let { input } = $$props;
-    	let { output } = $$props;
-    	let { dataRange } = $$props;
-    	let { isExited } = $$props;
-    	const dispatch = createEventDispatcher();
-    	let isPaused = false;
-
-    	function handleClickPause() {
-    		$$invalidate(4, isPaused = !isPaused);
-    	}
-
-    	function handlePauseFromInteraction(event) {
-    		$$invalidate(4, isPaused = event.detail.text);
-    	}
-
-    	function handleClickX() {
-    		dispatch('message', { text: true });
-    	}
-
-    	const writable_props = ['input', 'output', 'dataRange', 'isExited'];
-
-    	Object.keys($$props).forEach(key => {
-    		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== '$$' && key !== 'slot') console.warn(`<Activationview> was created with unknown prop '${key}'`);
-    	});
-
-    	$$self.$$set = $$props => {
-    		if ('input' in $$props) $$invalidate(0, input = $$props.input);
-    		if ('output' in $$props) $$invalidate(1, output = $$props.output);
-    		if ('dataRange' in $$props) $$invalidate(2, dataRange = $$props.dataRange);
-    		if ('isExited' in $$props) $$invalidate(3, isExited = $$props.isExited);
-    	};
-
-    	$$self.$capture_state = () => ({
-    		ActivationAnimator,
-    		createEventDispatcher,
-    		input,
-    		output,
-    		dataRange,
-    		isExited,
-    		dispatch,
-    		isPaused,
-    		handleClickPause,
-    		handlePauseFromInteraction,
-    		handleClickX,
-    		handleScroll: handleScroll$1
-    	});
-
-    	$$self.$inject_state = $$props => {
-    		if ('input' in $$props) $$invalidate(0, input = $$props.input);
-    		if ('output' in $$props) $$invalidate(1, output = $$props.output);
-    		if ('dataRange' in $$props) $$invalidate(2, dataRange = $$props.dataRange);
-    		if ('isExited' in $$props) $$invalidate(3, isExited = $$props.isExited);
-    		if ('isPaused' in $$props) $$invalidate(4, isPaused = $$props.isPaused);
-    	};
-
-    	if ($$props && "$$inject" in $$props) {
-    		$$self.$inject_state($$props.$$inject);
-    	}
-
-    	return [
-    		input,
-    		output,
-    		dataRange,
-    		isExited,
-    		isPaused,
-    		handleClickPause,
-    		handlePauseFromInteraction,
-    		handleClickX
-    	];
-    }
-
-    class Activationview extends SvelteComponentDev {
-    	constructor(options) {
-    		super(options);
-
-    		init(this, options, instance$5, create_fragment$5, safe_not_equal, {
-    			input: 0,
-    			output: 1,
-    			dataRange: 2,
-    			isExited: 3
-    		});
-
-    		dispatch_dev("SvelteRegisterComponent", {
-    			component: this,
-    			tagName: "Activationview",
-    			options,
-    			id: create_fragment$5.name
-    		});
-
-    		const { ctx } = this.$$;
-    		const props = options.props || {};
-
-    		if (/*input*/ ctx[0] === undefined && !('input' in props)) {
-    			console.warn("<Activationview> was created without expected prop 'input'");
-    		}
-
-    		if (/*output*/ ctx[1] === undefined && !('output' in props)) {
-    			console.warn("<Activationview> was created without expected prop 'output'");
-    		}
-
-    		if (/*dataRange*/ ctx[2] === undefined && !('dataRange' in props)) {
-    			console.warn("<Activationview> was created without expected prop 'dataRange'");
-    		}
-
-    		if (/*isExited*/ ctx[3] === undefined && !('isExited' in props)) {
-    			console.warn("<Activationview> was created without expected prop 'isExited'");
-    		}
-    	}
-
-    	get input() {
-    		throw new Error("<Activationview>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set input(value) {
-    		throw new Error("<Activationview>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get output() {
-    		throw new Error("<Activationview>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set output(value) {
-    		throw new Error("<Activationview>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get dataRange() {
-    		throw new Error("<Activationview>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set dataRange(value) {
-    		throw new Error("<Activationview>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get isExited() {
-    		throw new Error("<Activationview>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set isExited(value) {
-    		throw new Error("<Activationview>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-    }
-
-    /* src\detail-view\PoolAnimator.svelte generated by Svelte v3.47.0 */
-    const file$6 = "src\\detail-view\\PoolAnimator.svelte";
-
-    function create_fragment$6(ctx) {
-    	let div1;
-    	let div0;
-    	let t0;
-    	let t1_value = /*testImage*/ ctx[9].length + "";
-    	let t1;
-    	let t2;
-    	let t3_value = /*testImage*/ ctx[9][0].length + "";
-    	let t3;
-    	let t4;
-    	let t5;
-    	let dataview0;
-    	let t6;
-    	let div2;
-    	let span;
-    	let t7;
-    	let dataview1;
-    	let t8;
-    	let dataview2;
-    	let t9;
-    	let div4;
-    	let div3;
-    	let t10;
-    	let t11_value = /*testOutput*/ ctx[10].length + "";
-    	let t11;
-    	let t12;
-    	let t13_value = /*testOutput*/ ctx[10][0].length + "";
-    	let t13;
-    	let t14;
-    	let t15;
-    	let dataview3;
-    	let current;
-
-    	dataview0 = new Dataview({
-    			props: {
-    				data: /*testImage*/ ctx[9],
-    				highlights: /*inputHighlights*/ ctx[5],
-    				outputLength: /*output*/ ctx[3].length,
-    				isKernelMath: false,
-    				constraint: getVisualizationSizeConstraint(/*image*/ ctx[2].length),
-    				dataRange: /*dataRange*/ ctx[4],
-    				stride: /*stride*/ ctx[0]
-    			},
-    			$$inline: true
-    		});
-
-    	dataview0.$on("message", /*handleMouseover*/ ctx[11]);
-
-    	dataview1 = new Dataview({
-    			props: {
-    				data: /*testInputMatrixSlice*/ ctx[7],
-    				highlights: /*outputHighlights*/ ctx[6],
-    				isKernelMath: true,
-    				constraint: getVisualizationSizeConstraint(/*kernelLength*/ ctx[1]),
-    				dataRange: /*dataRange*/ ctx[4]
-    			},
-    			$$inline: true
-    		});
-
-    	dataview2 = new Dataview({
-    			props: {
-    				data: /*testOutputMatrixSlice*/ ctx[8],
-    				highlights: /*outputHighlights*/ ctx[6],
-    				isKernelMath: true,
-    				constraint: getVisualizationSizeConstraint(/*kernelLength*/ ctx[1]),
-    				dataRange: /*dataRange*/ ctx[4]
-    			},
-    			$$inline: true
-    		});
-
-    	dataview3 = new Dataview({
-    			props: {
-    				data: /*testOutput*/ ctx[10],
-    				highlights: /*outputHighlights*/ ctx[6],
-    				isKernelMath: false,
-    				outputLength: /*output*/ ctx[3].length,
-    				constraint: getVisualizationSizeConstraint(/*output*/ ctx[3].length),
-    				dataRange: /*dataRange*/ ctx[4],
-    				stride: /*stride*/ ctx[0]
-    			},
-    			$$inline: true
-    		});
-
-    	dataview3.$on("message", /*handleMouseover*/ ctx[11]);
-
-    	const block = {
-    		c: function create() {
-    			div1 = element("div");
-    			div0 = element("div");
-    			t0 = text("Input (");
-    			t1 = text(t1_value);
-    			t2 = text(", ");
-    			t3 = text(t3_value);
-    			t4 = text(")");
-    			t5 = space();
-    			create_component(dataview0.$$.fragment);
-    			t6 = space();
-    			div2 = element("div");
-    			span = element("span");
-    			t7 = text("max(\n    ");
-    			create_component(dataview1.$$.fragment);
-    			t8 = text("\n    )\n    =\n    ");
-    			create_component(dataview2.$$.fragment);
-    			t9 = space();
-    			div4 = element("div");
-    			div3 = element("div");
-    			t10 = text("Output (");
-    			t11 = text(t11_value);
-    			t12 = text(", ");
-    			t13 = text(t13_value);
-    			t14 = text(")");
-    			t15 = space();
-    			create_component(dataview3.$$.fragment);
-    			attr_dev(div0, "class", "header-text");
-    			add_location(div0, file$6, 99, 2, 3722);
-    			attr_dev(div1, "class", "column has-text-centered svelte-gz7a6i");
-    			add_location(div1, file$6, 98, 0, 3681);
-    			add_location(span, file$6, 107, 2, 4103);
-    			attr_dev(div2, "class", "column has-text-centered svelte-gz7a6i");
-    			add_location(div2, file$6, 106, 0, 4062);
-    			attr_dev(div3, "class", "header-text");
-    			add_location(div3, file$6, 118, 2, 4553);
-    			attr_dev(div4, "class", "column has-text-centered svelte-gz7a6i");
-    			add_location(div4, file$6, 117, 0, 4512);
-    		},
-    		l: function claim(nodes) {
-    			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
-    		},
-    		m: function mount(target, anchor) {
-    			insert_dev(target, div1, anchor);
-    			append_dev(div1, div0);
-    			append_dev(div0, t0);
-    			append_dev(div0, t1);
-    			append_dev(div0, t2);
-    			append_dev(div0, t3);
-    			append_dev(div0, t4);
-    			append_dev(div1, t5);
-    			mount_component(dataview0, div1, null);
-    			insert_dev(target, t6, anchor);
-    			insert_dev(target, div2, anchor);
-    			append_dev(div2, span);
-    			append_dev(span, t7);
-    			mount_component(dataview1, span, null);
-    			append_dev(span, t8);
-    			mount_component(dataview2, span, null);
-    			insert_dev(target, t9, anchor);
-    			insert_dev(target, div4, anchor);
-    			append_dev(div4, div3);
-    			append_dev(div3, t10);
-    			append_dev(div3, t11);
-    			append_dev(div3, t12);
-    			append_dev(div3, t13);
-    			append_dev(div3, t14);
-    			append_dev(div4, t15);
-    			mount_component(dataview3, div4, null);
-    			current = true;
-    		},
-    		p: function update(ctx, [dirty]) {
-    			if ((!current || dirty & /*testImage*/ 512) && t1_value !== (t1_value = /*testImage*/ ctx[9].length + "")) set_data_dev(t1, t1_value);
-    			if ((!current || dirty & /*testImage*/ 512) && t3_value !== (t3_value = /*testImage*/ ctx[9][0].length + "")) set_data_dev(t3, t3_value);
-    			const dataview0_changes = {};
-    			if (dirty & /*testImage*/ 512) dataview0_changes.data = /*testImage*/ ctx[9];
-    			if (dirty & /*inputHighlights*/ 32) dataview0_changes.highlights = /*inputHighlights*/ ctx[5];
-    			if (dirty & /*output*/ 8) dataview0_changes.outputLength = /*output*/ ctx[3].length;
-    			if (dirty & /*image*/ 4) dataview0_changes.constraint = getVisualizationSizeConstraint(/*image*/ ctx[2].length);
-    			if (dirty & /*dataRange*/ 16) dataview0_changes.dataRange = /*dataRange*/ ctx[4];
-    			if (dirty & /*stride*/ 1) dataview0_changes.stride = /*stride*/ ctx[0];
-    			dataview0.$set(dataview0_changes);
-    			const dataview1_changes = {};
-    			if (dirty & /*testInputMatrixSlice*/ 128) dataview1_changes.data = /*testInputMatrixSlice*/ ctx[7];
-    			if (dirty & /*outputHighlights*/ 64) dataview1_changes.highlights = /*outputHighlights*/ ctx[6];
-    			if (dirty & /*kernelLength*/ 2) dataview1_changes.constraint = getVisualizationSizeConstraint(/*kernelLength*/ ctx[1]);
-    			if (dirty & /*dataRange*/ 16) dataview1_changes.dataRange = /*dataRange*/ ctx[4];
-    			dataview1.$set(dataview1_changes);
-    			const dataview2_changes = {};
-    			if (dirty & /*testOutputMatrixSlice*/ 256) dataview2_changes.data = /*testOutputMatrixSlice*/ ctx[8];
-    			if (dirty & /*outputHighlights*/ 64) dataview2_changes.highlights = /*outputHighlights*/ ctx[6];
-    			if (dirty & /*kernelLength*/ 2) dataview2_changes.constraint = getVisualizationSizeConstraint(/*kernelLength*/ ctx[1]);
-    			if (dirty & /*dataRange*/ 16) dataview2_changes.dataRange = /*dataRange*/ ctx[4];
-    			dataview2.$set(dataview2_changes);
-    			if ((!current || dirty & /*testOutput*/ 1024) && t11_value !== (t11_value = /*testOutput*/ ctx[10].length + "")) set_data_dev(t11, t11_value);
-    			if ((!current || dirty & /*testOutput*/ 1024) && t13_value !== (t13_value = /*testOutput*/ ctx[10][0].length + "")) set_data_dev(t13, t13_value);
-    			const dataview3_changes = {};
-    			if (dirty & /*testOutput*/ 1024) dataview3_changes.data = /*testOutput*/ ctx[10];
-    			if (dirty & /*outputHighlights*/ 64) dataview3_changes.highlights = /*outputHighlights*/ ctx[6];
-    			if (dirty & /*output*/ 8) dataview3_changes.outputLength = /*output*/ ctx[3].length;
-    			if (dirty & /*output*/ 8) dataview3_changes.constraint = getVisualizationSizeConstraint(/*output*/ ctx[3].length);
-    			if (dirty & /*dataRange*/ 16) dataview3_changes.dataRange = /*dataRange*/ ctx[4];
-    			if (dirty & /*stride*/ 1) dataview3_changes.stride = /*stride*/ ctx[0];
-    			dataview3.$set(dataview3_changes);
-    		},
-    		i: function intro(local) {
-    			if (current) return;
-    			transition_in(dataview0.$$.fragment, local);
-    			transition_in(dataview1.$$.fragment, local);
-    			transition_in(dataview2.$$.fragment, local);
-    			transition_in(dataview3.$$.fragment, local);
-    			current = true;
-    		},
-    		o: function outro(local) {
-    			transition_out(dataview0.$$.fragment, local);
-    			transition_out(dataview1.$$.fragment, local);
-    			transition_out(dataview2.$$.fragment, local);
-    			transition_out(dataview3.$$.fragment, local);
-    			current = false;
-    		},
-    		d: function destroy(detaching) {
-    			if (detaching) detach_dev(div1);
-    			destroy_component(dataview0);
-    			if (detaching) detach_dev(t6);
-    			if (detaching) detach_dev(div2);
-    			destroy_component(dataview1);
-    			destroy_component(dataview2);
-    			if (detaching) detach_dev(t9);
-    			if (detaching) detach_dev(div4);
-    			destroy_component(dataview3);
-    		}
-    	};
-
-    	dispatch_dev("SvelteRegisterBlock", {
-    		block,
-    		id: create_fragment$6.name,
-    		type: "component",
-    		source: "",
-    		ctx
-    	});
-
-    	return block;
-    }
-
-    const padding$2 = 0;
-
-    function instance$6($$self, $$props, $$invalidate) {
-    	let { $$slots: slots = {}, $$scope } = $$props;
-    	validate_slots('PoolAnimator', slots, []);
-    	let { stride } = $$props;
-    	let { dilation } = $$props;
-    	let { kernelLength } = $$props;
-    	let { image } = $$props;
-    	let { output } = $$props;
-    	let { isPaused } = $$props;
-    	let { dataRange } = $$props;
-    	const dispatch = createEventDispatcher();
-    	let padded_input_size = image.length + padding$2 * 2;
-
-    	// Dummy data for original state of component.
-    	let testInputMatrixSlice = [];
-
-    	for (let i = 0; i < kernelLength; i++) {
-    		testInputMatrixSlice.push([]);
-
-    		for (let j = 0; j < kernelLength; j++) {
-    			testInputMatrixSlice[i].push(0);
-    		}
-    	}
-
-    	testInputMatrixSlice = gridData(testInputMatrixSlice);
-    	let testOutputMatrixSlice = gridData([[0]]);
-    	let inputHighlights = [];
-    	let outputHighlights = array1d(output.length * output.length, i => true);
-    	let interval;
-    	let counter;
-
-    	// lots of replication between mouseover and start-pool. TODO: fix this.
-    	function startMaxPool(stride) {
-    		counter = 0;
-    		let outputMappings = generateOutputMappings(stride, output, kernelLength, padded_input_size, dilation);
-    		if (stride <= 0) return;
-    		if (interval) clearInterval(interval);
-
-    		$$invalidate(14, interval = setInterval(
-    			() => {
-    				if (isPaused) return;
-    				const flat_animated = counter % (output.length * output.length);
-    				$$invalidate(6, outputHighlights = array1d(output.length * output.length, i => false));
-    				const animatedH = Math.floor(flat_animated / output.length);
-    				const animatedW = flat_animated % output.length;
-    				$$invalidate(6, outputHighlights[animatedH * output.length + animatedW] = true, outputHighlights);
-    				$$invalidate(5, inputHighlights = compute_input_multiplies_with_weight(animatedH, animatedW, padded_input_size, kernelLength, outputMappings, kernelLength));
-    				const inputMatrixSlice = getMatrixSliceFromInputHighlights(image, inputHighlights, kernelLength);
-    				$$invalidate(7, testInputMatrixSlice = gridData(inputMatrixSlice));
-    				const outputMatrixSlice = getMatrixSliceFromOutputHighlights(output, outputHighlights);
-    				$$invalidate(8, testOutputMatrixSlice = gridData(outputMatrixSlice));
-    				counter++;
-    			},
-    			250
-    		));
-    	}
-
-    	function handleMouseover(event) {
-    		let outputMappings = generateOutputMappings(stride, output, kernelLength, padded_input_size, dilation);
-    		$$invalidate(6, outputHighlights = array1d(output.length * output.length, i => false));
-    		const animatedH = event.detail.hoverH;
-    		const animatedW = event.detail.hoverW;
-    		$$invalidate(6, outputHighlights[animatedH * output.length + animatedW] = true, outputHighlights);
-    		$$invalidate(5, inputHighlights = compute_input_multiplies_with_weight(animatedH, animatedW, padded_input_size, kernelLength, outputMappings, kernelLength));
-    		const inputMatrixSlice = getMatrixSliceFromInputHighlights(image, inputHighlights, kernelLength);
-    		$$invalidate(7, testInputMatrixSlice = gridData(inputMatrixSlice));
-    		const outputMatrixSlice = getMatrixSliceFromOutputHighlights(output, outputHighlights);
-    		$$invalidate(8, testOutputMatrixSlice = gridData(outputMatrixSlice));
-    		$$invalidate(12, isPaused = true);
-    		dispatch('message', { text: isPaused });
-    	}
-
-    	startMaxPool(stride);
-    	let testImage = gridData(image);
-    	let testOutput = gridData(output);
-
-    	const writable_props = [
-    		'stride',
-    		'dilation',
-    		'kernelLength',
-    		'image',
-    		'output',
-    		'isPaused',
-    		'dataRange'
-    	];
-
-    	Object.keys($$props).forEach(key => {
-    		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== '$$' && key !== 'slot') console.warn(`<PoolAnimator> was created with unknown prop '${key}'`);
-    	});
-
-    	$$self.$$set = $$props => {
-    		if ('stride' in $$props) $$invalidate(0, stride = $$props.stride);
-    		if ('dilation' in $$props) $$invalidate(13, dilation = $$props.dilation);
-    		if ('kernelLength' in $$props) $$invalidate(1, kernelLength = $$props.kernelLength);
-    		if ('image' in $$props) $$invalidate(2, image = $$props.image);
-    		if ('output' in $$props) $$invalidate(3, output = $$props.output);
-    		if ('isPaused' in $$props) $$invalidate(12, isPaused = $$props.isPaused);
-    		if ('dataRange' in $$props) $$invalidate(4, dataRange = $$props.dataRange);
-    	};
-
-    	$$self.$capture_state = () => ({
-    		createEventDispatcher,
-    		array1d,
-    		getMatrixSliceFromOutputHighlights,
-    		compute_input_multiplies_with_weight,
-    		getVisualizationSizeConstraint,
-    		generateOutputMappings,
-    		getMatrixSliceFromInputHighlights,
-    		gridData,
-    		Dataview,
-    		stride,
-    		dilation,
-    		kernelLength,
-    		image,
-    		output,
-    		isPaused,
-    		dataRange,
-    		dispatch,
-    		padding: padding$2,
-    		padded_input_size,
-    		testInputMatrixSlice,
-    		testOutputMatrixSlice,
-    		inputHighlights,
-    		outputHighlights,
-    		interval,
-    		counter,
-    		startMaxPool,
-    		handleMouseover,
-    		testImage,
-    		testOutput
-    	});
-
-    	$$self.$inject_state = $$props => {
-    		if ('stride' in $$props) $$invalidate(0, stride = $$props.stride);
-    		if ('dilation' in $$props) $$invalidate(13, dilation = $$props.dilation);
-    		if ('kernelLength' in $$props) $$invalidate(1, kernelLength = $$props.kernelLength);
-    		if ('image' in $$props) $$invalidate(2, image = $$props.image);
-    		if ('output' in $$props) $$invalidate(3, output = $$props.output);
-    		if ('isPaused' in $$props) $$invalidate(12, isPaused = $$props.isPaused);
-    		if ('dataRange' in $$props) $$invalidate(4, dataRange = $$props.dataRange);
-    		if ('padded_input_size' in $$props) padded_input_size = $$props.padded_input_size;
-    		if ('testInputMatrixSlice' in $$props) $$invalidate(7, testInputMatrixSlice = $$props.testInputMatrixSlice);
-    		if ('testOutputMatrixSlice' in $$props) $$invalidate(8, testOutputMatrixSlice = $$props.testOutputMatrixSlice);
-    		if ('inputHighlights' in $$props) $$invalidate(5, inputHighlights = $$props.inputHighlights);
-    		if ('outputHighlights' in $$props) $$invalidate(6, outputHighlights = $$props.outputHighlights);
-    		if ('interval' in $$props) $$invalidate(14, interval = $$props.interval);
-    		if ('counter' in $$props) counter = $$props.counter;
-    		if ('testImage' in $$props) $$invalidate(9, testImage = $$props.testImage);
-    		if ('testOutput' in $$props) $$invalidate(10, testOutput = $$props.testOutput);
-    	};
-
-    	if ($$props && "$$inject" in $$props) {
-    		$$self.$inject_state($$props.$$inject);
-    	}
-
-    	$$self.$$.update = () => {
-    		if ($$self.$$.dirty & /*image*/ 4) {
-    			 padded_input_size = image.length + padding$2 * 2;
-    		}
-
-    		if ($$self.$$.dirty & /*output*/ 8) {
-    			 {
-    				let outputHighlights = array1d(output.length * output.length, i => true);
-    			}
-    		}
-
-    		if ($$self.$$.dirty & /*stride, image, output*/ 13) {
-    			 {
-    				startMaxPool(stride);
-    				$$invalidate(9, testImage = gridData(image));
-    				$$invalidate(10, testOutput = gridData(output));
-    			}
-    		}
-    	};
-
-    	return [
-    		stride,
-    		kernelLength,
-    		image,
-    		output,
-    		dataRange,
-    		inputHighlights,
-    		outputHighlights,
-    		testInputMatrixSlice,
-    		testOutputMatrixSlice,
-    		testImage,
-    		testOutput,
-    		handleMouseover,
-    		isPaused,
-    		dilation,
-    		interval
-    	];
-    }
-
-    class PoolAnimator extends SvelteComponentDev {
-    	constructor(options) {
-    		super(options);
-
-    		init(this, options, instance$6, create_fragment$6, safe_not_equal, {
-    			stride: 0,
-    			dilation: 13,
-    			kernelLength: 1,
-    			image: 2,
-    			output: 3,
-    			isPaused: 12,
-    			dataRange: 4
-    		});
-
-    		dispatch_dev("SvelteRegisterComponent", {
-    			component: this,
-    			tagName: "PoolAnimator",
-    			options,
-    			id: create_fragment$6.name
-    		});
-
-    		const { ctx } = this.$$;
-    		const props = options.props || {};
-
-    		if (/*stride*/ ctx[0] === undefined && !('stride' in props)) {
-    			console.warn("<PoolAnimator> was created without expected prop 'stride'");
-    		}
-
-    		if (/*dilation*/ ctx[13] === undefined && !('dilation' in props)) {
-    			console.warn("<PoolAnimator> was created without expected prop 'dilation'");
-    		}
-
-    		if (/*kernelLength*/ ctx[1] === undefined && !('kernelLength' in props)) {
-    			console.warn("<PoolAnimator> was created without expected prop 'kernelLength'");
-    		}
-
-    		if (/*image*/ ctx[2] === undefined && !('image' in props)) {
-    			console.warn("<PoolAnimator> was created without expected prop 'image'");
-    		}
-
-    		if (/*output*/ ctx[3] === undefined && !('output' in props)) {
-    			console.warn("<PoolAnimator> was created without expected prop 'output'");
-    		}
-
-    		if (/*isPaused*/ ctx[12] === undefined && !('isPaused' in props)) {
-    			console.warn("<PoolAnimator> was created without expected prop 'isPaused'");
-    		}
-
-    		if (/*dataRange*/ ctx[4] === undefined && !('dataRange' in props)) {
-    			console.warn("<PoolAnimator> was created without expected prop 'dataRange'");
-    		}
-    	}
-
-    	get stride() {
-    		throw new Error("<PoolAnimator>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set stride(value) {
-    		throw new Error("<PoolAnimator>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get dilation() {
-    		throw new Error("<PoolAnimator>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set dilation(value) {
-    		throw new Error("<PoolAnimator>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get kernelLength() {
-    		throw new Error("<PoolAnimator>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set kernelLength(value) {
-    		throw new Error("<PoolAnimator>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get image() {
-    		throw new Error("<PoolAnimator>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set image(value) {
-    		throw new Error("<PoolAnimator>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get output() {
-    		throw new Error("<PoolAnimator>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set output(value) {
-    		throw new Error("<PoolAnimator>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get isPaused() {
-    		throw new Error("<PoolAnimator>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set isPaused(value) {
-    		throw new Error("<PoolAnimator>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get dataRange() {
-    		throw new Error("<PoolAnimator>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set dataRange(value) {
-    		throw new Error("<PoolAnimator>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-    }
-
-    /* src\detail-view\Poolview.svelte generated by Svelte v3.47.0 */
-
-    const { console: console_1$1 } = globals;
-    const file$7 = "src\\detail-view\\Poolview.svelte";
-
-    // (139:0) {#if !isExited}
-    function create_if_block$2(ctx) {
-    	let div10;
-    	let div9;
-    	let div5;
-    	let div0;
-    	let t1;
-    	let div4;
-    	let div1;
-    	let i0;
-    	let t2;
-    	let div2;
-
-    	let raw_value = (/*isPaused*/ ctx[4]
-    	? '<i class="fas fa-play-circle play-icon"></i>'
-    	: '<i class="fas fa-pause-circle"></i>') + "";
-
-    	let t3;
-    	let div3;
-    	let i1;
-    	let t4;
-    	let div6;
-    	let poolanimator;
-    	let t5;
-    	let div8;
-    	let img;
-    	let img_src_value;
-    	let t6;
-    	let div7;
-    	let span;
-    	let t8;
-    	let current;
-    	let mounted;
-    	let dispose;
-
-    	poolanimator = new PoolAnimator({
-    			props: {
-    				kernelLength: /*kernelLength*/ ctx[1],
-    				image: /*input*/ ctx[0],
-    				output: /*outputFinal*/ ctx[5],
-    				stride: /*stride*/ ctx[6],
-    				dilation: dilation$1,
-    				isPaused: /*isPaused*/ ctx[4],
-    				dataRange: /*dataRange*/ ctx[2]
-    			},
-    			$$inline: true
-    		});
-
-    	poolanimator.$on("message", /*handlePauseFromInteraction*/ ctx[8]);
-
-    	const block = {
-    		c: function create() {
-    			div10 = element("div");
-    			div9 = element("div");
-    			div5 = element("div");
-    			div0 = element("div");
-    			div0.textContent = "Max Pooling";
-    			t1 = space();
-    			div4 = element("div");
-    			div1 = element("div");
-    			i0 = element("i");
-    			t2 = space();
-    			div2 = element("div");
-    			t3 = space();
-    			div3 = element("div");
-    			i1 = element("i");
-    			t4 = space();
-    			div6 = element("div");
-    			create_component(poolanimator.$$.fragment);
-    			t5 = space();
-    			div8 = element("div");
-    			img = element("img");
-    			t6 = space();
-    			div7 = element("div");
-    			span = element("span");
-    			span.textContent = "Hover over";
-    			t8 = text(" the matrices to change kernel position.");
-    			attr_dev(div0, "class", "title-text svelte-kahisg");
-    			add_location(div0, file$7, 160, 8, 3597);
-    			attr_dev(i0, "class", "fas fa-info-circle");
-    			add_location(i0, file$7, 167, 12, 3798);
-    			attr_dev(div1, "class", "control-button svelte-kahisg");
-    			attr_dev(div1, "title", "Jump to article section");
-    			add_location(div1, file$7, 166, 10, 3701);
-    			attr_dev(div2, "class", "play-button control-button svelte-kahisg");
-    			attr_dev(div2, "title", "Play animation");
-    			add_location(div2, file$7, 170, 10, 3861);
-    			attr_dev(i1, "class", "fas control-icon fa-times-circle");
-    			add_location(i1, file$7, 177, 12, 4220);
-    			attr_dev(div3, "class", "delete-button control-button svelte-kahisg");
-    			attr_dev(div3, "title", "Close");
-    			add_location(div3, file$7, 176, 10, 4127);
-    			attr_dev(div4, "class", "buttons svelte-kahisg");
-    			add_location(div4, file$7, 164, 8, 3668);
-    			attr_dev(div5, "class", "control-pannel svelte-kahisg");
-    			add_location(div5, file$7, 158, 6, 3553);
-    			attr_dev(div6, "class", "container is-centered is-vcentered svelte-kahisg");
-    			add_location(div6, file$7, 183, 6, 4322);
-    			if (!src_url_equal(img.src, img_src_value = "/assets/img/pointer.svg")) attr_dev(img, "src", img_src_value);
-    			attr_dev(img, "alt", "pointer icon");
-    			attr_dev(img, "class", "svelte-kahisg");
-    			add_location(img, file$7, 191, 8, 4662);
-    			set_style(span, "font-weight", "600");
-    			add_location(span, file$7, 193, 12, 4779);
-    			attr_dev(div7, "class", "annotation-text");
-    			add_location(div7, file$7, 192, 10, 4737);
-    			attr_dev(div8, "class", "annotation svelte-kahisg");
-    			add_location(div8, file$7, 190, 6, 4629);
-    			attr_dev(div9, "class", "box svelte-kahisg");
-    			add_location(div9, file$7, 156, 4, 3528);
-    			attr_dev(div10, "class", "container svelte-kahisg");
-    			add_location(div10, file$7, 139, 2, 2971);
-    		},
-    		m: function mount(target, anchor) {
-    			insert_dev(target, div10, anchor);
-    			append_dev(div10, div9);
-    			append_dev(div9, div5);
-    			append_dev(div5, div0);
-    			append_dev(div5, t1);
-    			append_dev(div5, div4);
-    			append_dev(div4, div1);
-    			append_dev(div1, i0);
-    			append_dev(div4, t2);
-    			append_dev(div4, div2);
-    			div2.innerHTML = raw_value;
-    			append_dev(div4, t3);
-    			append_dev(div4, div3);
-    			append_dev(div3, i1);
-    			append_dev(div9, t4);
-    			append_dev(div9, div6);
-    			mount_component(poolanimator, div6, null);
-    			append_dev(div9, t5);
-    			append_dev(div9, div8);
-    			append_dev(div8, img);
-    			append_dev(div8, t6);
-    			append_dev(div8, div7);
-    			append_dev(div7, span);
-    			append_dev(div7, t8);
-    			current = true;
-
-    			if (!mounted) {
-    				dispose = [
-    					listen_dev(div1, "click", handleScroll$2, false, false, false),
-    					listen_dev(div2, "click", /*handleClickPause*/ ctx[7], false, false, false),
-    					listen_dev(div3, "click", /*handleClickX*/ ctx[9], false, false, false)
-    				];
-
-    				mounted = true;
-    			}
-    		},
-    		p: function update(ctx, dirty) {
-    			if ((!current || dirty & /*isPaused*/ 16) && raw_value !== (raw_value = (/*isPaused*/ ctx[4]
-    			? '<i class="fas fa-play-circle play-icon"></i>'
-    			: '<i class="fas fa-pause-circle"></i>') + "")) div2.innerHTML = raw_value;
-    			const poolanimator_changes = {};
-    			if (dirty & /*kernelLength*/ 2) poolanimator_changes.kernelLength = /*kernelLength*/ ctx[1];
-    			if (dirty & /*input*/ 1) poolanimator_changes.image = /*input*/ ctx[0];
-    			if (dirty & /*outputFinal*/ 32) poolanimator_changes.output = /*outputFinal*/ ctx[5];
-    			if (dirty & /*isPaused*/ 16) poolanimator_changes.isPaused = /*isPaused*/ ctx[4];
-    			if (dirty & /*dataRange*/ 4) poolanimator_changes.dataRange = /*dataRange*/ ctx[2];
-    			poolanimator.$set(poolanimator_changes);
-    		},
-    		i: function intro(local) {
-    			if (current) return;
-    			transition_in(poolanimator.$$.fragment, local);
-    			current = true;
-    		},
-    		o: function outro(local) {
-    			transition_out(poolanimator.$$.fragment, local);
-    			current = false;
-    		},
-    		d: function destroy(detaching) {
-    			if (detaching) detach_dev(div10);
-    			destroy_component(poolanimator);
-    			mounted = false;
-    			run_all(dispose);
-    		}
-    	};
-
-    	dispatch_dev("SvelteRegisterBlock", {
-    		block,
-    		id: create_if_block$2.name,
-    		type: "if",
-    		source: "(139:0) {#if !isExited}",
-    		ctx
-    	});
-
-    	return block;
-    }
-
-    function create_fragment$7(ctx) {
-    	let if_block_anchor;
-    	let current;
-    	let if_block = !/*isExited*/ ctx[3] && create_if_block$2(ctx);
-
-    	const block = {
-    		c: function create() {
-    			if (if_block) if_block.c();
-    			if_block_anchor = empty();
-    		},
-    		l: function claim(nodes) {
-    			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
-    		},
-    		m: function mount(target, anchor) {
-    			if (if_block) if_block.m(target, anchor);
-    			insert_dev(target, if_block_anchor, anchor);
-    			current = true;
-    		},
-    		p: function update(ctx, [dirty]) {
-    			if (!/*isExited*/ ctx[3]) {
-    				if (if_block) {
-    					if_block.p(ctx, dirty);
-
-    					if (dirty & /*isExited*/ 8) {
-    						transition_in(if_block, 1);
-    					}
-    				} else {
-    					if_block = create_if_block$2(ctx);
-    					if_block.c();
-    					transition_in(if_block, 1);
-    					if_block.m(if_block_anchor.parentNode, if_block_anchor);
-    				}
-    			} else if (if_block) {
-    				group_outros();
-
-    				transition_out(if_block, 1, 1, () => {
-    					if_block = null;
-    				});
-
-    				check_outros();
-    			}
-    		},
-    		i: function intro(local) {
-    			if (current) return;
-    			transition_in(if_block);
-    			current = true;
-    		},
-    		o: function outro(local) {
-    			transition_out(if_block);
-    			current = false;
-    		},
-    		d: function destroy(detaching) {
-    			if (if_block) if_block.d(detaching);
-    			if (detaching) detach_dev(if_block_anchor);
-    		}
-    	};
-
-    	dispatch_dev("SvelteRegisterBlock", {
-    		block,
-    		id: create_fragment$7.name,
-    		type: "component",
-    		source: "",
-    		ctx
-    	});
-
-    	return block;
-    }
-
-    const dilation$1 = 1;
-
-    function handleScroll$2() {
-    	let svgHeight = Number(d3.select('#cnn-svg').style('height').replace('px', '')) + 150;
-    	let scroll = new SmoothScroll('a[href*="#"]', { offset: -svgHeight });
-    	let anchor = document.querySelector(`#article-pooling`);
-    	scroll.animateScroll(anchor);
-    }
-
-    function instance$7($$self, $$props, $$invalidate) {
-    	let { $$slots: slots = {}, $$scope } = $$props;
-    	validate_slots('Poolview', slots, []);
-    	let { input } = $$props;
-    	let { kernelLength } = $$props;
-    	let { dataRange } = $$props;
-    	let { isExited } = $$props;
-    	const dispatch = createEventDispatcher();
-
-    	// let isExited = false;
-    	let stride = 2;
-
-    	var isPaused = false;
-    	var outputFinal = singleMaxPooling(input);
-
-    	function handleClickPause() {
-    		$$invalidate(4, isPaused = !isPaused);
-    		console.log(isPaused);
-    	}
-
-    	function handlePauseFromInteraction(event) {
-    		$$invalidate(4, isPaused = event.detail.text);
-    	}
-
-    	function handleClickX() {
-    		dispatch('message', { text: true });
-    	}
-
-    	const writable_props = ['input', 'kernelLength', 'dataRange', 'isExited'];
-
-    	Object.keys($$props).forEach(key => {
-    		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== '$$' && key !== 'slot') console_1$1.warn(`<Poolview> was created with unknown prop '${key}'`);
-    	});
-
-    	$$self.$$set = $$props => {
-    		if ('input' in $$props) $$invalidate(0, input = $$props.input);
-    		if ('kernelLength' in $$props) $$invalidate(1, kernelLength = $$props.kernelLength);
-    		if ('dataRange' in $$props) $$invalidate(2, dataRange = $$props.dataRange);
-    		if ('isExited' in $$props) $$invalidate(3, isExited = $$props.isExited);
-    	};
-
-    	$$self.$capture_state = () => ({
-    		PoolAnimator,
-    		singleMaxPooling,
-    		createEventDispatcher,
-    		input,
-    		kernelLength,
-    		dataRange,
-    		isExited,
-    		dispatch,
-    		stride,
-    		dilation: dilation$1,
-    		isPaused,
-    		outputFinal,
-    		handleClickPause,
-    		handlePauseFromInteraction,
-    		handleClickX,
-    		handleScroll: handleScroll$2
-    	});
-
-    	$$self.$inject_state = $$props => {
-    		if ('input' in $$props) $$invalidate(0, input = $$props.input);
-    		if ('kernelLength' in $$props) $$invalidate(1, kernelLength = $$props.kernelLength);
-    		if ('dataRange' in $$props) $$invalidate(2, dataRange = $$props.dataRange);
-    		if ('isExited' in $$props) $$invalidate(3, isExited = $$props.isExited);
-    		if ('stride' in $$props) $$invalidate(6, stride = $$props.stride);
-    		if ('isPaused' in $$props) $$invalidate(4, isPaused = $$props.isPaused);
-    		if ('outputFinal' in $$props) $$invalidate(5, outputFinal = $$props.outputFinal);
-    	};
-
-    	if ($$props && "$$inject" in $$props) {
-    		$$self.$inject_state($$props.$$inject);
-    	}
-
-    	$$self.$$.update = () => {
-    		if ($$self.$$.dirty & /*input*/ 1) {
-    			// let dragging = false;
-    			// let dragInfo = {x1: 0, x2: 0, y1: 0, y2: 0};
-    			// let detailView = d3.select('#detailview').node();
-    			 if (stride > 0) {
-    				try {
-    					$$invalidate(5, outputFinal = singleMaxPooling(input));
-    				} catch {
-    					console.log("Cannot handle stride of " + stride);
-    				}
-    			}
-    		}
-    	};
-
-    	return [
-    		input,
-    		kernelLength,
-    		dataRange,
-    		isExited,
-    		isPaused,
-    		outputFinal,
-    		stride,
-    		handleClickPause,
-    		handlePauseFromInteraction,
-    		handleClickX
-    	];
-    }
-
-    class Poolview extends SvelteComponentDev {
-    	constructor(options) {
-    		super(options);
-
-    		init(this, options, instance$7, create_fragment$7, safe_not_equal, {
-    			input: 0,
-    			kernelLength: 1,
-    			dataRange: 2,
-    			isExited: 3
-    		});
-
-    		dispatch_dev("SvelteRegisterComponent", {
-    			component: this,
-    			tagName: "Poolview",
-    			options,
-    			id: create_fragment$7.name
-    		});
-
-    		const { ctx } = this.$$;
-    		const props = options.props || {};
-
-    		if (/*input*/ ctx[0] === undefined && !('input' in props)) {
-    			console_1$1.warn("<Poolview> was created without expected prop 'input'");
-    		}
-
-    		if (/*kernelLength*/ ctx[1] === undefined && !('kernelLength' in props)) {
-    			console_1$1.warn("<Poolview> was created without expected prop 'kernelLength'");
-    		}
-
-    		if (/*dataRange*/ ctx[2] === undefined && !('dataRange' in props)) {
-    			console_1$1.warn("<Poolview> was created without expected prop 'dataRange'");
-    		}
-
-    		if (/*isExited*/ ctx[3] === undefined && !('isExited' in props)) {
-    			console_1$1.warn("<Poolview> was created without expected prop 'isExited'");
-    		}
-    	}
-
-    	get input() {
-    		throw new Error("<Poolview>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set input(value) {
-    		throw new Error("<Poolview>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get kernelLength() {
-    		throw new Error("<Poolview>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set kernelLength(value) {
-    		throw new Error("<Poolview>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get dataRange() {
-    		throw new Error("<Poolview>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set dataRange(value) {
-    		throw new Error("<Poolview>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get isExited() {
-    		throw new Error("<Poolview>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set isExited(value) {
-    		throw new Error("<Poolview>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-    }
-
-    /* src\detail-view\Softmaxview.svelte generated by Svelte v3.47.0 */
-    const file$8 = "src\\detail-view\\Softmaxview.svelte";
-
-    function create_fragment$8(ctx) {
-    	let div7;
-    	let div6;
-    	let div2;
-    	let div0;
-    	let i0;
-    	let t0;
-    	let div1;
-    	let i1;
-    	let t1;
-    	let div3;
-    	let t2;
-    	let i2;
-    	let t3;
-    	let t4;
-    	let t5;
-    	let t6;
-    	let svg_1;
-    	let t7;
-    	let div5;
-    	let img;
-    	let img_src_value;
-    	let t8;
-    	let div4;
-    	let span;
-    	let t10;
-    	let mounted;
-    	let dispose;
-
-    	const block = {
-    		c: function create() {
-    			div7 = element("div");
-    			div6 = element("div");
-    			div2 = element("div");
-    			div0 = element("div");
-    			i0 = element("i");
-    			t0 = space();
-    			div1 = element("div");
-    			i1 = element("i");
-    			t1 = space();
-    			div3 = element("div");
-    			t2 = text("Softmax Score for ");
-    			i2 = element("i");
-    			t3 = text("\"");
-    			t4 = text(/*outputName*/ ctx[0]);
-    			t5 = text("\"");
-    			t6 = space();
-    			svg_1 = svg_element("svg");
-    			t7 = space();
-    			div5 = element("div");
-    			img = element("img");
-    			t8 = space();
-    			div4 = element("div");
-    			span = element("span");
-    			span.textContent = "Hover over";
-    			t10 = text(" the numbers to highlight logit circles.");
-    			attr_dev(i0, "class", "fas fa-info-circle");
-    			add_location(i0, file$8, 261, 8, 6863);
-    			attr_dev(div0, "class", "control-button svelte-1uac4ng");
-    			attr_dev(div0, "title", "Jump to article section");
-    			add_location(div0, file$8, 260, 6, 6770);
-    			attr_dev(i1, "class", "fas control-icon fa-times-circle");
-    			add_location(i1, file$8, 265, 8, 7007);
-    			attr_dev(div1, "class", "delete-button control-button svelte-1uac4ng");
-    			attr_dev(div1, "title", "Close");
-    			add_location(div1, file$8, 264, 6, 6918);
-    			attr_dev(div2, "class", "buttons svelte-1uac4ng");
-    			add_location(div2, file$8, 259, 4, 6742);
-    			add_location(i2, file$8, 270, 24, 7134);
-    			attr_dev(div3, "class", "title-text svelte-1uac4ng");
-    			add_location(div3, file$8, 269, 4, 7085);
-    			attr_dev(svg_1, "id", "softmax-svg");
-    			attr_dev(svg_1, "width", "470");
-    			attr_dev(svg_1, "height", "105");
-    			attr_dev(svg_1, "class", "svelte-1uac4ng");
-    			add_location(svg_1, file$8, 273, 4, 7172);
-    			if (!src_url_equal(img.src, img_src_value = "/assets/img/pointer.svg")) attr_dev(img, "src", img_src_value);
-    			attr_dev(img, "alt", "pointer icon");
-    			attr_dev(img, "class", "svelte-1uac4ng");
-    			add_location(img, file$8, 276, 6, 7257);
-    			set_style(span, "font-weight", "600");
-    			add_location(span, file$8, 278, 8, 7366);
-    			attr_dev(div4, "class", "annotation-text");
-    			add_location(div4, file$8, 277, 6, 7328);
-    			attr_dev(div5, "class", "annotation svelte-1uac4ng");
-    			add_location(div5, file$8, 275, 4, 7226);
-    			attr_dev(div6, "class", "box svelte-1uac4ng");
-    			add_location(div6, file$8, 257, 2, 6719);
-    			attr_dev(div7, "class", "container");
-    			add_location(div7, file$8, 256, 0, 6660);
-    		},
-    		l: function claim(nodes) {
-    			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
-    		},
-    		m: function mount(target, anchor) {
-    			insert_dev(target, div7, anchor);
-    			append_dev(div7, div6);
-    			append_dev(div6, div2);
-    			append_dev(div2, div0);
-    			append_dev(div0, i0);
-    			append_dev(div2, t0);
-    			append_dev(div2, div1);
-    			append_dev(div1, i1);
-    			append_dev(div6, t1);
-    			append_dev(div6, div3);
-    			append_dev(div3, t2);
-    			append_dev(div3, i2);
-    			append_dev(i2, t3);
-    			append_dev(i2, t4);
-    			append_dev(i2, t5);
-    			append_dev(div6, t6);
-    			append_dev(div6, svg_1);
-    			append_dev(div6, t7);
-    			append_dev(div6, div5);
-    			append_dev(div5, img);
-    			append_dev(div5, t8);
-    			append_dev(div5, div4);
-    			append_dev(div4, span);
-    			append_dev(div4, t10);
-    			/*div7_binding*/ ctx[10](div7);
-
-    			if (!mounted) {
-    				dispose = [
-    					listen_dev(div0, "click", handleScroll$3, false, false, false),
-    					listen_dev(div1, "click", /*handleClickX*/ ctx[2], false, false, false)
-    				];
-
-    				mounted = true;
-    			}
-    		},
-    		p: function update(ctx, [dirty]) {
-    			if (dirty & /*outputName*/ 1) set_data_dev(t4, /*outputName*/ ctx[0]);
-    		},
-    		i: noop,
-    		o: noop,
-    		d: function destroy(detaching) {
-    			if (detaching) detach_dev(div7);
-    			/*div7_binding*/ ctx[10](null);
-    			mounted = false;
-    			run_all(dispose);
-    		}
-    	};
-
-    	dispatch_dev("SvelteRegisterBlock", {
-    		block,
-    		id: create_fragment$8.name,
-    		type: "component",
-    		source: "",
-    		ctx
-    	});
-
-    	return block;
-    }
-
-    function handleScroll$3() {
-    	let svgHeight = Number(d3.select('#cnn-svg').style('height').replace('px', '')) + 150;
-    	let scroll = new SmoothScroll('a[href*="#"]', { offset: -svgHeight });
-    	let anchor = document.querySelector(`#article-softmax`);
-    	scroll.animateScroll(anchor);
-    }
-
-    function instance$8($$self, $$props, $$invalidate) {
-    	let { $$slots: slots = {}, $$scope } = $$props;
-    	validate_slots('Softmaxview', slots, []);
-    	let { logits } = $$props;
-    	let { logitColors } = $$props;
-    	let { selectedI } = $$props;
-    	let { highlightI = -1 } = $$props;
-    	let { outputName } = $$props;
-    	let { outputValue } = $$props;
-    	let { startAnimation } = $$props;
-    	let softmaxViewComponent;
-    	let svg = null;
-    	const dispatch = createEventDispatcher();
-
-    	const formater = (n, d) => {
-    		if (d === undefined) {
-    			return d3.format('.2f')(n);
-    		} else {
-    			return d3.format(`.${d}f`)(n);
-    		}
-    	};
-
-    	const mouseOverHandler = (d, i, g, curI) => {
-    		$$invalidate(3, highlightI = curI);
-    		dispatch('mouseOver', { curI });
-    	};
-
-    	const mouseLeaveHandler = (d, i, g, curI) => {
-    		$$invalidate(3, highlightI = -1);
-    		dispatch('mouseLeave', { curI });
-    	};
-
-    	const handleClickX = () => {
-    		dispatch('xClicked', {});
-    	};
-
-    	onMount(() => {
-    		$$invalidate(9, svg = d3.select(softmaxViewComponent).select('#softmax-svg'));
-    		let formulaRightGroup = svg.append('g').attr('class', 'formula-right').attr('transform', `translate(${10}, ${0})`).style('font-size', '15px');
-
-    		// Denominator
-    		let denominatorGroup = formulaRightGroup.append('g').attr('class', 'denominator').attr('transform', `translate(${0}, ${58})`);
-
-    		// Add the left (
-    		denominatorGroup.append('text').attr('x', 0).attr('y', 0).style('fill', 'gray').text('(');
-
-    		// Need to loop through the logits array instead of data-binding because
-    		// we want dynamic positioning based on prior '-' occurance
-    		let curX = 8;
-
-    		let numOfRows = 4;
-
-    		logits.forEach((d, i) => {
-    			if (i / numOfRows >= 1 && i % numOfRows === 0) {
-    				curX = 8;
-    			}
-
-    			let curText = denominatorGroup.append('text').attr('x', curX).attr('y', Math.floor(i / numOfRows) * 20).style('cursor', 'crosshair').style('pointer-events', 'all').on('mouseover', (d, n, g) => mouseOverHandler(d, n, g, i)).on('mouseleave', (d, n, g) => mouseLeaveHandler(d, n, g, i)).text(`exp(`);
-    			curText.append('tspan').attr('class', `formula-term-${i} formula-term`).attr('dx', '1').style('fill', logitColors[i]).style('fill-opacity', i === selectedI || startAnimation.hasInitialized ? 1 : 0).text(formater(d));
-    			curText.append('tspan').attr('dx', '1').text(')');
-    			let curBBox = curText.node().getBBox();
-    			curX += curBBox.width + 4;
-
-    			if (i !== logits.length - 1) {
-    				denominatorGroup.append('text').attr('x', curX).attr('y', Math.floor(i / numOfRows) * 20).text('+');
-    				curX += 14;
-    			} else {
-    				denominatorGroup.append('text').attr('x', curX - 2).attr('y', Math.floor(i / numOfRows) * 20).style('fill', 'gray').text(')');
-    			}
-    		});
-
-    		denominatorGroup.selectAll('text').data(logits).enter().append('text').attr('x', (d, i) => 40 * i).attr('y', 0).text(d => formater(d));
-
-    		// Calculate the dynamic denominator group width
-    		let denominatorGroupBBox = denominatorGroup.node().getBBox();
-
-    		// Draw the fraction line
-    		formulaRightGroup.append('line').attr('class', 'separation-line').attr('x1', -5).attr('x2', denominatorGroupBBox.width + 5).attr('y1', 32).attr('y2', 32).style('stroke-width', 1.2).style('stroke', 'gray');
-
-    		// Draw the numerator
-    		let numeratorGroup = formulaRightGroup.append('g').attr('class', 'numerator-group').attr('transform', `translate(${0}, ${20})`);
-
-    		let numeratorText = numeratorGroup.append('text').attr('x', denominatorGroupBBox.x + denominatorGroupBBox.width / 2).attr('y', 0).on('mouseover', (d, n, g) => mouseOverHandler(d, n, g, selectedI)).on('mouseleave', (d, n, g) => mouseLeaveHandler(d, n, g, selectedI)).style('pointer-events', 'all').style('cursor', 'crosshair').style('text-anchor', 'middle').text('exp(');
-    		numeratorText.append('tspan').attr('class', `formula-term-${selectedI} formula-term`).attr('dx', 1).style('fill', logitColors[selectedI]).text(`${formater(logits[selectedI])}`);
-    		numeratorText.append('tspan').attr('dx', 1).text(')');
-
-    		// Draw the left part of the formula
-    		let formulaLeftGroup = svg.append('g').attr('class', 'formula-left').attr('transform', `translate(${395}, ${32})`);
-
-    		let softmaxText = formulaLeftGroup.append('text').attr('x', 20).attr('dominant-baseline', 'middle').text(`${formater(outputValue, 4)}`);
-    		let softmaxTextBBox = softmaxText.node().getBBox();
-    		formulaLeftGroup.append('text').attr('dominant-baseline', 'middle').attr('x', 0).attr('y', 0).style('fill', 'gray').style('font-weight', 'bold').text('=');
-    	});
-
-    	const writable_props = [
-    		'logits',
-    		'logitColors',
-    		'selectedI',
-    		'highlightI',
-    		'outputName',
-    		'outputValue',
-    		'startAnimation'
-    	];
-
-    	Object.keys($$props).forEach(key => {
-    		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== '$$' && key !== 'slot') console.warn(`<Softmaxview> was created with unknown prop '${key}'`);
-    	});
-
-    	function div7_binding($$value) {
-    		binding_callbacks[$$value ? 'unshift' : 'push'](() => {
-    			softmaxViewComponent = $$value;
-    			$$invalidate(1, softmaxViewComponent);
-    		});
-    	}
-
-    	$$self.$$set = $$props => {
-    		if ('logits' in $$props) $$invalidate(4, logits = $$props.logits);
-    		if ('logitColors' in $$props) $$invalidate(5, logitColors = $$props.logitColors);
-    		if ('selectedI' in $$props) $$invalidate(6, selectedI = $$props.selectedI);
-    		if ('highlightI' in $$props) $$invalidate(3, highlightI = $$props.highlightI);
-    		if ('outputName' in $$props) $$invalidate(0, outputName = $$props.outputName);
-    		if ('outputValue' in $$props) $$invalidate(7, outputValue = $$props.outputValue);
-    		if ('startAnimation' in $$props) $$invalidate(8, startAnimation = $$props.startAnimation);
-    	};
-
-    	$$self.$capture_state = () => ({
-    		onMount,
-    		afterUpdate,
-    		createEventDispatcher,
-    		logits,
-    		logitColors,
-    		selectedI,
-    		highlightI,
-    		outputName,
-    		outputValue,
-    		startAnimation,
-    		softmaxViewComponent,
-    		svg,
-    		dispatch,
-    		formater,
-    		mouseOverHandler,
-    		mouseLeaveHandler,
-    		handleClickX,
-    		handleScroll: handleScroll$3
-    	});
-
-    	$$self.$inject_state = $$props => {
-    		if ('logits' in $$props) $$invalidate(4, logits = $$props.logits);
-    		if ('logitColors' in $$props) $$invalidate(5, logitColors = $$props.logitColors);
-    		if ('selectedI' in $$props) $$invalidate(6, selectedI = $$props.selectedI);
-    		if ('highlightI' in $$props) $$invalidate(3, highlightI = $$props.highlightI);
-    		if ('outputName' in $$props) $$invalidate(0, outputName = $$props.outputName);
-    		if ('outputValue' in $$props) $$invalidate(7, outputValue = $$props.outputValue);
-    		if ('startAnimation' in $$props) $$invalidate(8, startAnimation = $$props.startAnimation);
-    		if ('softmaxViewComponent' in $$props) $$invalidate(1, softmaxViewComponent = $$props.softmaxViewComponent);
-    		if ('svg' in $$props) $$invalidate(9, svg = $$props.svg);
-    	};
-
-    	if ($$props && "$$inject" in $$props) {
-    		$$self.$inject_state($$props.$$inject);
-    	}
-
-    	$$self.$$.update = () => {
-    		if ($$self.$$.dirty & /*highlightI, svg*/ 520) {
-    			 ((() => {
-    				if (svg !== null) {
-    					svg.selectAll(`.formula-term`).style('text-decoration', 'none').style('font-weight', 'normal');
-    					svg.selectAll(`.formula-term-${highlightI}`).style('font-weight', 'bold').style('text-decoration', 'underline');
-    				}
-    			})());
-    		}
-
-    		if ($$self.$$.dirty & /*startAnimation, svg*/ 768) {
-    			 ((() => {
-    				if (svg !== null) {
-    					svg.select(`.formula-term-${startAnimation.i}`).transition('softmax-edge').duration(startAnimation.duration).style('fill-opacity', 1);
-    				}
-    			})());
-    		}
-    	};
-
-    	return [
-    		outputName,
-    		softmaxViewComponent,
-    		handleClickX,
-    		highlightI,
-    		logits,
-    		logitColors,
-    		selectedI,
-    		outputValue,
-    		startAnimation,
-    		svg,
-    		div7_binding
-    	];
-    }
-
-    class Softmaxview extends SvelteComponentDev {
-    	constructor(options) {
-    		super(options);
-
-    		init(this, options, instance$8, create_fragment$8, safe_not_equal, {
-    			logits: 4,
-    			logitColors: 5,
-    			selectedI: 6,
-    			highlightI: 3,
-    			outputName: 0,
-    			outputValue: 7,
-    			startAnimation: 8
-    		});
-
-    		dispatch_dev("SvelteRegisterComponent", {
-    			component: this,
-    			tagName: "Softmaxview",
-    			options,
-    			id: create_fragment$8.name
-    		});
-
-    		const { ctx } = this.$$;
-    		const props = options.props || {};
-
-    		if (/*logits*/ ctx[4] === undefined && !('logits' in props)) {
-    			console.warn("<Softmaxview> was created without expected prop 'logits'");
-    		}
-
-    		if (/*logitColors*/ ctx[5] === undefined && !('logitColors' in props)) {
-    			console.warn("<Softmaxview> was created without expected prop 'logitColors'");
-    		}
-
-    		if (/*selectedI*/ ctx[6] === undefined && !('selectedI' in props)) {
-    			console.warn("<Softmaxview> was created without expected prop 'selectedI'");
-    		}
-
-    		if (/*outputName*/ ctx[0] === undefined && !('outputName' in props)) {
-    			console.warn("<Softmaxview> was created without expected prop 'outputName'");
-    		}
-
-    		if (/*outputValue*/ ctx[7] === undefined && !('outputValue' in props)) {
-    			console.warn("<Softmaxview> was created without expected prop 'outputValue'");
-    		}
-
-    		if (/*startAnimation*/ ctx[8] === undefined && !('startAnimation' in props)) {
-    			console.warn("<Softmaxview> was created without expected prop 'startAnimation'");
-    		}
-    	}
-
-    	get logits() {
-    		throw new Error("<Softmaxview>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set logits(value) {
-    		throw new Error("<Softmaxview>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get logitColors() {
-    		throw new Error("<Softmaxview>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set logitColors(value) {
-    		throw new Error("<Softmaxview>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get selectedI() {
-    		throw new Error("<Softmaxview>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set selectedI(value) {
-    		throw new Error("<Softmaxview>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get highlightI() {
-    		throw new Error("<Softmaxview>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set highlightI(value) {
-    		throw new Error("<Softmaxview>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get outputName() {
-    		throw new Error("<Softmaxview>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set outputName(value) {
-    		throw new Error("<Softmaxview>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get outputValue() {
-    		throw new Error("<Softmaxview>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set outputValue(value) {
-    		throw new Error("<Softmaxview>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	get startAnimation() {
-    		throw new Error("<Softmaxview>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-
-    	set startAnimation(value) {
-    		throw new Error("<Softmaxview>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
-    	}
-    }
-
-    /* src\overview\Modal.svelte generated by Svelte v3.47.0 */
-    const file$9 = "src\\overview\\Modal.svelte";
-
-    function create_fragment$9(ctx) {
-    	let div9;
-    	let div8;
-    	let div0;
-    	let t0;
-    	let div7;
-    	let header;
-    	let p;
-    	let t2;
-    	let button0;
-    	let t3;
-    	let section;
-    	let div4;
-    	let div1;
-    	let input0;
-    	let t4;
-    	let span0;
-    	let i0;
-    	let t5;
-    	let div2;
-    	let t7;
-    	let div3;
-    	let label;
-    	let input1;
-    	let t8;
-    	let span3;
-    	let span1;
-    	let i1;
-    	let t9;
-    	let span2;
-    	let t11;
-    	let footer;
-    	let div5;
-    	let t12_value = /*errorInfo*/ ctx[5].error + "";
-    	let t12;
-    	let t13;
-    	let div6;
-    	let button1;
-    	let t15;
-    	let button2;
-    	let t17;
-    	let img;
-    	let mounted;
-    	let dispose;
-
-    	const block = {
-    		c: function create() {
-    			div9 = element("div");
-    			div8 = element("div");
-    			div0 = element("div");
-    			t0 = space();
-    			div7 = element("div");
-    			header = element("header");
-    			p = element("p");
-    			p.textContent = "Add Input Image";
-    			t2 = space();
-    			button0 = element("button");
-    			t3 = space();
-    			section = element("section");
-    			div4 = element("div");
-    			div1 = element("div");
-    			input0 = element("input");
-    			t4 = space();
-    			span0 = element("span");
-    			i0 = element("i");
-    			t5 = space();
-    			div2 = element("div");
-    			div2.textContent = "or";
-    			t7 = space();
-    			div3 = element("div");
-    			label = element("label");
-    			input1 = element("input");
-    			t8 = space();
-    			span3 = element("span");
-    			span1 = element("span");
-    			i1 = element("i");
-    			t9 = space();
-    			span2 = element("span");
-    			span2.textContent = "Upload";
-    			t11 = space();
-    			footer = element("footer");
-    			div5 = element("div");
-    			t12 = text(t12_value);
-    			t13 = space();
-    			div6 = element("div");
-    			button1 = element("button");
-    			button1.textContent = "Cancel";
-    			t15 = space();
-    			button2 = element("button");
-    			button2.textContent = "Add";
-    			t17 = space();
-    			img = element("img");
-    			attr_dev(div0, "class", "modal-background");
-    			add_location(div0, file$9, 151, 4, 3288);
-    			attr_dev(p, "class", "modal-card-title svelte-1o5lxfe");
-    			add_location(p, file$9, 155, 8, 3426);
-    			attr_dev(button0, "class", "delete");
-    			attr_dev(button0, "aria-label", "close");
-    			add_location(button0, file$9, 156, 8, 3482);
-    			attr_dev(header, "class", "modal-card-head svelte-1o5lxfe");
-    			add_location(header, file$9, 154, 6, 3385);
-    			attr_dev(input0, "class", "input small-font svelte-1o5lxfe");
-    			attr_dev(input0, "type", "url");
-    			attr_dev(input0, "placeholder", "Paste URL of image...");
-    			add_location(input0, file$9, 164, 12, 3746);
-    			attr_dev(i0, "class", "fas fa-link");
-    			add_location(i0, file$9, 169, 14, 3944);
-    			attr_dev(span0, "class", "icon small-font is-left svelte-1o5lxfe");
-    			add_location(span0, file$9, 168, 12, 3891);
-    			attr_dev(div1, "class", "control has-icons-left svelte-1o5lxfe");
-    			toggle_class(div1, "is-loading", /*showLoading*/ ctx[3]);
-    			add_location(div1, file$9, 161, 10, 3653);
-    			attr_dev(div2, "class", "or-label svelte-1o5lxfe");
-    			add_location(div2, file$9, 174, 10, 4021);
-    			attr_dev(input1, "class", "file-input");
-    			attr_dev(input1, "type", "file");
-    			attr_dev(input1, "name", "image");
-    			attr_dev(input1, "accept", ".png,.jpeg,.tiff,.jpg,.png");
-    			add_location(input1, file$9, 178, 14, 4135);
-    			attr_dev(i1, "class", "fas fa-upload");
-    			add_location(i1, file$9, 184, 18, 4422);
-    			attr_dev(span1, "class", "file-icon");
-    			add_location(span1, file$9, 183, 16, 4379);
-    			attr_dev(span2, "class", "file-label");
-    			add_location(span2, file$9, 186, 16, 4492);
-    			attr_dev(span3, "class", "file-cta small-font svelte-1o5lxfe");
-    			add_location(span3, file$9, 182, 14, 4328);
-    			attr_dev(label, "class", "file-label");
-    			add_location(label, file$9, 177, 12, 4094);
-    			attr_dev(div3, "class", "file");
-    			add_location(div3, file$9, 176, 10, 4063);
-    			attr_dev(div4, "class", "field svelte-1o5lxfe");
-    			add_location(div4, file$9, 160, 8, 3623);
-    			attr_dev(section, "class", "modal-card-body");
-    			add_location(section, file$9, 159, 6, 3581);
-    			attr_dev(div5, "class", "error-message svelte-1o5lxfe");
-    			toggle_class(div5, "hidden", !/*errorInfo*/ ctx[5].show);
-    			add_location(div5, file$9, 199, 8, 4710);
-    			attr_dev(button1, "class", "button is-smaller svelte-1o5lxfe");
-    			add_location(button1, file$9, 205, 10, 4872);
-    			attr_dev(button2, "class", "button is-success is-smaller svelte-1o5lxfe");
-    			add_location(button2, file$9, 210, 10, 4993);
-    			attr_dev(div6, "class", "button-container");
-    			add_location(div6, file$9, 204, 8, 4831);
-    			attr_dev(footer, "class", "modal-card-foot svelte-1o5lxfe");
-    			add_location(footer, file$9, 197, 6, 4668);
-    			attr_dev(div7, "class", "modal-card svelte-1o5lxfe");
-    			add_location(div7, file$9, 153, 4, 3354);
-    			attr_dev(div8, "class", "modal");
-    			attr_dev(div8, "id", "input-modal");
-    			toggle_class(div8, "is-active", /*modalInfo*/ ctx[6].show);
-    			add_location(div8, file$9, 147, 2, 3205);
-    			set_style(img, "display", "none");
-    			attr_dev(img, "id", "vali-image");
-    			attr_dev(img, "alt", "hidden image");
-    			add_location(img, file$9, 223, 2, 5236);
-    			attr_dev(div9, "class", "modal-component");
-    			add_location(div9, file$9, 144, 0, 3143);
-    		},
-    		l: function claim(nodes) {
-    			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
-    		},
-    		m: function mount(target, anchor) {
-    			insert_dev(target, div9, anchor);
-    			append_dev(div9, div8);
-    			append_dev(div8, div0);
-    			append_dev(div8, t0);
-    			append_dev(div8, div7);
-    			append_dev(div7, header);
-    			append_dev(header, p);
-    			append_dev(header, t2);
-    			append_dev(header, button0);
-    			append_dev(div7, t3);
-    			append_dev(div7, section);
-    			append_dev(section, div4);
-    			append_dev(div4, div1);
-    			append_dev(div1, input0);
-    			set_input_value(input0, /*inputValue*/ ctx[2]);
-    			append_dev(div1, t4);
-    			append_dev(div1, span0);
-    			append_dev(span0, i0);
-    			append_dev(div4, t5);
-    			append_dev(div4, div2);
-    			append_dev(div4, t7);
-    			append_dev(div4, div3);
-    			append_dev(div3, label);
-    			append_dev(label, input1);
-    			append_dev(label, t8);
-    			append_dev(label, span3);
-    			append_dev(span3, span1);
-    			append_dev(span1, i1);
-    			append_dev(span3, t9);
-    			append_dev(span3, span2);
-    			append_dev(div7, t11);
-    			append_dev(div7, footer);
-    			append_dev(footer, div5);
-    			append_dev(div5, t12);
-    			append_dev(footer, t13);
-    			append_dev(footer, div6);
-    			append_dev(div6, button1);
-    			append_dev(div6, t15);
-    			append_dev(div6, button2);
-    			append_dev(div9, t17);
-    			append_dev(div9, img);
-    			/*img_binding*/ ctx[14](img);
-    			/*div9_binding*/ ctx[15](div9);
-
-    			if (!mounted) {
-    				dispose = [
-    					listen_dev(div0, "click", /*crossClicked*/ ctx[10], false, false, false),
-    					listen_dev(button0, "click", /*crossClicked*/ ctx[10], false, false, false),
-    					listen_dev(input0, "input", /*input0_input_handler*/ ctx[12]),
-    					listen_dev(input1, "change", /*input1_change_handler*/ ctx[13]),
-    					listen_dev(input1, "change", /*imageUpload*/ ctx[9], false, false, false),
-    					listen_dev(button1, "click", /*crossClicked*/ ctx[10], false, false, false),
-    					listen_dev(button2, "click", /*addClicked*/ ctx[11], false, false, false),
-    					listen_dev(img, "error", /*errorCallback*/ ctx[7], false, false, false),
-    					listen_dev(img, "load", /*loadCallback*/ ctx[8], false, false, false)
-    				];
-
-    				mounted = true;
-    			}
-    		},
-    		p: function update(ctx, [dirty]) {
-    			if (dirty & /*inputValue*/ 4) {
-    				set_input_value(input0, /*inputValue*/ ctx[2]);
-    			}
-
-    			if (dirty & /*showLoading*/ 8) {
-    				toggle_class(div1, "is-loading", /*showLoading*/ ctx[3]);
-    			}
-
-    			if (dirty & /*errorInfo*/ 32 && t12_value !== (t12_value = /*errorInfo*/ ctx[5].error + "")) set_data_dev(t12, t12_value);
-
-    			if (dirty & /*errorInfo*/ 32) {
-    				toggle_class(div5, "hidden", !/*errorInfo*/ ctx[5].show);
-    			}
-
-    			if (dirty & /*modalInfo*/ 64) {
-    				toggle_class(div8, "is-active", /*modalInfo*/ ctx[6].show);
-    			}
-    		},
-    		i: noop,
-    		o: noop,
-    		d: function destroy(detaching) {
-    			if (detaching) detach_dev(div9);
-    			/*img_binding*/ ctx[14](null);
-    			/*div9_binding*/ ctx[15](null);
-    			mounted = false;
-    			run_all(dispose);
-    		}
-    	};
-
-    	dispatch_dev("SvelteRegisterBlock", {
-    		block,
-    		id: create_fragment$9.name,
-    		type: "component",
-    		source: "",
-    		ctx
-    	});
-
-    	return block;
-    }
-
-    function instance$9($$self, $$props, $$invalidate) {
-    	let { $$slots: slots = {}, $$scope } = $$props;
-    	validate_slots('Modal', slots, []);
-    	let modalComponent;
-    	let valiImg;
-    	let inputValue = '';
-    	let showLoading = false;
-    	let files;
-    	let usingURL = true;
-    	let errorInfo = { show: false, error: '' };
-    	const dispatch = createEventDispatcher();
-    	let modalInfo = { show: false };
-    	modalStore.set(modalInfo);
-
-    	modalStore.subscribe(value => {
-    		$$invalidate(6, modalInfo = value);
-    	});
-
-    	const errorCallback = () => {
-    		// The URL is invalid, show an error message on the UI
-    		$$invalidate(3, showLoading = false);
-
-    		$$invalidate(5, errorInfo.show = true, errorInfo);
-
-    		$$invalidate(
-    			5,
-    			errorInfo.error = usingURL
-    			? "We can't find the image at that URL."
-    			: "Not a valid image file.",
-    			errorInfo
-    		);
-    	};
-
-    	const loadCallback = () => {
-    		// The URL is valid, but we are not sure if loading it to canvas would be
-    		// blocked by crossOrigin setting. Try it here before dispatch to parent.
-    		// https://stackoverflow.com/questions/13674835/canvas-tainted-by-cross-origin-data
-    		let canvas = document.createElement("canvas");
-
-    		let context = canvas.getContext("2d");
-    		canvas.width = valiImg.width;
-    		canvas.height = valiImg.height;
-    		context.drawImage(valiImg, 0, 0);
-
-    		try {
-    			context.getImageData(0, 0, valiImg.width, valiImg.height);
-
-    			// If the foreign image does support CORS -> use this image
-    			// dispatch to parent component to use the input image
-    			$$invalidate(3, showLoading = false);
-
-    			$$invalidate(6, modalInfo.show = false, modalInfo);
-    			modalStore.set(modalInfo);
-    			dispatch('urlTyped', { url: valiImg.src });
-    			$$invalidate(2, inputValue = null);
-    		} catch(err) {
-    			// If the foreign image does not support CORS -> use this image
-    			$$invalidate(3, showLoading = false);
-
-    			$$invalidate(5, errorInfo.show = true, errorInfo);
-    			$$invalidate(5, errorInfo.error = "No permission to load this image.", errorInfo);
-    		}
-    	};
-
-    	const imageUpload = () => {
-    		usingURL = false;
-    		let reader = new FileReader();
-
-    		reader.onload = event => {
-    			$$invalidate(1, valiImg.src = event.target.result, valiImg);
-    		};
-
-    		reader.readAsDataURL(files[0]);
-    	};
-
-    	const crossClicked = () => {
-    		$$invalidate(6, modalInfo.show = false, modalInfo);
-    		modalStore.set(modalInfo);
-
-    		// Dispatch the parent component
-    		dispatch('xClicked', { preImage: modalInfo.preImage });
-    	};
-
-    	const addClicked = () => {
-    		// Validate the input URL
-    		$$invalidate(3, showLoading = true);
-
-    		$$invalidate(5, errorInfo.show = false, errorInfo);
-    		$$invalidate(1, valiImg.crossOrigin = "Anonymous", valiImg);
-    		$$invalidate(1, valiImg.src = inputValue, valiImg);
-    	};
-
-    	onMount(() => {
-    		let modal = d3.select(modalComponent).select('#input-modal');
-    	});
-
-    	const writable_props = [];
-
-    	Object.keys($$props).forEach(key => {
-    		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== '$$' && key !== 'slot') console.warn(`<Modal> was created with unknown prop '${key}'`);
-    	});
-
-    	function input0_input_handler() {
-    		inputValue = this.value;
-    		$$invalidate(2, inputValue);
-    	}
-
-    	function input1_change_handler() {
-    		files = this.files;
-    		$$invalidate(4, files);
-    	}
-
-    	function img_binding($$value) {
-    		binding_callbacks[$$value ? 'unshift' : 'push'](() => {
-    			valiImg = $$value;
-    			$$invalidate(1, valiImg);
-    		});
-    	}
-
-    	function div9_binding($$value) {
-    		binding_callbacks[$$value ? 'unshift' : 'push'](() => {
-    			modalComponent = $$value;
-    			$$invalidate(0, modalComponent);
-    		});
-    	}
-
-    	$$self.$capture_state = () => ({
-    		onMount,
-    		createEventDispatcher,
-    		modalStore,
-    		modalComponent,
-    		valiImg,
-    		inputValue,
-    		showLoading,
-    		files,
-    		usingURL,
-    		errorInfo,
-    		dispatch,
-    		modalInfo,
-    		errorCallback,
-    		loadCallback,
-    		imageUpload,
-    		crossClicked,
-    		addClicked
-    	});
-
-    	$$self.$inject_state = $$props => {
-    		if ('modalComponent' in $$props) $$invalidate(0, modalComponent = $$props.modalComponent);
-    		if ('valiImg' in $$props) $$invalidate(1, valiImg = $$props.valiImg);
-    		if ('inputValue' in $$props) $$invalidate(2, inputValue = $$props.inputValue);
-    		if ('showLoading' in $$props) $$invalidate(3, showLoading = $$props.showLoading);
-    		if ('files' in $$props) $$invalidate(4, files = $$props.files);
-    		if ('usingURL' in $$props) usingURL = $$props.usingURL;
-    		if ('errorInfo' in $$props) $$invalidate(5, errorInfo = $$props.errorInfo);
-    		if ('modalInfo' in $$props) $$invalidate(6, modalInfo = $$props.modalInfo);
-    	};
-
-    	if ($$props && "$$inject" in $$props) {
-    		$$self.$inject_state($$props.$$inject);
-    	}
-
-    	return [
-    		modalComponent,
-    		valiImg,
-    		inputValue,
-    		showLoading,
-    		files,
-    		errorInfo,
-    		modalInfo,
-    		errorCallback,
-    		loadCallback,
-    		imageUpload,
-    		crossClicked,
-    		addClicked,
-    		input0_input_handler,
-    		input1_change_handler,
-    		img_binding,
-    		div9_binding
-    	];
-    }
-
-    class Modal extends SvelteComponentDev {
-    	constructor(options) {
-    		super(options);
-    		init(this, options, instance$9, create_fragment$9, safe_not_equal, {});
-
-    		dispatch_dev("SvelteRegisterComponent", {
-    			component: this,
-    			tagName: "Modal",
-    			options,
-    			id: create_fragment$9.name
-    		});
-    	}
-    }
-
-    function cubicInOut(t) {
-        return t < 0.5 ? 4.0 * t * t * t : 0.5 * Math.pow(2.0 * t - 2.0, 3.0) + 1.0;
-    }
-
-    var _ = {
-      $(selector) {
-        if (typeof selector === "string") {
-          return document.querySelector(selector);
-        }
-        return selector;
-      },
-      extend(...args) {
-        return Object.assign(...args);
-      },
-      cumulativeOffset(element) {
-        let top = 0;
-        let left = 0;
-
-        do {
-          top += element.offsetTop || 0;
-          left += element.offsetLeft || 0;
-          element = element.offsetParent;
-        } while (element);
-
-        return {
-          top: top,
-          left: left
-        };
-      },
-      directScroll(element) {
-        return element && element !== document && element !== document.body;
-      },
-      scrollTop(element, value) {
-        let inSetter = value !== undefined;
-        if (this.directScroll(element)) {
-          return inSetter ? (element.scrollTop = value) : element.scrollTop;
-        } else {
-          return inSetter
-            ? (document.documentElement.scrollTop = document.body.scrollTop = value)
-            : window.pageYOffset ||
-                document.documentElement.scrollTop ||
-                document.body.scrollTop ||
-                0;
-        }
-      },
-      scrollLeft(element, value) {
-        let inSetter = value !== undefined;
-        if (this.directScroll(element)) {
-          return inSetter ? (element.scrollLeft = value) : element.scrollLeft;
-        } else {
-          return inSetter
-            ? (document.documentElement.scrollLeft = document.body.scrollLeft = value)
-            : window.pageXOffset ||
-                document.documentElement.scrollLeft ||
-                document.body.scrollLeft ||
-                0;
-        }
-      }
-    };
-
-    const defaultOptions = {
-      container: "body",
-      duration: 500,
-      delay: 0,
-      offset: 0,
-      easing: cubicInOut,
-      onStart: noop,
-      onDone: noop,
-      onAborting: noop,
-      scrollX: false,
-      scrollY: true
-    };
-
-    const _scrollTo = options => {
-      let {
-        offset,
-        duration,
-        delay,
-        easing,
-        x=0,
-        y=0,
-        scrollX,
-        scrollY,
-        onStart,
-        onDone,
-        container,
-        onAborting,
-        element
-      } = options;
-
-      if (typeof offset === "function") {
-        offset = offset();
-      }
-
-      var cumulativeOffsetContainer = _.cumulativeOffset(container);
-      var cumulativeOffsetTarget = element
-        ? _.cumulativeOffset(element)
-        : { top: y, left: x };
-
-      var initialX = _.scrollLeft(container);
-      var initialY = _.scrollTop(container);
-
-      var targetX =
-        cumulativeOffsetTarget.left - cumulativeOffsetContainer.left + offset;
-      var targetY =
-        cumulativeOffsetTarget.top - cumulativeOffsetContainer.top + offset;
-
-      var diffX = targetX - initialX;
-    	var diffY = targetY - initialY;
-
-      let scrolling = true;
-      let started = false;
-      let start_time = now() + delay;
-      let end_time = start_time + duration;
-
-      function scrollToTopLeft(element, top, left) {
-        if (scrollX) _.scrollLeft(element, left);
-        if (scrollY) _.scrollTop(element, top);
-      }
-
-      function start(delayStart) {
-        if (!delayStart) {
-          started = true;
-          onStart(element, {x, y});
-        }
-      }
-
-      function tick(progress) {
-        scrollToTopLeft(
-          container,
-          initialY + diffY * progress,
-          initialX + diffX * progress
-        );
-      }
-
-      function stop() {
-        scrolling = false;
-      }
-
-      loop(now => {
-        if (!started && now >= start_time) {
-          start(false);
-        }
-
-        if (started && now >= end_time) {
-          tick(1);
-          stop();
-          onDone(element, {x, y});
-        }
-
-        if (!scrolling) {
-          onAborting(element, {x, y});
-          return false;
-        }
-        if (started) {
-          const p = now - start_time;
-          const t = 0 + 1 * easing(p / duration);
-          tick(t);
-        }
-
-        return true;
-      });
-
-      start(delay);
-
-      tick(0);
-
-      return stop;
-    };
-
-    const proceedOptions = options => {
-    	let opts = _.extend({}, defaultOptions, options);
-      opts.container = _.$(opts.container);
-      opts.element = _.$(opts.element);
-      return opts;
-    };
-
-    const scrollContainerHeight = containerElement => {
-      if (
-        containerElement &&
-        containerElement !== document &&
-        containerElement !== document.body
-      ) {
-        return containerElement.scrollHeight - containerElement.offsetHeight;
-      } else {
-        let body = document.body;
-        let html = document.documentElement;
-
-        return Math.max(
-          body.scrollHeight,
-          body.offsetHeight,
-          html.clientHeight,
-          html.scrollHeight,
-          html.offsetHeight
-        );
-      }
-    };
-
-    const setGlobalOptions = options => {
-    	_.extend(defaultOptions, options || {});
-    };
-
-    const scrollTo = options => {
-      return _scrollTo(proceedOptions(options));
-    };
-
-    const scrollToBottom = options => {
-      options = proceedOptions(options);
-
-      return _scrollTo(
-        _.extend(options, {
-          element: null,
-          y: scrollContainerHeight(options.container)
-        })
-      );
-    };
-
-    const scrollToTop = options => {
-      options = proceedOptions(options);
-
-      return _scrollTo(
-        _.extend(options, {
-          element: null,
-          y: 0
-        })
-      );
-    };
-
-    const makeScrollToAction = scrollToFunc => {
-      return (node, options) => {
-        let current = options;
-        const handle = e => {
-          e.preventDefault();
-          scrollToFunc(
-            typeof current === "string" ? { element: current } : current
-          );
-        };
-        node.addEventListener("click", handle);
-        node.addEventListener("touchstart", handle);
-        return {
-          update(options) {
-            current = options;
-          },
-          destroy() {
-            node.removeEventListener("click", handle);
-            node.removeEventListener("touchstart", handle);
-          }
-        };
-      };
-    };
-
-    const scrollto = makeScrollToAction(scrollTo);
-    const scrolltotop = makeScrollToAction(scrollToTop);
-    const scrolltobottom = makeScrollToAction(scrollToBottom);
-
-    var animateScroll = /*#__PURE__*/Object.freeze({
-        __proto__: null,
-        setGlobalOptions: setGlobalOptions,
-        scrollTo: scrollTo,
-        scrollToBottom: scrollToBottom,
-        scrollToTop: scrollToTop,
-        makeScrollToAction: makeScrollToAction,
-        scrollto: scrollto,
-        scrolltotop: scrolltotop,
-        scrolltobottom: scrolltobottom
-    });
-
-    /* src\article\Article.svelte generated by Svelte v3.47.0 */
-    const file$a = "src\\article\\Article.svelte";
-
-    function create_fragment$a(ctx) {
-    	let div9;
-    	let div8;
-    	let article;
-    	let h2;
-    	let t1;
-    	let p0;
-    	let t3;
-    	let div7;
-    	let p1;
-    	let t5;
-    	let p2;
-    	let t7;
-    	let p3;
-    	let t9;
-    	let p4;
-    	let t11;
-    	let p5;
-    	let t13;
-    	let p6;
-    	let t15;
-    	let h30;
-    	let t17;
-    	let p7;
-    	let t19;
-    	let div1;
-    	let img0;
-    	let img0_src_value;
-    	let t20;
-    	let div0;
-    	let t22;
-    	let p8;
-    	let t24;
-    	let p9;
-    	let t26;
-    	let div3;
-    	let img1;
-    	let img1_src_value;
-    	let t27;
-    	let div2;
-    	let t29;
-    	let p10;
-    	let t30;
-    	let a;
-    	let t32;
-    	let t33;
-    	let div4;
-    	let button;
-    	let span0;
-    	let i;
-    	let t34;
-    	let span1;
-    	let t36;
-    	let p11;
-    	let t38;
-    	let p12;
-    	let t40;
-    	let h31;
-    	let t42;
-    	let p13;
-    	let t44;
-    	let p14;
-    	let t46;
-    	let p15;
-    	let t48;
-    	let p16;
-    	let t50;
-    	let p17;
-    	let t52;
-    	let p18;
-    	let t54;
-    	let p19;
-    	let t56;
-    	let p20;
-    	let t58;
-    	let h32;
-    	let t60;
-    	let p21;
-    	let t62;
-    	let div6;
-    	let img2;
-    	let img2_src_value;
-    	let t63;
-    	let div5;
-    	let t65;
-    	let p22;
-    	let t67;
-    	let p23;
-    	let t69;
-    	let p24;
-    	let mounted;
-    	let dispose;
-
-    	const block = {
-    		c: function create() {
-    			div9 = element("div");
-    			div8 = element("div");
-    			article = element("article");
-    			h2 = element("h2");
-    			h2.textContent = "DataTrainX c'est quoi ?";
-    			t1 = space();
-    			p0 = element("p");
-    			p0.textContent = "Outil de recherche des singularités cognitives d’un étudiant!";
-    			t3 = space();
-    			div7 = element("div");
-    			p1 = element("p");
-    			p1.textContent = "Dans l’apprentissage, une logique de la restitution qui prévaut encore sur une logique de la compréhension serait à l’origine de nombreux échecs de l’apprenant. Pour se comprendre, comprendre le monde et autrui, tout apprenant produit et met en œuvre des ressources métacognitives.";
-    			t5 = space();
-    			p2 = element("p");
-    			p2.textContent = "On observera que cela fait appel à de nombreuses disciplines, comme la psychologie, la pédagogie, les neurosciences mais aussi le management, qui demandera à l’équipe enseignante une formation continue pour s’appuyer sur de tels dispositifs.";
-    			t7 = space();
-    			p3 = element("p");
-    			p3.textContent = "DataTrainX est un prototype de reconnaissance facial des émotions (REF) qui a pour objectif principal de s’intéresser à l’analyse des comportements de l'apprenant dans un but de neuropédagogie.";
-    			t9 = space();
-    			p4 = element("p");
-    			p4.textContent = "Cela peut être très utile dans l'adaptation des modèles d’apprentissage où, en analysant les comportements, on serait en mesure de s’adapter à l’apprenant (adaptive-learning).";
-    			t11 = space();
-    			p5 = element("p");
-    			p5.textContent = "DataTrainX est un agent intelligent capable de reconnaître les émotions traduites par les expressions faciales couplées au test de Kolb sur le style d’apprentissage.";
-    			t13 = space();
-    			p6 = element("p");
-    			p6.textContent = "Pour ce faire, nous utiliserons des algorithmes de deep-Learning et plus particulièrement les réseaux de neurones convolutifs (CNN) dans la reconnaissance des émotions de bases défini par le psychologue P. Ekman ('Colère', 'Dégoût', 'Peur', 'Joyeux', 'Triste', 'Surprise', 'Neutre').";
-    			t15 = space();
-    			h30 = element("h3");
-    			h30.textContent = "Principe d'un réseau de neurones convolutifs - Deep Learning";
-    			t17 = space();
-    			p7 = element("p");
-    			p7.textContent = "Les réseaux de neurones convolutifs ont une méthodologie similaire à celle des méthodes traditionnelles d'apprentissage supervisé, ils détectent les caractéristiques, puis entraînent un classifieur dessus, à la différence près que les caractéristiques sont apprises automatiquement. Un CNN applique généralement 5 types de couches différentes à une image afin d’en extraire les informations pertinentes, la couche de convolution, la couche de pooling, la couche de correction ReLU et la couche fully-connected (figure 1).";
-    			t19 = space();
-    			div1 = element("div");
-    			img0 = element("img");
-    			t20 = space();
-    			div0 = element("div");
-    			div0.textContent = "Figure 1. Principe d'une architecture CNN";
-    			t22 = space();
-    			p8 = element("p");
-    			p8.textContent = "La couche de convolution permet de trouver des caractéristiques, elle est donc la composante la plus importante. Elle est assez proche de la mécanique sur les caractéristiques pseudo-Haar. Le principe est le même, faire \"glisser\" une fenêtre représentant un filtre sur l'image. La différence ici, c’est que l’on cherche une convolution calculée et non une corrélation croisée (comme la recherche d’une caractéristiques pseudo-haar).";
-    			t24 = space();
-    			p9 = element("p");
-    			p9.textContent = "Le filtre, sera la caractéristique à étudier, cette caractéristique est trouvée par convolution, pour comprendre l’application nous simplifions l’image du visage par une croix noirs et blanche (figure 2). La caractéristique (feature) dans cet exemple prend la taille de 3x3 puis recherche des points communs par balayage de l’image. Dans la démonstration nous avons pris la valeur d’un pixel en 2D, 1 pour blanc et -1 pour noir, ainsi entre deux caractéristiques comparées nous réalisons un calcul d’addition entre les 9 pixels ce qui nous permet d’obtenir un score de similarité, ici 80%. Ce même calcul est réalisé sur l’ensemble  de l’image avec un stride de 1 (la zone comparée bouge d’un seul pixel entre chaque comparaison).";
-    			t26 = space();
-    			div3 = element("div");
-    			img1 = element("img");
-    			t27 = space();
-    			div2 = element("div");
-    			div2.textContent = "Figure 2. Principe de convolution est de l'activation ReLU, ici la comparaison entre les deux images permettent de trouver trois caractéristiques, l'une des caractéristiques (en vert) est nettoyer ensuite des valeurs négatives (ReLU)";
-    			t29 = space();
-    			p10 = element("p");
-    			t30 = text("Nous avons adaptés le projet ");
-    			a = element("a");
-    			a.textContent = "CNN Explainer";
-    			t32 = text(" pour en comprendre le principe sur un dataset fer2013.");
-    			t33 = space();
-    			div4 = element("div");
-    			button = element("button");
-    			span0 = element("span");
-    			i = element("i");
-    			t34 = space();
-    			span1 = element("span");
-    			span1.textContent = "Comment ça marche ?";
-    			t36 = space();
-    			p11 = element("p");
-    			p11.textContent = "L’idée est de se concentrer sur la démarche que privilégie chaque individu pour appréhender l’acte d’apprendre. Certains styles seraient plus adaptés dans certains contextes que d’autres. Tout dépend du point de vue de l’apprenant face à la situation d’apprentissage et de sa motivation.";
-    			t38 = space();
-    			p12 = element("p");
-    			p12.textContent = "Bien que des auteurs comme Jean Houssaye démontrent que ce qui semble essentiel c’est de différencier la pédagogie bien plus que des typologies destinées à connaître individuellement les apprenants et à dresser leur profil, il parait néanmoins intéressant de les utiliser comme complémentarité à un panel d’outil diversifié que peut utiliser le formateur.";
-    			t40 = space();
-    			h31 = element("h3");
-    			h31.textContent = "Le modèle de l’apprentissage expérientiel de Kolb";
-    			t42 = space();
-    			p13 = element("p");
-    			p13.textContent = "Les modèles de styles d’apprentissage individualisés ont donc pour objectif de définir un type d’apprenant afin de permettre aux enseignants d’adapter leurs méthodes d’apprentissage. Peu d’études ont réussi à valider le concept de styles d’apprentissage en éducation.";
-    			t44 = space();
-    			p14 = element("p");
-    			p14.textContent = "Peu d’études ont réussi à valider le concept de styles d’apprentissage en éducation. L’étude de Pashler et al indique bien une corrélation entre typologies et les préférences exprimées par certains individus sur la façon dont ils préfèrent recevoir de l’information mais contredit le fait selon laquelle l’apprenant apprendrait mieux en apprenant avec une méthode jugée comme appropriée à son style d’apprentissage";
-    			t46 = space();
-    			p15 = element("p");
-    			p15.textContent = "Nombreux sont les scientifiques qui parle de mythe ou invitent les professionnels de l’éducation et d’apprentissage à faire preuve de scepticisme devant ces concepts. Le modèle de Kolb n’échappe pas non plus aux critiques mais il est de loin celui qui a connu la plus large diffusion et celui qui est à la base de modèle d’autres chercheurs.";
-    			t48 = space();
-    			p16 = element("p");
-    			p16.textContent = "Il est inspiré des travaux de psychologue reconnu comme John Dewey, Kurt Lewin et Jean Piaget. Il est plutôt approprié pour les apprentissages de disciplines académiques relativement abstraites, mais moins adaptés pour la plupart des apprentissages professionnels.";
-    			t50 = space();
-    			p17 = element("p");
-    			p17.textContent = "D’un autre côté, notre cible d’étude est réalisée sur des universitaires en informatique, ce test nous semble donc plutôt approprié.";
-    			t52 = space();
-    			p18 = element("p");
-    			p18.textContent = "Ce qu’il faut retenir des principales critiques, c’est qu’étiqueter un apprenant et le cantonner dans une posture est strictement contre-productif et va à l’inverse de l’objectif recherché. Néanmoins, ce qu’il ressort aussi, ce sont des concepts génériques qui fonctionnent.";
-    			t54 = space();
-    			p19 = element("p");
-    			p19.textContent = "Par exemple, un profil « indépendants » a tendance à questionner les novices alors que le profil « socialisant » propose des aides, les « socialisants » s’adaptent à leur interlocuteur, quel que soit le style du novice, ceux qui travaillent avec un expert « socialisant » progressent le plus.";
-    			t56 = space();
-    			p20 = element("p");
-    			p20.textContent = "On peut donc constater que les styles d’apprentissage, nous ouvre une voie pour des recherches sur les interactions sociales entre formateurs et apprenants. Pour des raisons à la fois pratiques et théoriques, il faut retenir la « maniabilité » des styles mais que cependant ils paraissent suffisamment stables pour qu’on puisse les prendre en compte dans une situation donnée afin de contribuer à expliquer ses comportements d’apprentissage. Puis enfin, garder à l’esprit qu’en modifiant de façon significative la situation d’apprentissage, il est possible qu’un individu modifie son style préférentiel d’apprentissage. Enfin, le facteur que l’on souhaite ajouter à notre projet et l’expression de l’émotion corrélé au type d’apprentissage.";
-    			t58 = space();
-    			h32 = element("h3");
-    			h32.textContent = "Typologie d’apprentissage et émotions";
-    			t60 = space();
-    			p21 = element("p");
-    			p21.textContent = "Il y aura donc une phase de saisie d’un questionnaire afin de déterminer un profil d’apprenant de type Kolb dans le projet DataTrainx. L’utilisateur sera enregistré en vidéo et une comparaison sera effectuée entre la typologie trouvée par le questionnaire et les émotions qu’il aura exprimées. Comme l’illustre la figure ci-dessous, l’objectif est de trouver une corrélation entre la typologie d’apprentissage et l’émotion de l’utilisateur.";
-    			t62 = space();
-    			div6 = element("div");
-    			img2 = element("img");
-    			t63 = space();
-    			div5 = element("div");
-    			div5.textContent = "Figure 3. Exemple de restitution des résultats de l’application DataTrainX. Obtenir un profil d’apprenant, analyser l’émotion dans une mise en situation, trouver une corrélation.";
-    			t65 = space();
-    			p22 = element("p");
-    			p22.textContent = "Dans l’hypothèse où nous aurions des résultats significatifs entre expression et typologie, nous pourrions considérer que le profil émotionnel même de l’émotion détermine la typologie d’apprentissage et donc envisager, par exemple, une orientation du logiciel vers l’adaptative learning, c’est-à-dire une interaction entre l’IA et l’utilisateur dans la proposition des supports pédagogique.";
-    			t67 = space();
-    			p23 = element("p");
-    			p23.textContent = "L’objet de ce projet, a pour orientation de se focaliser concrètement sur les moyens fonctionnels informatique à mettre en œuvre pour ce type d’application. Nous n’approfondirons pas l’aspect psychologique, qui se limitera au test de Kolb et à la résolution d’un Puzzle, l’objectif étant de démontrer comment mettre en place l’architecture fonctionnelle, logicielle et matérielle pour arriver à un résultat applicatif de la reconnaissance faciale de l’émotion.";
-    			t69 = space();
-    			p24 = element("p");
-    			p24.textContent = "Les résultats d’ordre psychologique à prendre en considération sur l’objectif de cette application auront donc une part importante de subjectivité clairement assumé.";
-    			attr_dev(h2, "class", "title");
-    			add_location(h2, file$a, 29, 12, 588);
-    			attr_dev(p0, "class", "subtitle");
-    			add_location(p0, file$a, 30, 12, 647);
-    			add_location(p1, file$a, 32, 16, 783);
-    			add_location(p2, file$a, 33, 16, 1088);
-    			add_location(p3, file$a, 34, 16, 1353);
-    			add_location(p4, file$a, 35, 16, 1570);
-    			add_location(p5, file$a, 36, 16, 1769);
-    			add_location(p6, file$a, 37, 16, 1958);
-    			add_location(h30, file$a, 38, 16, 2265);
-    			add_location(p7, file$a, 39, 16, 2351);
-    			if (!src_url_equal(img0.src, img0_src_value = "/assets/figures/cnn.gif")) attr_dev(img0, "src", img0_src_value);
-    			attr_dev(img0, "alt", "Principe d'une architecture CNN");
-    			add_location(img0, file$a, 41, 20, 2937);
-    			attr_dev(div0, "class", "figure-caption svelte-11k33wl");
-    			add_location(div0, file$a, 42, 20, 3043);
-    			attr_dev(div1, "class", "figure svelte-11k33wl");
-    			add_location(div1, file$a, 40, 16, 2896);
-    			add_location(p8, file$a, 46, 16, 3204);
-    			add_location(p9, file$a, 47, 16, 3660);
-    			if (!src_url_equal(img1.src, img1_src_value = "/assets/figures/relu.gif")) attr_dev(img1, "src", img1_src_value);
-    			attr_dev(img1, "alt", "Principe de convolution est de l'activation ReLU");
-    			add_location(img1, file$a, 49, 20, 4455);
-    			attr_dev(div2, "class", "figure-caption svelte-11k33wl");
-    			add_location(div2, file$a, 50, 20, 4579);
-    			attr_dev(div3, "class", "figure svelte-11k33wl");
-    			add_location(div3, file$a, 48, 16, 4414);
-    			attr_dev(a, "href", "https://poloclub.github.io/cnn-explainer/");
-    			attr_dev(a, "target", "_blank");
-    			add_location(a, file$a, 54, 48, 4964);
-    			add_location(p10, file$a, 54, 16, 4932);
-    			attr_dev(i, "class", "fas fa-eye");
-    			add_location(i, file$a, 59, 30, 5427);
-    			attr_dev(span0, "class", "icon");
-    			add_location(span0, file$a, 58, 28, 5377);
-    			add_location(span1, file$a, 61, 24, 5514);
-    			attr_dev(button, "class", "button is-primary");
-    			attr_dev(button, "id", "explain-button");
-    			add_location(button, file$a, 57, 20, 5168);
-    			attr_dev(div4, "class", "buttons");
-    			add_location(div4, file$a, 55, 16, 5125);
-    			add_location(p11, file$a, 64, 16, 5616);
-    			add_location(p12, file$a, 65, 16, 5927);
-    			add_location(h31, file$a, 66, 16, 6306);
-    			add_location(p13, file$a, 67, 16, 6381);
-    			add_location(p14, file$a, 68, 16, 6672);
-    			add_location(p15, file$a, 69, 16, 7110);
-    			add_location(p16, file$a, 70, 16, 7475);
-    			add_location(p17, file$a, 71, 16, 7763);
-    			add_location(p18, file$a, 72, 16, 7919);
-    			add_location(p19, file$a, 73, 16, 8217);
-    			add_location(p20, file$a, 74, 16, 8533);
-    			add_location(h32, file$a, 75, 16, 9297);
-    			add_location(p21, file$a, 76, 16, 9360);
-    			if (!src_url_equal(img2.src, img2_src_value = "/assets/figures/style.gif")) attr_dev(img2, "src", img2_src_value);
-    			attr_dev(img2, "alt", "Exemple de restitution des résultats de l’application DataTrainX.");
-    			add_location(img2, file$a, 78, 20, 9865);
-    			attr_dev(div5, "class", "figure-caption svelte-11k33wl");
-    			add_location(div5, file$a, 79, 20, 10007);
-    			attr_dev(div6, "class", "figure svelte-11k33wl");
-    			add_location(div6, file$a, 77, 16, 9824);
-    			add_location(p22, file$a, 83, 16, 10305);
-    			add_location(p23, file$a, 84, 16, 10719);
-    			add_location(p24, file$a, 85, 16, 11203);
-    			attr_dev(div7, "class", "content");
-    			add_location(div7, file$a, 31, 12, 745);
-    			attr_dev(article, "class", "tile is-child");
-    			add_location(article, file$a, 28, 8, 544);
-    			attr_dev(div8, "class", "tile is-parent");
-    			add_location(div8, file$a, 27, 4, 507);
-    			attr_dev(div9, "class", "container");
-    			add_location(div9, file$a, 26, 0, 479);
-    		},
-    		l: function claim(nodes) {
-    			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
-    		},
-    		m: function mount(target, anchor) {
-    			insert_dev(target, div9, anchor);
-    			append_dev(div9, div8);
-    			append_dev(div8, article);
-    			append_dev(article, h2);
-    			append_dev(article, t1);
-    			append_dev(article, p0);
-    			append_dev(article, t3);
-    			append_dev(article, div7);
-    			append_dev(div7, p1);
-    			append_dev(div7, t5);
-    			append_dev(div7, p2);
-    			append_dev(div7, t7);
-    			append_dev(div7, p3);
-    			append_dev(div7, t9);
-    			append_dev(div7, p4);
-    			append_dev(div7, t11);
-    			append_dev(div7, p5);
-    			append_dev(div7, t13);
-    			append_dev(div7, p6);
-    			append_dev(div7, t15);
-    			append_dev(div7, h30);
-    			append_dev(div7, t17);
-    			append_dev(div7, p7);
-    			append_dev(div7, t19);
-    			append_dev(div7, div1);
-    			append_dev(div1, img0);
-    			append_dev(div1, t20);
-    			append_dev(div1, div0);
-    			append_dev(div7, t22);
-    			append_dev(div7, p8);
-    			append_dev(div7, t24);
-    			append_dev(div7, p9);
-    			append_dev(div7, t26);
-    			append_dev(div7, div3);
-    			append_dev(div3, img1);
-    			append_dev(div3, t27);
-    			append_dev(div3, div2);
-    			append_dev(div7, t29);
-    			append_dev(div7, p10);
-    			append_dev(p10, t30);
-    			append_dev(p10, a);
-    			append_dev(p10, t32);
-    			append_dev(div7, t33);
-    			append_dev(div7, div4);
-    			append_dev(div4, button);
-    			append_dev(button, span0);
-    			append_dev(span0, i);
-    			append_dev(button, t34);
-    			append_dev(button, span1);
-    			append_dev(div7, t36);
-    			append_dev(div7, p11);
-    			append_dev(div7, t38);
-    			append_dev(div7, p12);
-    			append_dev(div7, t40);
-    			append_dev(div7, h31);
-    			append_dev(div7, t42);
-    			append_dev(div7, p13);
-    			append_dev(div7, t44);
-    			append_dev(div7, p14);
-    			append_dev(div7, t46);
-    			append_dev(div7, p15);
-    			append_dev(div7, t48);
-    			append_dev(div7, p16);
-    			append_dev(div7, t50);
-    			append_dev(div7, p17);
-    			append_dev(div7, t52);
-    			append_dev(div7, p18);
-    			append_dev(div7, t54);
-    			append_dev(div7, p19);
-    			append_dev(div7, t56);
-    			append_dev(div7, p20);
-    			append_dev(div7, t58);
-    			append_dev(div7, h32);
-    			append_dev(div7, t60);
-    			append_dev(div7, p21);
-    			append_dev(div7, t62);
-    			append_dev(div7, div6);
-    			append_dev(div6, img2);
-    			append_dev(div6, t63);
-    			append_dev(div6, div5);
-    			append_dev(div7, t65);
-    			append_dev(div7, p22);
-    			append_dev(div7, t67);
-    			append_dev(div7, p23);
-    			append_dev(div7, t69);
-    			append_dev(div7, p24);
-
-    			if (!mounted) {
-    				dispose = listen_dev(button, "click", /*click_handler*/ ctx[0], false, false, false);
-    				mounted = true;
-    			}
-    		},
-    		p: noop,
-    		i: noop,
-    		o: noop,
-    		d: function destroy(detaching) {
-    			if (detaching) detach_dev(div9);
-    			mounted = false;
-    			dispose();
-    		}
-    	};
-
-    	dispatch_dev("SvelteRegisterBlock", {
-    		block,
-    		id: create_fragment$a.name,
-    		type: "component",
-    		source: "",
-    		ctx
-    	});
-
-    	return block;
-    }
-
-    function instance$a($$self, $$props, $$invalidate) {
-    	let { $$slots: slots = {}, $$scope } = $$props;
-    	validate_slots('Article', slots, []);
-    	let leftStartValue;
-
-    	leftStartStore.subscribe(value => {
-    		leftStartValue = value;
-    	});
-
-    	const writable_props = [];
-
-    	Object.keys($$props).forEach(key => {
-    		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== '$$' && key !== 'slot') console.warn(`<Article> was created with unknown prop '${key}'`);
-    	});
-
-    	const click_handler = () => scrollTo({
-    		element: "#header",
-    		onDone: (element, offset) => {
-    			leftStartStore.set(-innerWidth);
-    		}
-    	});
-
-    	$$self.$capture_state = () => ({
-    		animateScroll,
-    		leftStartStore,
-    		leftStartValue
-    	});
-
-    	$$self.$inject_state = $$props => {
-    		if ('leftStartValue' in $$props) leftStartValue = $$props.leftStartValue;
-    	};
-
-    	if ($$props && "$$inject" in $$props) {
-    		$$self.$inject_state($$props.$$inject);
-    	}
-
-    	return [click_handler];
-    }
-
-    class Article extends SvelteComponentDev {
-    	constructor(options) {
-    		super(options);
-    		init(this, options, instance$a, create_fragment$a, safe_not_equal, {});
-
-    		dispatch_dev("SvelteRegisterComponent", {
-    			component: this,
-    			tagName: "Article",
-    			options,
-    			id: create_fragment$a.name
-    		});
-    	}
-    }
-
-    /* global tf */
-
-    // Network input image size
-    const networkInputSize = 48;
-
-    //mode RGB = 3, Gray = 1
-    const inputShape = 1;
-
-    // Enum of node types
-    const nodeType = {
-      INPUT: 'input',
-      CONV: 'conv',
-      POOL: 'pool',
-      RELU: 'relu',
-      FC: 'fc',
-      FLATTEN: 'flatten'
-    };
-
-    class Node {
-      /**
-       * Class structure for each neuron node.
-       *
-       * @param {string} layerName Name of the node's layer.
-       * @param {int} index Index of this node in its layer.
-       * @param {string} type Node type {input, conv, pool, relu, fc}.
-       * @param {number} bias The bias assocated to this node.
-       * @param {number[]} output Output of this node.
-       */
-      constructor(layerName, index, type, bias, output) {
-        this.layerName = layerName;
-        this.index = index;
-        this.type = type;
-        this.bias = bias;
-        this.output = output;
-
-        // Weights are stored in the links
-        this.inputLinks = [];
-        this.outputLinks = [];
-      }
-    }
-
-    class Link {
-      /**
-       * Class structure for each link between two nodes.
-       *
-       * @param {Node} source Source node.
-       * @param {Node} dest Target node.
-       * @param {number} weight Weight associated to this link. It can be a number,
-       *  1D array, or 2D array.
-       */
-      constructor(source, dest, weight) {
-        this.source = source;
-        this.dest = dest;
-        this.weight = weight;
-      }
-    }
-
-    /**
-     * Construct a CNN with given extracted outputs from every layer.
+var app=function(){"use strict";function t(){}function e(t){return t()}function n(){return Object.create(null)}function r(t){t.forEach(e)}function a(t){return"function"==typeof t}function o(t,e){return t!=t?e==e:t!==e||t&&"object"==typeof t||"function"==typeof t}let i;const s="undefined"!=typeof window;let l=s?()=>window.performance.now():()=>Date.now(),c=s?t=>requestAnimationFrame(t):t;const u=new Set;function d(t){u.forEach(e=>{e.c(t)||(u.delete(e),e.f())}),0!==u.size&&c(d)}function p(t,e){t.appendChild(e)}function h(t,e,n){t.insertBefore(e,n||null)}function f(t){t.parentNode.removeChild(t)}function g(t){return document.createElement(t)}function m(t){return document.createTextNode(t)}function y(){return m(" ")}function v(){return m("")}function b(t,e,n,r){return t.addEventListener(e,n,r),()=>t.removeEventListener(e,n,r)}function x(t,e,n){null==n?t.removeAttribute(e):t.getAttribute(e)!==n&&t.setAttribute(e,n)}function w(t,e){e=""+e,t.wholeText!==e&&(t.data=e)}function _(t,e){t.value=null==e?"":e}function k(t,e,n,r){null===n?t.style.removeProperty(e):t.style.setProperty(e,n,r?"important":"")}function E(t,e){for(let n=0;n<t.options.length;n+=1){const r=t.options[n];if(r.__value===e)return void(r.selected=!0)}t.selectedIndex=-1}let $,I;function M(){if(void 0===$){$=!1;try{"undefined"!=typeof window&&window.parent&&window.parent.document}catch(t){$=!0}}return $}function P(t,e,n){t.classList[n?"add":"remove"](e)}function S(t){I=t}function A(){if(!I)throw new Error("Function called outside component initialization");return I}function T(t){A().$$.on_mount.push(t)}function C(t){A().$$.after_update.push(t)}function L(){const t=A();return(e,n)=>{const r=t.$$.callbacks[e];if(r){const a=function(t,e,n=!1){const r=document.createEvent("CustomEvent");return r.initCustomEvent(t,n,!1,e),r}(e,n);r.slice().forEach(e=>{e.call(t,a)})}}}const F=[],D=[],N=[],R=[],B=Promise.resolve();let O=!1;function z(t){N.push(t)}const j=new Set;let H=0;function q(){const t=I;do{for(;H<F.length;){const t=F[H];H++,S(t),W(t.$$)}for(S(null),F.length=0,H=0;D.length;)D.pop()();for(let t=0;t<N.length;t+=1){const e=N[t];j.has(e)||(j.add(e),e())}N.length=0}while(F.length);for(;R.length;)R.pop()();O=!1,j.clear(),S(t)}function W(t){if(null!==t.fragment){t.update(),r(t.before_update);const e=t.dirty;t.dirty=[-1],t.fragment&&t.fragment.p(t.ctx,e),t.after_update.forEach(z)}}const G=new Set;let V;function K(){V={r:0,c:[],p:V}}function U(){V.r||r(V.c),V=V.p}function X(t,e){t&&t.i&&(G.delete(t),t.i(e))}function J(t,e,n,r){if(t&&t.o){if(G.has(t))return;G.add(t),V.c.push(()=>{G.delete(t),r&&(n&&t.d(1),r())}),t.o(e)}}function Y(t){t&&t.c()}function Q(t,n,o,i){const{fragment:s,on_mount:l,on_destroy:c,after_update:u}=t.$$;s&&s.m(n,o),i||z(()=>{const n=l.map(e).filter(a);c?c.push(...n):r(n),t.$$.on_mount=[]}),u.forEach(z)}function Z(t,e){const n=t.$$;null!==n.fragment&&(r(n.on_destroy),n.fragment&&n.fragment.d(e),n.on_destroy=n.fragment=null,n.ctx=[])}function tt(t,e){-1===t.$$.dirty[0]&&(F.push(t),O||(O=!0,B.then(q)),t.$$.dirty.fill(0)),t.$$.dirty[e/31|0]|=1<<e%31}function et(e,a,o,i,s,l,c,u=[-1]){const d=I;S(e);const p=e.$$={fragment:null,ctx:null,props:l,update:t,not_equal:s,bound:n(),on_mount:[],on_destroy:[],on_disconnect:[],before_update:[],after_update:[],context:new Map(a.context||(d?d.$$.context:[])),callbacks:n(),dirty:u,skip_bound:!1,root:a.target||d.$$.root};c&&c(p.root);let h=!1;if(p.ctx=o?o(e,a.props||{},(t,n,...r)=>{const a=r.length?r[0]:n;return p.ctx&&s(p.ctx[t],p.ctx[t]=a)&&(!p.skip_bound&&p.bound[t]&&p.bound[t](a),h&&tt(e,t)),n}):[],p.update(),h=!0,r(p.before_update),p.fragment=!!i&&i(p.ctx),a.target){if(a.hydrate){const t=function(t){return Array.from(t.childNodes)}(a.target);p.fragment&&p.fragment.l(t),t.forEach(f)}else p.fragment&&p.fragment.c();a.intro&&X(e.$$.fragment),Q(e,a.target,a.anchor,a.customElement),q()}S(d)}class nt{$destroy(){Z(this,1),this.$destroy=t}$on(t,e){const n=this.$$.callbacks[t]||(this.$$.callbacks[t]=[]);return n.push(e),()=>{const t=n.indexOf(e);-1!==t&&n.splice(t,1)}}$set(t){var e;this.$$set&&(e=t,0!==Object.keys(e).length)&&(this.$$.skip_bound=!0,this.$$set(t),this.$$.skip_bound=!1)}}const rt=[];function at(e,n=t){let r;const a=new Set;function i(t){if(o(e,t)&&(e=t,r)){const t=!rt.length;for(const t of a)t[1](),rt.push(t,e);if(t){for(let t=0;t<rt.length;t+=2)rt[t][0](rt[t+1]);rt.length=0}}}return{set:i,update:function(t){i(t(e))},subscribe:function(o,s=t){const l=[o,s];return a.add(l),1===a.size&&(r=n(i)||t),o(e),()=>{a.delete(l),0===a.size&&(r(),r=null)}}}}const ot=at([]),it=at(void 0),st=at(void 0),lt=at(void 0),ct=at([]),ut=at(void 0),dt=at({}),pt=at([]),ht=at([void 0,void 0]),ft=at(!0),gt=at(!1),mt=at(!1),yt=at({}),vt=at(!1),bt=at({}),xt=at({}),wt=at({}),_t=at(0),kt=at("Presentation"),Et=(t,e,n)=>{let r=[];for(let a=0;a<t;a++){let t=new Array(e).fill(n);r.push(t)}return r},$t=(t,e)=>{console.assert(t.length===e.length,"Dimension not matching"),console.assert(t[0].length===e[0].length,"Dimension not matching");let n=0;for(let r=0;r<t.length;r++)for(let a=0;a<t[0].length;a++)n+=t[r][a]*e[r][a];return n},It=(t,e,n,r,a)=>t.slice(e,n).map(t=>t.slice(r,a)),Mt=t=>{let e=-1/0;for(let n=0;n<t.length;n++)for(let r=0;r<t[0].length;r++)t[n][r]>e&&(e=t[n][r]);return e},Pt=(t,e,n=1,r=0)=>{console.assert(t.length===t[0].length,"Conv input is not square"),console.assert(e.length===e[0].length,"Conv kernel is not square");let a=(t.length-e.length)/n+1,o=Et(a,a,0);for(let r=0;r<a;r++)for(let i=0;i<a;i++){let a=It(t,r*n,r*n+e.length,i*n,i*n+e.length),s=$t(a,e);o[r][i]=s}return o},St=(t,e=2,n=2,r="VALID")=>{console.assert(2===e,"Only supports kernen = [2,2]"),console.assert(2===n,"Only supports stride = 2"),console.assert("VALID"===r,"Only support valid padding"),t.length%2==1&&"VALID"===r&&(t=It(t,0,t.length-1,0,t.length-1));let a=(t.length-e)/n+1,o=Et(a,a,0);for(let r=0;r<a;r++)for(let i=0;i<a;i++){let a=It(t,r*n,r*n+e,i*n,i*n+e);o[r][i]=Mt(a)}return o};function At(t,e){return Array.from({length:t},e?(t,n)=>e(n):void 0)}function Tt(t,e,n){return Array.from({length:t},(t,r)=>Array.from({length:e},n?(t,e)=>n(r,e):void 0))}function Ct(t,e,n,r,a){const o=Tt(e.length,e.length,(t,e)=>Tt(n,n));for(let i=0;i<e.length;i++)for(let s=0;s<e.length;s++)for(let e=0;e<n;e++)for(let l=0;l<n;l++){const n=i*t+e*a,c=s*t+l*a;o[i][s][e][l]=n*r+c}return o}function Lt(t,e,n,r,a,o){const i=At(n*n);for(let n=0;n<o;n++)for(let r=0;r<o;r++){const o=a[t][e][n][r];void 0!==o&&(i[o]=[n,r])}return i}function Ft(t,e,n){var r=e.reduce((t,e,n)=>(null!=e&&t.push(n),t),[]);return It(t,Math.floor(r[0]/t.length),Math.floor(r[0]/t.length)+n,r[0]%t.length,r[0]%t.length+n)}function Dt(t,e){var n=e.reduce((t,e,n)=>(0!=e&&t.push(n),t),[]);return It(t,Math.floor(n[0]/t.length),Math.floor(n[0]/t.length)+1,n[0]%t.length,n[0]%t.length+1)}function Nt(t){return 150/t>20?20:150/t}function Rt(t){let e=t.map((function(t){return Math.max.apply(Math,t)})),n=Math.max.apply(null,e),r=t.map((function(t){return Math.min.apply(Math,t)})),a=Math.min.apply(null,r);return{range:2*Math.max(Math.abs(a),Math.abs(n)),min:a,max:n}}function Bt(t,e=Nt(t.length)){for(var n=new Array,r=1,a=1,o=e,i=e,s=0;s<t.length;s++){n.push(new Array);for(var l=0;l<t[0].length;l++)n[s].push({text:Math.round(100*t[s][l])/100,row:s,col:l,x:r,y:a,width:o,height:i}),r+=o;r=1,a+=i}return n}function Ot(e){let n;return{c(){n=g("div"),n.innerHTML='<svg id="grid" width="100%" height="100%"></svg>',k(n,"display","inline-block"),k(n,"vertical-align","middle"),x(n,"class","grid")},m(t,r){h(t,n,r),e[10](n)},p:t,i:t,o:t,d(t){t&&f(n),e[10](null)}}}function zt(t,e,n){let r,{data:a}=e,{highlights:o}=e,{isKernelMath:i}=e,{constraint:s}=e,{dataRange:l}=e,{outputLength:c}=e,{stride:u}=e,{colorScale:d=d3.interpolateRdBu}=e,{isInputLayer:p=!1}=e;const h=L();let f=o,g=a;const m=()=>{d3.select(r).selectAll("#grid > *").remove();const t=a.length*s+2;var e=d3.select(r).select("#grid").attr("width",t+"px").attr("height",t+"px").append("svg").attr("width",t+"px").attr("height",t+"px").selectAll(".row").data(a).enter().append("g").attr("class","row");e.selectAll(".square").data((function(t){return t})).enter().append("rect").attr("class","square").attr("x",(function(t){return t.x})).attr("y",(function(t){return t.y})).attr("width",(function(t){return t.width})).attr("height",(function(t){return t.height})).style("opacity",.8).style("fill",(function(t){let e=t.text;return e=p?1-t.text:(t.text+l/2)/l,d(e)})).on("mouseover",(function(t){a.length!=c?h("message",{hoverH:Math.min(Math.floor(t.row/u),c-1),hoverW:Math.min(Math.floor(t.col/u),c-1)}):h("message",{hoverH:Math.min(Math.floor(t.row/1),c-1),hoverW:Math.min(Math.floor(t.col/1),c-1)})}));if(i)e.selectAll(".text").data((function(t){return t})).enter().append("text").attr("class","text").style("font-size",Math.floor(s/2.6)+"px").attr("x",(function(t){return t.x+t.width/2})).attr("y",(function(t){return t.y+t.height/2})).style("fill",(function(t){let e=t.text;return e=p?1-t.text:(t.text+l/2)/l,e<.2||e>.8?"white":"black"})).style("text-anchor","middle").style("dominant-baseline","middle").text((function(t){return t.text.toString().replace("-","－")}))};return C(()=>{(a!=g&&(m(),g=a),o!=f)&&(d3.select(r).select("#grid").select("svg").selectAll(".square").style("stroke",t=>i||o.length&&o[t.row*a.length+t.col]?"black":null),f=o)}),T(()=>{m()}),t.$$set=t=>{"data"in t&&n(1,a=t.data),"highlights"in t&&n(2,o=t.highlights),"isKernelMath"in t&&n(3,i=t.isKernelMath),"constraint"in t&&n(4,s=t.constraint),"dataRange"in t&&n(5,l=t.dataRange),"outputLength"in t&&n(6,c=t.outputLength),"stride"in t&&n(7,u=t.stride),"colorScale"in t&&n(8,d=t.colorScale),"isInputLayer"in t&&n(9,p=t.isInputLayer)},[r,a,o,i,s,l,c,u,d,p,function(t){D[t?"unshift":"push"](()=>{r=t,n(0,r)})}]}class jt extends nt{constructor(t){super(),et(this,t,zt,Ot,o,{data:1,highlights:2,isKernelMath:3,constraint:4,dataRange:5,outputLength:6,stride:7,colorScale:8,isInputLayer:9})}}function Ht(e){let n,r,a;return{c(){n=g("div"),r=y(),a=g("div"),a.innerHTML='<svg id="grid" width="100%" height="100%"></svg>',x(n,"class","legend"),x(a,"class","grid")},m(t,o){h(t,n,o),e[10](n),h(t,r,o),h(t,a,o),e[11](a)},p:t,i:t,o:t,d(t){t&&f(n),e[10](null),t&&f(r),t&&f(a),e[11](null)}}}function qt(t,e,n){let r,a,{data:o}=e,{kernel:i}=e,{constraint:s}=e,{dataRange:l}=e,{kernelRange:c}=e,{colorScale:u=d3.interpolateRdBu}=e,{kernelColorScale:d=d3.interpolateBrBG}=e,{isInputLayer:p=!1}=e;const h=Math.floor(s/3);let f=o;const g=()=>{d3.select(r).selectAll("#grid > *").remove();const t=i?o.length*s*2+2:o.length*s+2;var e=d3.select(r).select("#grid").attr("width",t+"px").attr("height",t+"px").append("svg").attr("width",t+"px").attr("height",t+"px").selectAll(".row").data(o).enter().append("g").attr("class","row"),n=e.selectAll(".square").data((function(t){return t})).enter();n.append("rect").attr("class","square").attr("x",(function(t){return 1===t.x?t.x+h:2*t.x+h})).attr("y",(function(t){return 1===t.y?t.y:2*t.y})).attr("width",(function(t){return t.width})).attr("height",(function(t){return t.height})).style("opacity",.5).style("fill",(function(t){let e=t.text;return e=p?1-t.text:(t.text+l/2)/l,u(e)})).style("stroke","black"),n.append("rect").attr("class","square").attr("x",(function(t){return 1===t.x?t.x+h:2*t.x+h})).attr("y",(function(t){return 1===t.y?t.y+t.height:2*t.y+t.height})).attr("width",(function(t){return t.width})).attr("height",(function(t){return t.height/2})).style("opacity",.5).style("fill",(function(t){let e=(i[t.row][t.col].text+c.range/2)/c.range;return d(.6*e+.2)}));var a=e.selectAll(".text").data((function(t){return t})).enter();a.append("text").attr("class","text").style("font-size",Math.floor(s/2.6)+"px").attr("x",(function(t){return 1===t.x?t.x+t.width/2+h:2*t.x+t.width/2+h})).attr("y",(function(t){return 1===t.y?t.y+t.height/2:2*t.y+t.height/2})).style("fill",(function(t){let e=t.text;return e=p?1-t.text:(t.text+l/2)/l,e<.2||e>.8?p&&e<.2?"black":"white":"black"})).style("text-anchor","middle").style("dominant-baseline","middle").text((function(t){return t.text})),a.append("text").attr("class","text").style("font-size",Math.floor(s/2.6)+"px").attr("font-weight",600).attr("x",(function(t){return 1===t.x?t.x+h/2:2*t.x+h/2})).attr("y",(function(t){return 1===t.y?t.y+t.height+t.height/4:2*t.y+t.height+t.height/4})).style("fill","black").style("text-anchor","middle").style("dominant-baseline","middle").text((function(t){return"×"})),a.append("text").attr("class","text").style("font-size",Math.floor(s/2.6)+"px").attr("x",(function(t){return 1===t.x?t.x+t.width/2+h:2*t.x+t.width/2+h})).attr("y",(function(t){return 1===t.y?t.y+t.height+t.height/4:2*t.y+t.height+t.height/4})).style("fill",(function(t){let e=.6*((i[t.row][t.col].text+c.range/2)/c.range)+.2;return e<.2||e>.8?"white":"black"})).style("text-anchor","middle").style("dominant-baseline","middle").text((function(t){return i[t.row][t.col].text})),a.append("text").attr("class","text").style("font-size",Math.floor(s/1.6)+"px").attr("x",(function(t){return 1===t.x?t.x+t.width+t.width/2+h:2*t.x+t.width+t.width/2+h})).attr("y",(function(t){return 1===t.y?t.y+t.height/2:2*t.y+t.height/2})).style("text-anchor","middle").style("dominant-baseline","middle").text((function(t){return t.row==i.length-1&&t.col==i.length-1?"=":"+"}))};return C(()=>{o!=f&&(g(),f=o)}),T(()=>{g()}),t.$$set=t=>{"data"in t&&n(2,o=t.data),"kernel"in t&&n(3,i=t.kernel),"constraint"in t&&n(4,s=t.constraint),"dataRange"in t&&n(5,l=t.dataRange),"kernelRange"in t&&n(6,c=t.kernelRange),"colorScale"in t&&n(7,u=t.colorScale),"kernelColorScale"in t&&n(8,d=t.kernelColorScale),"isInputLayer"in t&&n(9,p=t.isInputLayer)},[r,a,o,i,s,l,c,u,d,p,function(t){D[t?"unshift":"push"](()=>{a=t,n(1,a)})},function(t){D[t?"unshift":"push"](()=>{r=t,n(0,r)})}]}class Wt extends nt{constructor(t){super(),et(this,t,qt,Ht,o,{data:2,kernel:3,constraint:4,dataRange:5,kernelRange:6,colorScale:7,kernelColorScale:8,isInputLayer:9})}}function Gt(t){let e,n,r,a,o,i,s,l,c,u,d,v,b,_,k,E,$,I,M,P,S,A,T,C,L,F=t[2].length+"",D=t[2][0].length+"",N=t[3].length+"",R=t[3][0].length+"";return c=new jt({props:{data:t[11],highlights:t[7],outputLength:t[3].length,isKernelMath:!1,constraint:Nt(t[2].length),dataRange:t[4],stride:t[0],colorScale:t[5],isInputLayer:t[6]}}),c.$on("message",t[14]),v=new Wt({props:{data:t[9],kernel:t[13],constraint:Nt(t[1].length),dataRange:t[4],kernelRange:Rt(t[1]),colorScale:t[5],isInputLayer:t[6]}}),_=new jt({props:{data:t[10],highlights:t[8],isKernelMath:!0,constraint:Nt(t[1].length),dataRange:t[4]}}),C=new jt({props:{data:t[12],highlights:t[8],isKernelMath:!1,outputLength:t[3].length,constraint:Nt(t[3].length),dataRange:t[4],stride:t[0]}}),C.$on("message",t[14]),{c(){e=g("div"),n=g("div"),r=m("Input ("),a=m(F),o=m(", "),i=m(D),s=m(")"),l=y(),Y(c.$$.fragment),u=y(),d=g("div"),Y(v.$$.fragment),b=y(),Y(_.$$.fragment),k=y(),E=g("div"),$=g("div"),I=m("Output ("),M=m(N),P=m(", "),S=m(R),A=m(")"),T=y(),Y(C.$$.fragment),x(n,"class","header-text"),x(e,"class","column has-text-centered svelte-gz7a6i"),x(d,"class","column has-text-centered svelte-gz7a6i"),x($,"class","header-text"),x(E,"class","column has-text-centered svelte-gz7a6i")},m(t,f){h(t,e,f),p(e,n),p(n,r),p(n,a),p(n,o),p(n,i),p(n,s),p(e,l),Q(c,e,null),h(t,u,f),h(t,d,f),Q(v,d,null),p(d,b),Q(_,d,null),h(t,k,f),h(t,E,f),p(E,$),p($,I),p($,M),p($,P),p($,S),p($,A),p(E,T),Q(C,E,null),L=!0},p(t,[e]){(!L||4&e)&&F!==(F=t[2].length+"")&&w(a,F),(!L||4&e)&&D!==(D=t[2][0].length+"")&&w(i,D);const n={};2048&e&&(n.data=t[11]),128&e&&(n.highlights=t[7]),8&e&&(n.outputLength=t[3].length),4&e&&(n.constraint=Nt(t[2].length)),16&e&&(n.dataRange=t[4]),1&e&&(n.stride=t[0]),32&e&&(n.colorScale=t[5]),64&e&&(n.isInputLayer=t[6]),c.$set(n);const r={};512&e&&(r.data=t[9]),8192&e&&(r.kernel=t[13]),2&e&&(r.constraint=Nt(t[1].length)),16&e&&(r.dataRange=t[4]),2&e&&(r.kernelRange=Rt(t[1])),32&e&&(r.colorScale=t[5]),64&e&&(r.isInputLayer=t[6]),v.$set(r);const o={};1024&e&&(o.data=t[10]),256&e&&(o.highlights=t[8]),2&e&&(o.constraint=Nt(t[1].length)),16&e&&(o.dataRange=t[4]),_.$set(o),(!L||8&e)&&N!==(N=t[3].length+"")&&w(M,N),(!L||8&e)&&R!==(R=t[3][0].length+"")&&w(S,R);const s={};4096&e&&(s.data=t[12]),256&e&&(s.highlights=t[8]),8&e&&(s.outputLength=t[3].length),8&e&&(s.constraint=Nt(t[3].length)),16&e&&(s.dataRange=t[4]),1&e&&(s.stride=t[0]),C.$set(s)},i(t){L||(X(c.$$.fragment,t),X(v.$$.fragment,t),X(_.$$.fragment,t),X(C.$$.fragment,t),L=!0)},o(t){J(c.$$.fragment,t),J(v.$$.fragment,t),J(_.$$.fragment,t),J(C.$$.fragment,t),L=!1},d(t){t&&f(e),Z(c),t&&f(u),t&&f(d),Z(v),Z(_),t&&f(k),t&&f(E),Z(C)}}}function Vt(t,e,n){let{stride:r}=e,{dilation:a}=e,{kernel:o}=e,{image:i}=e,{output:s}=e,{isPaused:l}=e,{dataRange:c}=e,{colorScale:u}=e,{isInputInputLayer:d=!1}=e;const p=L();let h=i.length+0,f=[];for(let t=0;t<o.length;t++){f.push([]);for(let e=0;e<o.length;e++)f[t].push(0)}f=Bt(f);let g,m,y=Bt([0]),v=[],b=At(s.length*s.length,t=>!0);function x(t){m=0;let e=Ct(t,s,o.length,h,a);t<=0||(g&&clearInterval(g),n(17,g=setInterval(()=>{if(l)return;const t=m%(s.length*s.length);n(8,b=At(s.length*s.length,t=>!1));const r=Math.floor(t/s.length),a=t%s.length;n(8,b[r*s.length+a]=!0,b),n(7,v=Lt(r,a,h,o.length,e,o.length));const c=Ft(i,v,o.length);n(9,f=Bt(c));const u=Dt(s,b);n(10,y=Bt(u)),m++},250)))}x(r);let w=Bt(i),_=Bt(s),k=Bt(o);return t.$$set=t=>{"stride"in t&&n(0,r=t.stride),"dilation"in t&&n(16,a=t.dilation),"kernel"in t&&n(1,o=t.kernel),"image"in t&&n(2,i=t.image),"output"in t&&n(3,s=t.output),"isPaused"in t&&n(15,l=t.isPaused),"dataRange"in t&&n(4,c=t.dataRange),"colorScale"in t&&n(5,u=t.colorScale),"isInputInputLayer"in t&&n(6,d=t.isInputInputLayer)},t.$$.update=()=>{if(4&t.$$.dirty&&(h=i.length+0),8&t.$$.dirty){At(s.length*s.length,t=>!0)}15&t.$$.dirty&&(x(r),n(11,w=Bt(i)),n(12,_=Bt(s)),n(13,k=Bt(o)))},[r,o,i,s,c,u,d,v,b,f,y,w,_,k,function(t){let e=Ct(r,s,o.length,h,a);n(8,b=At(s.length*s.length,t=>!1));const c=t.detail.hoverH,u=t.detail.hoverW;n(8,b[c*s.length+u]=!0,b),n(7,v=Lt(c,u,h,o.length,e,o.length));const d=Ft(i,v,o.length);n(9,f=Bt(d));const g=Dt(s,b);n(10,y=Bt(g)),n(15,l=!0),p("message",{text:l})},l,a,g]}class Kt extends nt{constructor(t){super(),et(this,t,Vt,Gt,o,{stride:0,dilation:16,kernel:1,image:2,output:3,isPaused:15,dataRange:4,colorScale:5,isInputInputLayer:6})}}function Ut(t){let e,n,a,o,i,s,l,c,u,d,m,v,w,_,k,E,$,I,M,P=t[6]?'<i class="fas fa-play-circle play-icon"></i>':'<i class="fas fa-pause-circle"></i>';return _=new Kt({props:{kernel:t[2],image:t[1],output:t[7],stride:Jt,dilation:Yt,isPaused:t[6],dataRange:t[3],colorScale:t[4],isInputInputLayer:t[5]}}),_.$on("message",t[9]),{c(){e=g("div"),n=g("div"),a=g("div"),o=g("div"),o.textContent="Convolution",i=y(),s=g("div"),l=g("div"),l.innerHTML='<i class="fas fa-info-circle"></i>',c=y(),u=g("div"),d=y(),m=g("div"),m.innerHTML='<i class="fas control-icon fa-times-circle"></i>',v=y(),w=g("div"),Y(_.$$.fragment),k=y(),E=g("div"),E.innerHTML='<img src="/assets/img/pointer.svg" alt="pointer icon" class="svelte-1j8mhv0"/> \n        <div class="annotation-text"><span style="font-weight:600">Hover over</span> the matrices to change kernel position.</div>',x(o,"class","title-text svelte-1j8mhv0"),x(l,"class","control-button svelte-1j8mhv0"),x(l,"title","Jump to article section"),x(u,"class","play-button control-button svelte-1j8mhv0"),x(u,"title","Play animation"),x(m,"class","delete-button control-button svelte-1j8mhv0"),x(m,"title","Close"),x(s,"class","buttons svelte-1j8mhv0"),x(a,"class","control-pannel svelte-1j8mhv0"),x(w,"class","container is-centered svelte-1j8mhv0"),x(E,"class","annotation svelte-1j8mhv0"),x(n,"class","box svelte-1j8mhv0"),x(e,"class","container svelte-1j8mhv0"),x(e,"id","detailview-container")},m(r,f){h(r,e,f),p(e,n),p(n,a),p(a,o),p(a,i),p(a,s),p(s,l),p(s,c),p(s,u),u.innerHTML=P,p(s,d),p(s,m),p(n,v),p(n,w),Q(_,w,null),p(n,k),p(n,E),$=!0,I||(M=[b(l,"click",Qt),b(u,"click",t[8]),b(m,"click",t[10])],I=!0)},p(t,e){(!$||64&e)&&P!==(P=t[6]?'<i class="fas fa-play-circle play-icon"></i>':'<i class="fas fa-pause-circle"></i>')&&(u.innerHTML=P);const n={};4&e&&(n.kernel=t[2]),2&e&&(n.image=t[1]),128&e&&(n.output=t[7]),64&e&&(n.isPaused=t[6]),8&e&&(n.dataRange=t[3]),16&e&&(n.colorScale=t[4]),32&e&&(n.isInputInputLayer=t[5]),_.$set(n)},i(t){$||(X(_.$$.fragment,t),$=!0)},o(t){J(_.$$.fragment,t),$=!1},d(t){t&&f(e),Z(_),I=!1,r(M)}}}function Xt(t){let e,n,r=!t[0]&&Ut(t);return{c(){r&&r.c(),e=v()},m(t,a){r&&r.m(t,a),h(t,e,a),n=!0},p(t,[n]){t[0]?r&&(K(),J(r,1,1,()=>{r=null}),U()):r?(r.p(t,n),1&n&&X(r,1)):(r=Ut(t),r.c(),X(r,1),r.m(e.parentNode,e))},i(t){n||(X(r),n=!0)},o(t){J(r),n=!1},d(t){r&&r.d(t),t&&f(e)}}}let Jt=1;const Yt=1;function Qt(){}function Zt(t,e,n){let{input:r}=e,{kernel:a}=e,{dataRange:o}=e,{colorScale:i=d3.interpolateRdBu}=e,{isInputInputLayer:s=!1}=e,{isExited:l=!1}=e;const c=L();var u=!1,d=Pt(r,a,Jt);return t.$$set=t=>{"input"in t&&n(1,r=t.input),"kernel"in t&&n(2,a=t.kernel),"dataRange"in t&&n(3,o=t.dataRange),"colorScale"in t&&n(4,i=t.colorScale),"isInputInputLayer"in t&&n(5,s=t.isInputInputLayer),"isExited"in t&&n(0,l=t.isExited)},t.$$.update=()=>{if(6&t.$$.dirty)try{n(7,d=Pt(r,a,Jt))}catch{console.log("Cannot handle stride of "+Jt)}},[l,r,a,o,i,s,u,d,function(){n(6,u=!u)},function(t){n(6,u=t.detail.text)},function(){n(0,l=!0),c("message",{text:l})}]}class te extends nt{constructor(t){super(),et(this,t,Zt,Xt,o,{input:1,kernel:2,dataRange:3,colorScale:4,isInputInputLayer:5,isExited:0})}}function ee(t){let e,n,r,a,o,i,s,l,c,u,d,v,b,_,k,E,$,I,M,P,S,A,T,C,L,F,D,N,R,B=t[0].length+"",O=t[0][0].length+"",z=t[1].length+"",j=t[1][0].length+"";return c=new jt({props:{data:t[7],highlights:t[3],outputLength:t[1].length,isKernelMath:!1,constraint:Nt(t[0].length),dataRange:t[2],stride:1}}),c.$on("message",t[9]),_=new jt({props:{data:Bt([[0]]),highlights:t[4],isKernelMath:!0,constraint:20,dataRange:t[2]}}),E=new jt({props:{data:t[5],highlights:t[4],isKernelMath:!0,constraint:20,dataRange:t[2]}}),I=new jt({props:{data:t[6],highlights:t[4],isKernelMath:!0,constraint:20,dataRange:t[2]}}),N=new jt({props:{data:t[8],highlights:t[4],isKernelMath:!1,outputLength:t[1].length,constraint:Nt(t[1].length),dataRange:t[2],stride:1}}),N.$on("message",t[9]),{c(){e=g("div"),n=g("div"),r=m("Input ("),a=m(B),o=m(", "),i=m(O),s=m(")"),l=y(),Y(c.$$.fragment),u=y(),d=g("div"),v=g("span"),b=m("max(\n    "),Y(_.$$.fragment),k=m("\n    ,\n    "),Y(E.$$.fragment),$=m("\n    )\n    =\n    "),Y(I.$$.fragment),M=y(),P=g("div"),S=g("div"),A=m("Output ("),T=m(z),C=m(", "),L=m(j),F=m(")"),D=y(),Y(N.$$.fragment),x(n,"class","header-text"),x(e,"class","column has-text-centered svelte-gz7a6i"),x(d,"class","column has-text-centered svelte-gz7a6i"),x(S,"class","header-text"),x(P,"class","column has-text-centered svelte-gz7a6i")},m(t,f){h(t,e,f),p(e,n),p(n,r),p(n,a),p(n,o),p(n,i),p(n,s),p(e,l),Q(c,e,null),h(t,u,f),h(t,d,f),p(d,v),p(v,b),Q(_,v,null),p(v,k),Q(E,v,null),p(v,$),Q(I,v,null),h(t,M,f),h(t,P,f),p(P,S),p(S,A),p(S,T),p(S,C),p(S,L),p(S,F),p(P,D),Q(N,P,null),R=!0},p(t,[e]){(!R||1&e)&&B!==(B=t[0].length+"")&&w(a,B),(!R||1&e)&&O!==(O=t[0][0].length+"")&&w(i,O);const n={};128&e&&(n.data=t[7]),8&e&&(n.highlights=t[3]),2&e&&(n.outputLength=t[1].length),1&e&&(n.constraint=Nt(t[0].length)),4&e&&(n.dataRange=t[2]),c.$set(n);const r={};16&e&&(r.highlights=t[4]),4&e&&(r.dataRange=t[2]),_.$set(r);const o={};32&e&&(o.data=t[5]),16&e&&(o.highlights=t[4]),4&e&&(o.dataRange=t[2]),E.$set(o);const s={};64&e&&(s.data=t[6]),16&e&&(s.highlights=t[4]),4&e&&(s.dataRange=t[2]),I.$set(s),(!R||2&e)&&z!==(z=t[1].length+"")&&w(T,z),(!R||2&e)&&j!==(j=t[1][0].length+"")&&w(L,j);const l={};256&e&&(l.data=t[8]),16&e&&(l.highlights=t[4]),2&e&&(l.outputLength=t[1].length),2&e&&(l.constraint=Nt(t[1].length)),4&e&&(l.dataRange=t[2]),N.$set(l)},i(t){R||(X(c.$$.fragment,t),X(_.$$.fragment,t),X(E.$$.fragment,t),X(I.$$.fragment,t),X(N.$$.fragment,t),R=!0)},o(t){J(c.$$.fragment,t),J(_.$$.fragment,t),J(E.$$.fragment,t),J(I.$$.fragment,t),J(N.$$.fragment,t),R=!1},d(t){t&&f(e),Z(c),t&&f(u),t&&f(d),Z(_),Z(E),Z(I),t&&f(M),t&&f(P),Z(N)}}}function ne(t,e,n){let{image:r}=e,{output:a}=e,{isPaused:o}=e,{dataRange:i}=e;const s=L();let l,c,u=r.length+0,d=Bt([[0]]),p=Bt([[0]]),h=At(r.length*r.length,t=>!0),f=At(a.length*a.length,t=>!0);function g(){c=0,l&&clearInterval(l),n(11,l=setInterval(()=>{if(o)return;const t=c%(a.length*a.length);n(4,f=At(a.length*a.length,t=>!1)),n(3,h=At(r.length*r.length,t=>{}));const e=Math.floor(t/a.length),i=t%a.length;n(4,f[e*a.length+i]=!0,f),n(3,h[e*a.length+i]=!0,h);const s=Ft(r,h,1);n(5,d=Bt(s));const l=Dt(a,f);n(6,p=Bt(l)),c++},250))}g();let m=Bt(r),y=Bt(a);return t.$$set=t=>{"image"in t&&n(0,r=t.image),"output"in t&&n(1,a=t.output),"isPaused"in t&&n(10,o=t.isPaused),"dataRange"in t&&n(2,i=t.dataRange)},t.$$.update=()=>{if(1&t.$$.dirty&&(u=r.length+0),3&t.$$.dirty){At(r.length*r.length,t=>!0),At(a.length*a.length,t=>!0)}3&t.$$.dirty&&(g(),n(7,m=Bt(r)),n(8,y=Bt(a)))},[r,a,i,h,f,d,p,m,y,function(t){n(4,f=At(a.length*a.length,t=>!1));const e=t.detail.hoverH,i=t.detail.hoverW;n(4,f[e*a.length+i]=!0,f),n(3,h=At(r.length*r.length,t=>{})),n(3,h[e*a.length+i]=!0,h);const l=Ft(r,h,1);n(5,d=Bt(l));const c=Dt(a,f);n(6,p=Bt(c)),n(10,o=!0),s("message",{text:o})},o,l]}class re extends nt{constructor(t){super(),et(this,t,ne,ee,o,{image:0,output:1,isPaused:10,dataRange:2})}}function ae(t){let e,n,a,o,i,s,l,c,u,d,m,v,w,_,k,E,$,I,M,P=t[4]?'<i class="fas fa-play-circle play-icon"></i>':'<i class="fas fa-pause-circle"></i>';return _=new re({props:{image:t[0],output:t[1],isPaused:t[4],dataRange:t[2]}}),_.$on("message",t[6]),{c(){e=g("div"),n=g("div"),a=g("div"),o=g("div"),o.textContent="ReLU Activation",i=y(),s=g("div"),l=g("div"),l.innerHTML='<i class="fas fa-info-circle"></i>',c=y(),u=g("div"),d=y(),m=g("div"),m.innerHTML='<i class="fas control-icon fa-times-circle"></i>',v=y(),w=g("div"),Y(_.$$.fragment),k=y(),E=g("div"),E.innerHTML='<img src="/assets/img/pointer.svg" alt="pointer icon" class="svelte-1lq7956"/> \n        <div class="annotation-text"><span style="font-weight:600">Hover over</span> the matrices to change pixel.</div>',x(o,"class","title-text svelte-1lq7956"),x(l,"class","control-button svelte-1lq7956"),x(l,"title","Jump to article section"),x(u,"class","play-button control-button svelte-1lq7956"),x(u,"title","Play animation"),x(m,"class","delete-button control-button svelte-1lq7956"),x(m,"title","Close"),x(s,"class","buttons svelte-1lq7956"),x(a,"class","control-pannel svelte-1lq7956"),x(w,"class","container is-centered is-vcentered svelte-1lq7956"),x(E,"class","annotation svelte-1lq7956"),x(n,"class","box svelte-1lq7956"),x(e,"class","container svelte-1lq7956")},m(r,f){h(r,e,f),p(e,n),p(n,a),p(a,o),p(a,i),p(a,s),p(s,l),p(s,c),p(s,u),u.innerHTML=P,p(s,d),p(s,m),p(n,v),p(n,w),Q(_,w,null),p(n,k),p(n,E),$=!0,I||(M=[b(l,"click",ie),b(u,"click",t[5]),b(m,"click",t[7])],I=!0)},p(t,e){(!$||16&e)&&P!==(P=t[4]?'<i class="fas fa-play-circle play-icon"></i>':'<i class="fas fa-pause-circle"></i>')&&(u.innerHTML=P);const n={};1&e&&(n.image=t[0]),2&e&&(n.output=t[1]),16&e&&(n.isPaused=t[4]),4&e&&(n.dataRange=t[2]),_.$set(n)},i(t){$||(X(_.$$.fragment,t),$=!0)},o(t){J(_.$$.fragment,t),$=!1},d(t){t&&f(e),Z(_),I=!1,r(M)}}}function oe(t){let e,n,r=!t[3]&&ae(t);return{c(){r&&r.c(),e=v()},m(t,a){r&&r.m(t,a),h(t,e,a),n=!0},p(t,[n]){t[3]?r&&(K(),J(r,1,1,()=>{r=null}),U()):r?(r.p(t,n),8&n&&X(r,1)):(r=ae(t),r.c(),X(r,1),r.m(e.parentNode,e))},i(t){n||(X(r),n=!0)},o(t){J(r),n=!1},d(t){r&&r.d(t),t&&f(e)}}}function ie(){}function se(t,e,n){let{input:r}=e,{output:a}=e,{dataRange:o}=e,{isExited:i}=e;const s=L();let l=!1;return t.$$set=t=>{"input"in t&&n(0,r=t.input),"output"in t&&n(1,a=t.output),"dataRange"in t&&n(2,o=t.dataRange),"isExited"in t&&n(3,i=t.isExited)},[r,a,o,i,l,function(){n(4,l=!l)},function(t){n(4,l=t.detail.text)},function(){s("message",{text:!0})}]}class le extends nt{constructor(t){super(),et(this,t,se,oe,o,{input:0,output:1,dataRange:2,isExited:3})}}function ce(t){let e,n,r,a,o,i,s,l,c,u,d,v,b,_,k,E,$,I,M,P,S,A,T,C,L,F,D,N=t[9].length+"",R=t[9][0].length+"",B=t[10].length+"",O=t[10][0].length+"";return c=new jt({props:{data:t[9],highlights:t[5],outputLength:t[3].length,isKernelMath:!1,constraint:Nt(t[2].length),dataRange:t[4],stride:t[0]}}),c.$on("message",t[11]),_=new jt({props:{data:t[7],highlights:t[6],isKernelMath:!0,constraint:Nt(t[1]),dataRange:t[4]}}),E=new jt({props:{data:t[8],highlights:t[6],isKernelMath:!0,constraint:Nt(t[1]),dataRange:t[4]}}),F=new jt({props:{data:t[10],highlights:t[6],isKernelMath:!1,outputLength:t[3].length,constraint:Nt(t[3].length),dataRange:t[4],stride:t[0]}}),F.$on("message",t[11]),{c(){e=g("div"),n=g("div"),r=m("Input ("),a=m(N),o=m(", "),i=m(R),s=m(")"),l=y(),Y(c.$$.fragment),u=y(),d=g("div"),v=g("span"),b=m("max(\n    "),Y(_.$$.fragment),k=m("\n    )\n    =\n    "),Y(E.$$.fragment),$=y(),I=g("div"),M=g("div"),P=m("Output ("),S=m(B),A=m(", "),T=m(O),C=m(")"),L=y(),Y(F.$$.fragment),x(n,"class","header-text"),x(e,"class","column has-text-centered svelte-gz7a6i"),x(d,"class","column has-text-centered svelte-gz7a6i"),x(M,"class","header-text"),x(I,"class","column has-text-centered svelte-gz7a6i")},m(t,f){h(t,e,f),p(e,n),p(n,r),p(n,a),p(n,o),p(n,i),p(n,s),p(e,l),Q(c,e,null),h(t,u,f),h(t,d,f),p(d,v),p(v,b),Q(_,v,null),p(v,k),Q(E,v,null),h(t,$,f),h(t,I,f),p(I,M),p(M,P),p(M,S),p(M,A),p(M,T),p(M,C),p(I,L),Q(F,I,null),D=!0},p(t,[e]){(!D||512&e)&&N!==(N=t[9].length+"")&&w(a,N),(!D||512&e)&&R!==(R=t[9][0].length+"")&&w(i,R);const n={};512&e&&(n.data=t[9]),32&e&&(n.highlights=t[5]),8&e&&(n.outputLength=t[3].length),4&e&&(n.constraint=Nt(t[2].length)),16&e&&(n.dataRange=t[4]),1&e&&(n.stride=t[0]),c.$set(n);const r={};128&e&&(r.data=t[7]),64&e&&(r.highlights=t[6]),2&e&&(r.constraint=Nt(t[1])),16&e&&(r.dataRange=t[4]),_.$set(r);const o={};256&e&&(o.data=t[8]),64&e&&(o.highlights=t[6]),2&e&&(o.constraint=Nt(t[1])),16&e&&(o.dataRange=t[4]),E.$set(o),(!D||1024&e)&&B!==(B=t[10].length+"")&&w(S,B),(!D||1024&e)&&O!==(O=t[10][0].length+"")&&w(T,O);const s={};1024&e&&(s.data=t[10]),64&e&&(s.highlights=t[6]),8&e&&(s.outputLength=t[3].length),8&e&&(s.constraint=Nt(t[3].length)),16&e&&(s.dataRange=t[4]),1&e&&(s.stride=t[0]),F.$set(s)},i(t){D||(X(c.$$.fragment,t),X(_.$$.fragment,t),X(E.$$.fragment,t),X(F.$$.fragment,t),D=!0)},o(t){J(c.$$.fragment,t),J(_.$$.fragment,t),J(E.$$.fragment,t),J(F.$$.fragment,t),D=!1},d(t){t&&f(e),Z(c),t&&f(u),t&&f(d),Z(_),Z(E),t&&f($),t&&f(I),Z(F)}}}function ue(t,e,n){let{stride:r}=e,{dilation:a}=e,{kernelLength:o}=e,{image:i}=e,{output:s}=e,{isPaused:l}=e,{dataRange:c}=e;const u=L();let d=i.length+0,p=[];for(let t=0;t<o;t++){p.push([]);for(let e=0;e<o;e++)p[t].push(0)}p=Bt(p);let h,f,g=Bt([[0]]),m=[],y=At(s.length*s.length,t=>!0);function v(t){f=0;let e=Ct(t,s,o,d,a);t<=0||(h&&clearInterval(h),n(14,h=setInterval(()=>{if(l)return;const t=f%(s.length*s.length);n(6,y=At(s.length*s.length,t=>!1));const r=Math.floor(t/s.length),a=t%s.length;n(6,y[r*s.length+a]=!0,y),n(5,m=Lt(r,a,d,0,e,o));const c=Ft(i,m,o);n(7,p=Bt(c));const u=Dt(s,y);n(8,g=Bt(u)),f++},250)))}v(r);let b=Bt(i),x=Bt(s);return t.$$set=t=>{"stride"in t&&n(0,r=t.stride),"dilation"in t&&n(13,a=t.dilation),"kernelLength"in t&&n(1,o=t.kernelLength),"image"in t&&n(2,i=t.image),"output"in t&&n(3,s=t.output),"isPaused"in t&&n(12,l=t.isPaused),"dataRange"in t&&n(4,c=t.dataRange)},t.$$.update=()=>{if(4&t.$$.dirty&&(d=i.length+0),8&t.$$.dirty){At(s.length*s.length,t=>!0)}13&t.$$.dirty&&(v(r),n(9,b=Bt(i)),n(10,x=Bt(s)))},[r,o,i,s,c,m,y,p,g,b,x,function(t){let e=Ct(r,s,o,d,a);n(6,y=At(s.length*s.length,t=>!1));const c=t.detail.hoverH,h=t.detail.hoverW;n(6,y[c*s.length+h]=!0,y),n(5,m=Lt(c,h,d,0,e,o));const f=Ft(i,m,o);n(7,p=Bt(f));const v=Dt(s,y);n(8,g=Bt(v)),n(12,l=!0),u("message",{text:l})},l,a,h]}class de extends nt{constructor(t){super(),et(this,t,ue,ce,o,{stride:0,dilation:13,kernelLength:1,image:2,output:3,isPaused:12,dataRange:4})}}function pe(t){let e,n,a,o,i,s,l,c,u,d,m,v,w,_,k,E,$,I,M,P=t[4]?'<i class="fas fa-play-circle play-icon"></i>':'<i class="fas fa-pause-circle"></i>';return _=new de({props:{kernelLength:t[1],image:t[0],output:t[5],stride:fe,dilation:ge,isPaused:t[4],dataRange:t[2]}}),_.$on("message",t[7]),{c(){e=g("div"),n=g("div"),a=g("div"),o=g("div"),o.textContent="Max Pooling",i=y(),s=g("div"),l=g("div"),l.innerHTML='<i class="fas fa-info-circle"></i>',c=y(),u=g("div"),d=y(),m=g("div"),m.innerHTML='<i class="fas control-icon fa-times-circle"></i>',v=y(),w=g("div"),Y(_.$$.fragment),k=y(),E=g("div"),E.innerHTML='<img src="/assets/img/pointer.svg" alt="pointer icon" class="svelte-kahisg"/> \n          <div class="annotation-text"><span style="font-weight:600">Hover over</span> the matrices to change kernel position.</div>',x(o,"class","title-text svelte-kahisg"),x(l,"class","control-button svelte-kahisg"),x(l,"title","Jump to article section"),x(u,"class","play-button control-button svelte-kahisg"),x(u,"title","Play animation"),x(m,"class","delete-button control-button svelte-kahisg"),x(m,"title","Close"),x(s,"class","buttons svelte-kahisg"),x(a,"class","control-pannel svelte-kahisg"),x(w,"class","container is-centered is-vcentered svelte-kahisg"),x(E,"class","annotation svelte-kahisg"),x(n,"class","box svelte-kahisg"),x(e,"class","container svelte-kahisg")},m(r,f){h(r,e,f),p(e,n),p(n,a),p(a,o),p(a,i),p(a,s),p(s,l),p(s,c),p(s,u),u.innerHTML=P,p(s,d),p(s,m),p(n,v),p(n,w),Q(_,w,null),p(n,k),p(n,E),$=!0,I||(M=[b(l,"click",me),b(u,"click",t[6]),b(m,"click",t[8])],I=!0)},p(t,e){(!$||16&e)&&P!==(P=t[4]?'<i class="fas fa-play-circle play-icon"></i>':'<i class="fas fa-pause-circle"></i>')&&(u.innerHTML=P);const n={};2&e&&(n.kernelLength=t[1]),1&e&&(n.image=t[0]),32&e&&(n.output=t[5]),16&e&&(n.isPaused=t[4]),4&e&&(n.dataRange=t[2]),_.$set(n)},i(t){$||(X(_.$$.fragment,t),$=!0)},o(t){J(_.$$.fragment,t),$=!1},d(t){t&&f(e),Z(_),I=!1,r(M)}}}function he(t){let e,n,r=!t[3]&&pe(t);return{c(){r&&r.c(),e=v()},m(t,a){r&&r.m(t,a),h(t,e,a),n=!0},p(t,[n]){t[3]?r&&(K(),J(r,1,1,()=>{r=null}),U()):r?(r.p(t,n),8&n&&X(r,1)):(r=pe(t),r.c(),X(r,1),r.m(e.parentNode,e))},i(t){n||(X(r),n=!0)},o(t){J(r),n=!1},d(t){r&&r.d(t),t&&f(e)}}}let fe=2;const ge=1;function me(){}function ye(t,e,n){let{input:r}=e,{kernelLength:a}=e,{dataRange:o}=e,{isExited:i}=e;const s=L();var l=!1,c=St(r);return t.$$set=t=>{"input"in t&&n(0,r=t.input),"kernelLength"in t&&n(1,a=t.kernelLength),"dataRange"in t&&n(2,o=t.dataRange),"isExited"in t&&n(3,i=t.isExited)},t.$$.update=()=>{if(1&t.$$.dirty)try{n(5,c=St(r))}catch{console.log("Cannot handle stride of "+fe)}},[r,a,o,i,l,c,function(){n(4,l=!l),console.log(l)},function(t){n(4,l=t.detail.text)},function(){s("message",{text:!0})}]}class ve extends nt{constructor(t){super(),et(this,t,ye,he,o,{input:0,kernelLength:1,dataRange:2,isExited:3})}}function be(e){let n,a,o,i,s,l,c,u,d,v,_,k,E,$,I,M,P,S,A;return{c(){var t;n=g("div"),a=g("div"),o=g("div"),i=g("div"),i.innerHTML='<i class="fas fa-info-circle"></i>',s=y(),l=g("div"),l.innerHTML='<i class="fas control-icon fa-times-circle"></i>',c=y(),u=g("div"),d=m("Softmax Score for "),v=g("i"),_=m('"'),k=m(e[0]),E=m('"'),$=y(),t="svg",I=document.createElementNS("http://www.w3.org/2000/svg",t),M=y(),P=g("div"),P.innerHTML='<img src="/assets/img/pointer.svg" alt="pointer icon" class="svelte-1uac4ng"/> \n      <div class="annotation-text"><span style="font-weight:600">Hover over</span> the numbers to highlight logit circles.</div>',x(i,"class","control-button svelte-1uac4ng"),x(i,"title","Jump to article section"),x(l,"class","delete-button control-button svelte-1uac4ng"),x(l,"title","Close"),x(o,"class","buttons svelte-1uac4ng"),x(u,"class","title-text svelte-1uac4ng"),x(I,"id","softmax-svg"),x(I,"width","470"),x(I,"height","105"),x(I,"class","svelte-1uac4ng"),x(P,"class","annotation svelte-1uac4ng"),x(a,"class","box svelte-1uac4ng"),x(n,"class","container")},m(t,r){h(t,n,r),p(n,a),p(a,o),p(o,i),p(o,s),p(o,l),p(a,c),p(a,u),p(u,d),p(u,v),p(v,_),p(v,k),p(v,E),p(a,$),p(a,I),p(a,M),p(a,P),e[10](n),S||(A=[b(i,"click",xe),b(l,"click",e[2])],S=!0)},p(t,[e]){1&e&&w(k,t[0])},i:t,o:t,d(t){t&&f(n),e[10](null),S=!1,r(A)}}}function xe(){}function we(t,e,n){let r,{logits:a}=e,{logitColors:o}=e,{selectedI:i}=e,{highlightI:s=-1}=e,{outputName:l}=e,{outputValue:c}=e,{startAnimation:u}=e,d=null;const p=L(),h=(t,e)=>void 0===e?d3.format(".2f")(t):d3.format(`.${e}f`)(t),f=(t,e,r,a)=>{n(3,s=a),p("mouseOver",{curI:a})},g=(t,e,r,a)=>{n(3,s=-1),p("mouseLeave",{curI:a})};return T(()=>{n(9,d=d3.select(r).select("#softmax-svg"));let t=d.append("g").attr("class","formula-right").attr("transform","translate(10, 0)").style("font-size","15px"),e=t.append("g").attr("class","denominator").attr("transform","translate(0, 58)");e.append("text").attr("x",0).attr("y",0).style("fill","gray").text("(");let s=8;a.forEach((t,n)=>{n/4>=1&&n%4==0&&(s=8);let r=e.append("text").attr("x",s).attr("y",20*Math.floor(n/4)).style("cursor","crosshair").style("pointer-events","all").on("mouseover",(t,e,r)=>f(0,0,0,n)).on("mouseleave",(t,e,r)=>g(0,0,0,n)).text("exp(");r.append("tspan").attr("class",`formula-term-${n} formula-term`).attr("dx","1").style("fill",o[n]).style("fill-opacity",n===i||u.hasInitialized?1:0).text(h(t)),r.append("tspan").attr("dx","1").text(")");let l=r.node().getBBox();s+=l.width+4,n!==a.length-1?(e.append("text").attr("x",s).attr("y",20*Math.floor(n/4)).text("+"),s+=14):e.append("text").attr("x",s-2).attr("y",20*Math.floor(n/4)).style("fill","gray").text(")")}),e.selectAll("text").data(a).enter().append("text").attr("x",(t,e)=>40*e).attr("y",0).text(t=>h(t));let l=e.node().getBBox();t.append("line").attr("class","separation-line").attr("x1",-5).attr("x2",l.width+5).attr("y1",32).attr("y2",32).style("stroke-width",1.2).style("stroke","gray");let p=t.append("g").attr("class","numerator-group").attr("transform","translate(0, 20)").append("text").attr("x",l.x+l.width/2).attr("y",0).on("mouseover",(t,e,n)=>f(0,0,0,i)).on("mouseleave",(t,e,n)=>g(0,0,0,i)).style("pointer-events","all").style("cursor","crosshair").style("text-anchor","middle").text("exp(");p.append("tspan").attr("class",`formula-term-${i} formula-term`).attr("dx",1).style("fill",o[i]).text(""+h(a[i])),p.append("tspan").attr("dx",1).text(")");let m=d.append("g").attr("class","formula-left").attr("transform","translate(395, 32)");m.append("text").attr("x",20).attr("dominant-baseline","middle").text(""+h(c,4)).node().getBBox();m.append("text").attr("dominant-baseline","middle").attr("x",0).attr("y",0).style("fill","gray").style("font-weight","bold").text("=")}),t.$$set=t=>{"logits"in t&&n(4,a=t.logits),"logitColors"in t&&n(5,o=t.logitColors),"selectedI"in t&&n(6,i=t.selectedI),"highlightI"in t&&n(3,s=t.highlightI),"outputName"in t&&n(0,l=t.outputName),"outputValue"in t&&n(7,c=t.outputValue),"startAnimation"in t&&n(8,u=t.startAnimation)},t.$$.update=()=>{520&t.$$.dirty&&null!==d&&(d.selectAll(".formula-term").style("text-decoration","none").style("font-weight","normal"),d.selectAll(".formula-term-"+s).style("font-weight","bold").style("text-decoration","underline")),768&t.$$.dirty&&null!==d&&d.select(".formula-term-"+u.i).transition("softmax-edge").duration(u.duration).style("fill-opacity",1)},[l,r,()=>{p("xClicked",{})},s,a,o,i,c,u,d,function(t){D[t?"unshift":"push"](()=>{r=t,n(1,r)})}]}class _e extends nt{constructor(t){super(),et(this,t,we,be,o,{logits:4,logitColors:5,selectedI:6,highlightI:3,outputName:0,outputValue:7,startAnimation:8})}}function ke(e){let n,a,o,i,s,l,c,u,d,v,E,$,I,M,S,A,T,C,L,F,D,N,R,B,O,z,j,H,q,W,G,V,K,U,X,J,Y,Q=e[5].error+"";return{c(){n=g("div"),a=g("div"),o=g("div"),i=y(),s=g("div"),l=g("header"),c=g("p"),c.textContent="Add Input Image",u=y(),d=g("button"),v=y(),E=g("section"),$=g("div"),I=g("div"),M=g("input"),S=y(),A=g("span"),A.innerHTML='<i class="fas fa-link"></i>',T=y(),C=g("div"),C.textContent="or",L=y(),F=g("div"),D=g("label"),N=g("input"),R=y(),B=g("span"),B.innerHTML='<span class="file-icon"><i class="fas fa-upload"></i></span> \n                <span class="file-label">Upload</span>',O=y(),z=g("footer"),j=g("div"),H=m(Q),q=y(),W=g("div"),G=g("button"),G.textContent="Cancel",V=y(),K=g("button"),K.textContent="Add",U=y(),X=g("img"),x(o,"class","modal-background"),x(c,"class","modal-card-title svelte-1o5lxfe"),x(d,"class","delete"),x(d,"aria-label","close"),x(l,"class","modal-card-head svelte-1o5lxfe"),x(M,"class","input small-font svelte-1o5lxfe"),x(M,"type","url"),x(M,"placeholder","Paste URL of image..."),x(A,"class","icon small-font is-left svelte-1o5lxfe"),x(I,"class","control has-icons-left svelte-1o5lxfe"),P(I,"is-loading",e[3]),x(C,"class","or-label svelte-1o5lxfe"),x(N,"class","file-input"),x(N,"type","file"),x(N,"name","image"),x(N,"accept",".png,.jpeg,.tiff,.jpg,.png"),x(B,"class","file-cta small-font svelte-1o5lxfe"),x(D,"class","file-label"),x(F,"class","file"),x($,"class","field svelte-1o5lxfe"),x(E,"class","modal-card-body"),x(j,"class","error-message svelte-1o5lxfe"),P(j,"hidden",!e[5].show),x(G,"class","button is-smaller svelte-1o5lxfe"),x(K,"class","button is-success is-smaller svelte-1o5lxfe"),x(W,"class","button-container"),x(z,"class","modal-card-foot svelte-1o5lxfe"),x(s,"class","modal-card svelte-1o5lxfe"),x(a,"class","modal"),x(a,"id","input-modal"),P(a,"is-active",e[6].show),k(X,"display","none"),x(X,"id","vali-image"),x(X,"alt","hidden image"),x(n,"class","modal-component")},m(t,r){h(t,n,r),p(n,a),p(a,o),p(a,i),p(a,s),p(s,l),p(l,c),p(l,u),p(l,d),p(s,v),p(s,E),p(E,$),p($,I),p(I,M),_(M,e[2]),p(I,S),p(I,A),p($,T),p($,C),p($,L),p($,F),p(F,D),p(D,N),p(D,R),p(D,B),p(s,O),p(s,z),p(z,j),p(j,H),p(z,q),p(z,W),p(W,G),p(W,V),p(W,K),p(n,U),p(n,X),e[14](X),e[15](n),J||(Y=[b(o,"click",e[10]),b(d,"click",e[10]),b(M,"input",e[12]),b(N,"change",e[13]),b(N,"change",e[9]),b(G,"click",e[10]),b(K,"click",e[11]),b(X,"error",e[7]),b(X,"load",e[8])],J=!0)},p(t,[e]){4&e&&_(M,t[2]),8&e&&P(I,"is-loading",t[3]),32&e&&Q!==(Q=t[5].error+"")&&w(H,Q),32&e&&P(j,"hidden",!t[5].show),64&e&&P(a,"is-active",t[6].show)},i:t,o:t,d(t){t&&f(n),e[14](null),e[15](null),J=!1,r(Y)}}}function Ee(t,e,n){let r,a,o,i="",s=!1,l=!0,c={show:!1,error:""};const u=L();let d={show:!1};xt.set(d),xt.subscribe(t=>{n(6,d=t)});return T(()=>{d3.select(r).select("#input-modal")}),[r,a,i,s,o,c,d,()=>{n(3,s=!1),n(5,c.show=!0,c),n(5,c.error=l?"We can't find the image at that URL.":"Not datatrainx valid image file.",c)},()=>{let t=document.createElement("canvas"),e=t.getContext("2d");t.width=a.width,t.height=a.height,e.drawImage(a,0,0);try{e.getImageData(0,0,a.width,a.height),n(3,s=!1),n(6,d.show=!1,d),xt.set(d),u("urlTyped",{url:a.src}),n(2,i=null)}catch(t){n(3,s=!1),n(5,c.show=!0,c),n(5,c.error="No permission to load this image.",c)}},()=>{l=!1;let t=new FileReader;t.onload=t=>{n(1,a.src=t.target.result,a)},t.readAsDataURL(o[0])},()=>{n(6,d.show=!1,d),xt.set(d),u("xClicked",{preImage:d.preImage})},()=>{n(3,s=!0),n(5,c.show=!1,c),n(1,a.crossOrigin="Anonymous",a),n(1,a.src=i,a)},function(){i=this.value,n(2,i)},function(){o=this.files,n(4,o)},function(t){D[t?"unshift":"push"](()=>{a=t,n(1,a)})},function(t){D[t?"unshift":"push"](()=>{r=t,n(0,r)})}]}class $e extends nt{constructor(t){super(),et(this,t,Ee,ke,o,{})}}var Ie={$:t=>"string"==typeof t?document.querySelector(t):t,extend:(...t)=>Object.assign(...t),cumulativeOffset(t){let e=0,n=0;do{e+=t.offsetTop||0,n+=t.offsetLeft||0,t=t.offsetParent}while(t);return{top:e,left:n}},directScroll:t=>t&&t!==document&&t!==document.body,scrollTop(t,e){let n=void 0!==e;return this.directScroll(t)?n?t.scrollTop=e:t.scrollTop:n?document.documentElement.scrollTop=document.body.scrollTop=e:window.pageYOffset||document.documentElement.scrollTop||document.body.scrollTop||0},scrollLeft(t,e){let n=void 0!==e;return this.directScroll(t)?n?t.scrollLeft=e:t.scrollLeft:n?document.documentElement.scrollLeft=document.body.scrollLeft=e:window.pageXOffset||document.documentElement.scrollLeft||document.body.scrollLeft||0}};const Me={container:"body",duration:500,delay:0,offset:0,easing:function(t){return t<.5?4*t*t*t:.5*Math.pow(2*t-2,3)+1},onStart:t,onDone:t,onAborting:t,scrollX:!1,scrollY:!0},Pe=t=>{let{offset:e,duration:n,delay:r,easing:a,x:o=0,y:i=0,scrollX:s,scrollY:p,onStart:h,onDone:f,container:g,onAborting:m,element:y}=t;"function"==typeof e&&(e=e());var v=Ie.cumulativeOffset(g),b=y?Ie.cumulativeOffset(y):{top:i,left:o},x=Ie.scrollLeft(g),w=Ie.scrollTop(g),_=b.left-v.left+e,k=b.top-v.top+e,E=_-x,$=k-w;let I=!0,M=!1,P=l()+r,S=P+n;function A(t){t||(M=!0,h(y,{x:o,y:i}))}function T(t){!function(t,e,n){s&&Ie.scrollLeft(t,n),p&&Ie.scrollTop(t,e)}(g,w+$*t,x+E*t)}function C(){I=!1}return function(t){let e;0===u.size&&c(d),new Promise(n=>{u.add(e={c:t,f:n})})}(t=>{if(!M&&t>=P&&A(!1),M&&t>=S&&(T(1),C(),f(y,{x:o,y:i})),!I)return m(y,{x:o,y:i}),!1;if(M){T(0+1*a((t-P)/n))}return!0}),A(r),T(0),C},Se=t=>Pe((t=>{let e=Ie.extend({},Me,t);return e.container=Ie.$(e.container),e.element=Ie.$(e.element),e})(t));function Ae(e){let n,r,a,o,i,s,l,c,u,d,m,v,w,_,k,E,$,I,M,P,S,A,T,C,L,F,D,N,R,B,O,z,j,H,q,W,G,V,K,U,X,J,Y,Q,Z,tt,et,nt,rt,at,ot,it,st,lt,ct,ut,dt,pt,ht,ft,gt,mt,yt,vt,bt,xt,wt,_t,kt,Et,$t,It;return{c(){n=g("div"),r=g("div"),a=g("div"),o=g("h1"),o.textContent="DataTrainX c'est quoi ?",i=y(),s=g("p"),s.textContent="Outil de recherche des singularités cognitives d’un étudiant!",l=y(),c=g("article"),u=g("p"),u.textContent="Dans l’apprentissage, une logique de la restitution qui prévaut encore sur une logique de la compréhension serait à l’origine de nombreux échecs de l’apprenant. Pour se comprendre, comprendre le monde et autrui, tout apprenant produit et met en œuvre des ressources métacognitives.",d=y(),m=g("p"),m.textContent="On observera que cela fait appel à de nombreuses disciplines, comme la psychologie, la pédagogie, les neurosciences mais aussi le management, qui demandera à l’équipe enseignante une formation continue pour s’appuyer sur de tels dispositifs.",v=y(),w=g("p"),w.textContent="DataTrainX est un prototype de reconnaissance facial des émotions (REF) qui a pour objectif principal de s’intéresser à l’analyse des comportements de l'apprenant dans un but de neuropédagogie.",_=y(),k=g("p"),k.textContent="Cela peut être très utile dans l'adaptation des modèles d’apprentissage où, en analysant les comportements, on serait en mesure de s’adapter à l’apprenant (adaptive-learning).",E=y(),$=g("p"),$.textContent="DataTrainX est un agent intelligent capable de reconnaître les émotions traduites par les expressions faciales couplées au test de Kolb sur le style d’apprentissage.",I=y(),M=g("p"),M.textContent="Pour ce faire, nous utiliserons des algorithmes de deep-Learning et plus particulièrement les réseaux de neurones convolutifs (CNN) dans la reconnaissance des émotions de bases défini par le psychologue P. Ekman ('Colère', 'Dégoût', 'Peur', 'Joyeux', 'Triste', 'Surprise', 'Neutre').",P=y(),S=g("h3"),S.textContent="Principe d'un réseau de neurones convolutifs - Deep Learning",A=y(),T=g("p"),T.textContent="Les réseaux de neurones convolutifs ont une méthodologie similaire à celle des méthodes traditionnelles d'apprentissage supervisé, ils détectent les caractéristiques, puis entraînent un classifieur dessus, à la différence près que les caractéristiques sont apprises automatiquement. Un CNN applique généralement 5 types de couches différentes à une image afin d’en extraire les informations pertinentes, la couche de convolution, la couche de pooling, la couche de correction ReLU et la couche fully-connected (figure 1).",C=y(),L=g("div"),L.innerHTML='<img src="/assets/figures/cnn.gif" alt="Principe d&#39;une architecture CNN"/> \n                    <div class="figure-caption svelte-k6imso">Figure 1. Principe d&#39;une architecture CNN</div>',F=y(),D=g("p"),D.textContent='La couche de convolution permet de trouver des caractéristiques, elle est donc la composante la plus importante. Elle est assez proche de la mécanique sur les caractéristiques pseudo-Haar. Le principe est le même, faire "glisser" une fenêtre représentant un filtre sur l\'image. La différence ici, c’est que l’on cherche une convolution calculée et non une corrélation croisée (comme la recherche d’une caractéristiques pseudo-haar).',N=y(),R=g("p"),R.textContent="Le filtre, sera la caractéristique à étudier, cette caractéristique est trouvée par convolution, pour comprendre l’application nous simplifions l’image du visage par une croix noirs et blanche (figure 2). La caractéristique (feature) dans cet exemple prend la taille de 3x3 puis recherche des points communs par balayage de l’image. Dans la démonstration nous avons pris la valeur d’un pixel en 2D, 1 pour blanc et -1 pour noir, ainsi entre deux caractéristiques comparées nous réalisons un calcul d’addition entre les 9 pixels ce qui nous permet d’obtenir un score de similarité, ici 80%. Ce même calcul est réalisé sur l’ensemble  de l’image avec un stride de 1 (la zone comparée bouge d’un seul pixel entre chaque comparaison).",B=y(),O=g("div"),O.innerHTML='<img src="/assets/figures/relu.gif" alt="Principe de convolution est de l&#39;activation ReLU"/> \n                    <div class="figure-caption svelte-k6imso">Figure 2. Principe de convolution est de l&#39;activation ReLU, ici la comparaison entre les deux images permettent de trouver trois caractéristiques, l&#39;une des caractéristiques (en vert) est nettoyer ensuite des valeurs négatives (ReLU)</div>',z=y(),j=g("p"),j.innerHTML='Nous avons adaptés le projet <a href="https://poloclub.github.io/cnn-explainer/" target="_blank">CNN Explainer</a> pour en comprendre le principe sur un dataset fer2013.',H=y(),q=g("div"),W=g("button"),W.innerHTML='<span class="icon"><i class="fas fa-eye"></i></span> \n                        <span>Comment ça marche ?</span>',G=y(),V=g("p"),V.textContent="L’idée est de se concentrer sur la démarche que privilégie chaque individu pour appréhender l’acte d’apprendre. Certains styles seraient plus adaptés dans certains contextes que d’autres. Tout dépend du point de vue de l’apprenant face à la situation d’apprentissage et de sa motivation.",K=y(),U=g("p"),U.textContent="Bien que des auteurs comme Jean Houssaye démontrent que ce qui semble essentiel c’est de différencier la pédagogie bien plus que des typologies destinées à connaître individuellement les apprenants et à dresser leur profil, il parait néanmoins intéressant de les utiliser comme complémentarité à un panel d’outil diversifié que peut utiliser le formateur.",X=y(),J=g("h3"),J.textContent="Le modèle de l’apprentissage expérientiel de Kolb",Y=y(),Q=g("p"),Q.textContent="Les modèles de styles d’apprentissage individualisés ont donc pour objectif de définir un type d’apprenant afin de permettre aux enseignants d’adapter leurs méthodes d’apprentissage. Peu d’études ont réussi à valider le concept de styles d’apprentissage en éducation.",Z=y(),tt=g("p"),tt.textContent="Peu d’études ont réussi à valider le concept de styles d’apprentissage en éducation. L’étude de Pashler et al indique bien une corrélation entre typologies et les préférences exprimées par certains individus sur la façon dont ils préfèrent recevoir de l’information mais contredit le fait selon laquelle l’apprenant apprendrait mieux en apprenant avec une méthode jugée comme appropriée à son style d’apprentissage",et=y(),nt=g("p"),nt.textContent="Nombreux sont les scientifiques qui parle de mythe ou invitent les professionnels de l’éducation et d’apprentissage à faire preuve de scepticisme devant ces concepts. Le modèle de Kolb n’échappe pas non plus aux critiques mais il est de loin celui qui a connu la plus large diffusion et celui qui est à la base de modèle d’autres chercheurs.",rt=y(),at=g("p"),at.textContent="Il est inspiré des travaux de psychologue reconnu comme John Dewey, Kurt Lewin et Jean Piaget. Il est plutôt approprié pour les apprentissages de disciplines académiques relativement abstraites, mais moins adaptés pour la plupart des apprentissages professionnels.",ot=y(),it=g("p"),it.textContent="D’un autre côté, notre cible d’étude est réalisée sur des universitaires en informatique, ce test nous semble donc plutôt approprié.",st=y(),lt=g("p"),lt.textContent="Ce qu’il faut retenir des principales critiques, c’est qu’étiqueter un apprenant et le cantonner dans une posture est strictement contre-productif et va à l’inverse de l’objectif recherché. Néanmoins, ce qu’il ressort aussi, ce sont des concepts génériques qui fonctionnent.",ct=y(),ut=g("p"),ut.textContent="Par exemple, un profil « indépendants » a tendance à questionner les novices alors que le profil « socialisant » propose des aides, les « socialisants » s’adaptent à leur interlocuteur, quel que soit le style du novice, ceux qui travaillent avec un expert « socialisant » progressent le plus.",dt=y(),pt=g("p"),pt.textContent="On peut donc constater que les styles d’apprentissage, nous ouvre une voie pour des recherches sur les interactions sociales entre formateurs et apprenants. Pour des raisons à la fois pratiques et théoriques, il faut retenir la « maniabilité » des styles mais que cependant ils paraissent suffisamment stables pour qu’on puisse les prendre en compte dans une situation donnée afin de contribuer à expliquer ses comportements d’apprentissage. Puis enfin, garder à l’esprit qu’en modifiant de façon significative la situation d’apprentissage, il est possible qu’un individu modifie son style préférentiel d’apprentissage. Enfin, le facteur que l’on souhaite ajouter à notre projet et l’expression de l’émotion corrélé au type d’apprentissage.",ht=y(),ft=g("h3"),ft.textContent="Typologie d’apprentissage et émotions",gt=y(),mt=g("p"),mt.textContent="Il y aura donc une phase de saisie d’un questionnaire afin de déterminer un profil d’apprenant de type Kolb dans le projet DataTrainx. L’utilisateur sera enregistré en vidéo et une comparaison sera effectuée entre la typologie trouvée par le questionnaire et les émotions qu’il aura exprimées. Comme l’illustre la figure ci-dessous, l’objectif est de trouver une corrélation entre la typologie d’apprentissage et l’émotion de l’utilisateur.",yt=y(),vt=g("div"),vt.innerHTML='<img src="/assets/figures/style.gif" alt="Exemple de restitution des résultats de l’application DataTrainX."/> \n                    <div class="figure-caption svelte-k6imso">Figure 3. Exemple de restitution des résultats de l’application DataTrainX. Obtenir un profil d’apprenant, analyser l’émotion dans une mise en situation, trouver une corrélation.</div>',bt=y(),xt=g("p"),xt.textContent="Dans l’hypothèse où nous aurions des résultats significatifs entre expression et typologie, nous pourrions considérer que le profil émotionnel même de l’émotion détermine la typologie d’apprentissage et donc envisager, par exemple, une orientation du logiciel vers l’adaptative learning, c’est-à-dire une interaction entre l’IA et l’utilisateur dans la proposition des supports pédagogique.",wt=y(),_t=g("p"),_t.textContent="L’objet de ce projet, a pour orientation de se focaliser concrètement sur les moyens fonctionnels informatique à mettre en œuvre pour ce type d’application. Nous n’approfondirons pas l’aspect psychologique, qui se limitera au test de Kolb et à la résolution d’un Puzzle, l’objectif étant de démontrer comment mettre en place l’architecture fonctionnelle, logicielle et matérielle pour arriver à un résultat applicatif de la reconnaissance faciale de l’émotion.",kt=y(),Et=g("p"),Et.textContent="Les résultats d’ordre psychologique à prendre en considération sur l’objectif de cette application auront donc une part importante de subjectivité clairement assumé.",x(o,"class","title"),x(s,"class","subtitle"),x(L,"class","figure svelte-k6imso"),x(O,"class","figure svelte-k6imso"),x(W,"class","button is-primary"),x(W,"id","explain-button"),x(q,"class","buttons"),x(vt,"class","figure svelte-k6imso"),x(c,"class","content"),x(a,"class","tile is-child"),x(r,"class","tile is-parent"),x(n,"class","container")},m(t,f){h(t,n,f),p(n,r),p(r,a),p(a,o),p(a,i),p(a,s),p(a,l),p(a,c),p(c,u),p(c,d),p(c,m),p(c,v),p(c,w),p(c,_),p(c,k),p(c,E),p(c,$),p(c,I),p(c,M),p(c,P),p(c,S),p(c,A),p(c,T),p(c,C),p(c,L),p(c,F),p(c,D),p(c,N),p(c,R),p(c,B),p(c,O),p(c,z),p(c,j),p(c,H),p(c,q),p(q,W),p(c,G),p(c,V),p(c,K),p(c,U),p(c,X),p(c,J),p(c,Y),p(c,Q),p(c,Z),p(c,tt),p(c,et),p(c,nt),p(c,rt),p(c,at),p(c,ot),p(c,it),p(c,st),p(c,lt),p(c,ct),p(c,ut),p(c,dt),p(c,pt),p(c,ht),p(c,ft),p(c,gt),p(c,mt),p(c,yt),p(c,vt),p(c,bt),p(c,xt),p(c,wt),p(c,_t),p(c,kt),p(c,Et),$t||(It=b(W,"click",e[0]),$t=!0)},p:t,i:t,o:t,d(t){t&&f(n),$t=!1,It()}}}function Te(t){_t.subscribe(t=>{});return[()=>Se({element:"#header",onDone:(t,e)=>{_t.set(-innerWidth)}})]}class Ce extends nt{constructor(t){super(),et(this,t,Te,Ae,o,{})}}const Le="input",Fe="conv",De="pool",Ne="relu",Re="fc",Be="flatten";class Oe{constructor(t,e,n,r,a){this.layerName=t,this.index=e,this.type=n,this.bias=r,this.output=a,this.inputLinks=[],this.outputLinks=[]}}class ze{constructor(t,e,n){this.source=t,this.dest=e,this.weight=n}}const je=async(t,e)=>{let n=await qe(t,!0),r=tf.stack([n]),a=[];for(let t=0;t<e.layers.length;t++){let n=e.layers[t].apply(r),o=n.squeeze();3===o.shape.length&&(o=o.transpose([2,0,1])),a.push(o),r=n}return((t,e,n)=>{let r=[],a=[],o=e.layers[0].batchInputShape.slice(1),i=n.transpose([2,0,1]).arraySync();for(let t=0;t<o[2];t++){let e=new Oe("input",t,Le,0,i[t]);a.push(e)}r.push(a);let s=1;for(let n=0;n<e.layers.length;n++){let a=e.layers[n],o=t[n].squeeze();o=o.arraySync();let i,l=[];if(console.log("name >> "+a.name),a.name.includes("conv")?i=Fe:a.name.includes("pool")?i=De:a.name.includes("relu")?i=Ne:a.name.includes("output")?i=Re:a.name.includes("flatten")?i=Be:a.name.includes("batch")||a.name.includes("dropout")||a.name.includes("dense")||a.name.includes("activation")||console.log("Find unknown type"),i){switch(i){case Fe:{let t=a.bias.val.arraySync(),e=a.kernel.val.transpose([3,2,0,1]).arraySync();for(let n=0;n<o.length;n++){let c=new Oe(a.name,n,i,t[n],o[n]);for(let t=0;t<r[s-1].length;t++){let a=r[s-1][t],o=new ze(a,c,e[n][t]);a.outputLinks.push(o),c.inputLinks.push(o)}l.push(c)}break}case Re:{let t=a.bias.val.arraySync(),e=a.kernel.val.transpose([1,0]).arraySync();for(let n=0;n<o.length;n++){let c=new Oe(a.name,n,i,t[n],o[n]),u=0;for(let t=0;t<r[s-1].length;t++){let a=r[s-1][t],o=new ze(a,c,e[n][t]);a.outputLinks.push(o),c.inputLinks.push(o),u+=a.output*e[n][t]}u+=t[n],c.logit=u,l.push(c)}r[s-1].sort((t,e)=>t.realIndex-e.realIndex);break}case Ne:case De:{let t=0,e=null;for(let n=0;n<o.length;n++){let c=new Oe(a.name,n,i,t,o[n]),u=r[s-1][n],d=new ze(u,c,e);u.outputLinks.push(d),c.inputLinks.push(d),l.push(c)}break}case Be:{let t=0;for(let e=0;e<o.length;e++){let n=r[s-1][0].output.length,c=r[s-1].length,u=e%c,d=Math.floor(Math.floor(e/c)/n),p=Math.floor(e/c)%n,h=u*(n*n)+d*n+p,f=new Oe(a.name,e,i,t,o[e]);f.realIndex=h;let g=new ze(r[s-1][u],f,[d,p]);r[s-1][u].outputLinks.push(g),f.inputLinks.push(g),l.push(f)}l.sort((t,e)=>t.index-e.index);break}default:console.error("Encounter unknown layer type")}r.push(l),s++}}return r})(a,e,n)},He=(t,e,n,r=!0)=>{let a=tf.fill([e,n,1],0).arraySync();for(let o=0;o<t.length;o++){let i=Math.floor(o/4),s=o%4,l=e===n?Math.floor(i/e):i%e,c=e===n?i%e:Math.floor(i/e);if(s<1){let e=t[o];r&&(e/=255),a[l][c][s]=e}}return 48!=e&&48!=n&&(a=(t=>{let e,n=t.length,r=t[0].length;if(n<48||r<48){let e=Math.min(n,r),a=Math.floor(n/2)-e/2,o=Math.floor(r/2)-e/2;t.slice(a,a+e).map(t=>t.slice(o,o+e))}else{let a=Math.floor(n/2)-Math.floor(24),o=Math.floor(r/2)-Math.floor(24);e=t.slice(a,a+48).map(t=>t.slice(o,o+48))}return e})(a)),tf.tensor3d(a)},qe=(t,e=!0)=>{let n=document.createElement("canvas");n.style.cssText="display:none;",document.getElementsByTagName("body")[0].appendChild(n);let r=n.getContext("2d");return new Promise((a,o)=>{let i,s=new Image;s.crossOrigin="Anonymous",s.src=t,s.onload=()=>{if(n.width=s.width,n.height=s.height,s.width>48||s.height>48){let t=document.createElement("canvas"),e=t.getContext("2d");const n=49/Math.min(s.width,s.height);t.width=s.width*n,t.height=s.height*n,e.drawImage(s,0,0,t.width,t.height),s.width!=s.height&&(r.translate(t.width,0),r.scale(-1,1),r.translate(t.width/2,t.height/2),r.rotate(90*Math.PI/180)),s.width!=s.height?r.drawImage(t,-t.width/2,-t.height/2):r.drawImage(t,0,0),i=r.getImageData(0,0,t.width,t.height)}else r.drawImage(s,0,0),i=r.getImageData(0,0,s.width,s.height);let t=i.data,o=i.width,l=i.height;n.parentNode.removeChild(n),a(He(t,o,l,e))},s.onerror=o})};const We={nodeLength:40,plusSymbolRadius:8,numLayers:12,edgeOpacity:.8,edgeInitColor:"rgb(230, 230, 230)",edgeHoverColor:"rgb(130, 130, 130)",edgeHoverOuting:!1,edgeStrokeWidth:.7,intermediateColor:"gray",layerColorScales:{input:[d3.interpolateGreys,d3.interpolateGreys,d3.interpolateGreys],conv:d3.interpolateRdBu,relu:d3.interpolateRdBu,pool:d3.interpolateRdBu,fc:d3.interpolateGreys,weight:d3.interpolateBrBG,logit:d3.interpolateOranges},svgPaddings:{top:25,bottom:25,left:50,right:50},kernelRectLength:8/3,gapRatio:4,modeImg:1,overlayRectOffset:12,classLists:["Colère","Dégoût","Peur","Joyeux","Triste","Surprise","Neutre"]},Ge=We.nodeLength,Ve=t=>{let e=1/0,n=-1/0;if(void 0===t.length)return[t,t];if(void 0===t[0].length){for(let r=0;r<t[0].length;r++)t[r]<e?e=t[r]:t[r]>n&&(n=t[r]);return[e,n]}for(let r=0;r<t.length;r++)for(let a=0;a<t[0].length;a++)t[r][a]<e?e=t[r][a]:t[r][a]>n&&(n=t[r][a]);return[e,n]},Ke=t=>({x:t.x+Ge,y:t.y+Ge/2}),Ue=t=>({x:t.x,y:t.y+Ge/2}),Xe=(t,e,n,r)=>(void 0===r&&(r=0),t((n+e/2)/e*(1-2*r)+r)),Je=We.layerColorScales,Ye=We.nodeLength,Qe=We.numLayers,Ze=We.edgeOpacity,tn=We.edgeInitColor,en=We.edgeStrokeWidth,nn=We.svgPaddings,rn=We.gapRatio,an=We.classLists,on=d3.format(".4f");let sn=void 0;it.subscribe(t=>{sn=t});let ln=void 0;st.subscribe(t=>{ln=t});let cn=void 0;lt.subscribe(t=>{cn=t});let un=void 0;ot.subscribe(t=>{un=t});let dn=void 0;ct.subscribe(t=>{dn=t});let pn=void 0;ut.subscribe(t=>{pn=t});let hn=void 0;dt.subscribe(t=>{hn=t});let fn=void 0;pt.subscribe(t=>{fn=t});let gn=void 0;ft.subscribe(t=>{gn=t});const mn=(t,e,n,r)=>{let a=n[e],o=Je[t.type];"input"===t.type&&(o=o[t.index]);let i=void 0===t.output.length?1:t.output.length,s=document.createElement("canvas"),l=s.getContext("2d");s.width=i,s.height=i;let c=l.getImageData(0,0,i,i),u=c.data;if(1===i)u[0]=t.output;else for(let e=0;e<u.length;e+=4){let n=Math.floor(e/4),a=Math.floor(n/i),s=n%i,l=void 0;l="input"===t.type||"fc"===t.type?d3.rgb(o(1-t.output[a][s])):d3.rgb(o((t.output[a][s]+r/2)/r)),u[e]=l.r,u[e+1]=l.g,u[e+2]=l.b,u[e+3]=255}let d=document.createElement("canvas");d.width=3*Ye,d.height=3*Ye;let p=d.getContext("2d");l.putImageData(c,0,0),p.drawImage(s,0,0,i,i,0,0,3*Ye,3*Ye);let h=d.toDataURL();d3.select(a).attr("xlink:href",h),s.remove(),d.remove()},yn=(t,e,n,r)=>{d3.select(n[e]).select("rect.output-rect").transition("output").delay(500).duration(800).ease(d3.easeCubicIn).attr("width",r(t.output))},vn=(t,e,n,r,a)=>{void 0===r&&(r=0),void 0===a&&(a=1);let o=t.append("defs").append("svg:linearGradient").attr("id",""+n).attr("x1","0%").attr("y1","100%").attr("x2","100%").attr("y2","100%").attr("spreadMethod","pad");for(let t=0;t<10;t++){let n=t/9,i=e(n*(a-r)+r);o.append("stop").attr("offset",100*n+"%").attr("stop-color",i).attr("stop-opacity",1)}},bn=(t,e,n,r,a,o)=>{cn=(t-Ye*Qe)/(8+5*rn),lt.set(cn);let i=0;for(let t=0;t<un.length;t++){let s=un[t],l="output"===s[0].layerName;dn.push([]),l||"conv"===s[0].type?i+=cn*rn:i+=cn;let c=i,u=n.append("g").attr("class","cnn-layer-group").attr("id","cnn-layer-group-"+t);ln=(e-Ye*s.length)/(s.length+1),st.set(ln);let d=u.selectAll("g.node-group").data(s,t=>t.index).enter().append("g").attr("class","node-group").style("cursor","pointer").style("pointer-events","all").on("click",o).on("mouseover",r).on("mouseleave",a).classed("node-output",l).attr("id",(e,n)=>{let r=n*Ye+(n+1)*ln;return r+=nn.top,dn[t].push({x:c,y:r}),`layer-${t}-node-${n}`});u.selectAll("g.node-output").on("mouseover",(t,e,n)=>{r(t,e,n),bt.set({show:!0,text:"Output value: "+on(t.output)})}).on("mouseleave",(t,e,n)=>{a(t,e,n),bt.set({show:!1,text:"Output value: "+on(t.output)})}),"output"!==s[0].layerName?(d.append("image").attr("class","node-image").attr("width",Ye).attr("height",Ye).attr("x",c).attr("y",(e,n)=>dn[t][n].y),d.append("rect").attr("class","bounding").attr("width",Ye).attr("height",Ye).attr("x",c).attr("y",(e,n)=>dn[t][n].y).style("fill","none").style("stroke","gray").style("stroke-width",1).classed("hidden",!0)):(d.append("rect").attr("class","output-rect").attr("x",c).attr("y",(e,n)=>dn[t][n].y+Ye/2+8).attr("height",Ye/4).attr("width",0).style("fill","gray"),d.append("text").attr("class","output-text").attr("x",c).attr("y",(e,n)=>dn[t][n].y+Ye/2).style("dominant-baseline","middle").style("font-size","11px").style("fill","black").style("opacity",.5).text((t,e)=>an[e])),i+=Ye}ct.set(dn);let s=d3.scaleLinear().domain(hn.output).range([0,Ye]);for(let t=0;t<un.length;t++){let e=hn[pn][t];sn.select("g#cnn-layer-group-"+t).selectAll("image.node-image").each((t,n,r)=>mn(t,n,r,e))}sn.selectAll("g.node-output").each((t,e,n)=>yn(t,e,n,s));let l=un.map(t=>"output"===t[0].layerName?{name:t[0].layerName,dimension:`(${t.length})`}:{name:t[0].layerName,dimension:`(${t[0].output.length}, ${t[0].output.length}, ${t.length})`}),c=sn.selectAll("g.layer-detailed-label").data(l).enter().append("g").attr("class","layer-detailed-label").attr("id",(t,e)=>"layer-detailed-label-"+e).classed("hidden",!gn).attr("transform",(t,e)=>`translate(${dn[e][0].x+Ye/2}, ${(nn.top+ln)/2-6})`).style("cursor",t=>t.name.includes("output")?"default":"help").on("click",t=>{let e="";t.name.includes("conv")&&(e="convolution"),t.name.includes("relu")&&(e="relu"),t.name.includes("max_pool")&&(e="pooling"),t.name.includes("input")&&(e="input");document.querySelector("#article-"+e)});c.append("title").text("Move to article section"),c.append("text").style("opacity",.7).style("dominant-baseline","middle").append("tspan").style("font-size","12px").text(t=>t.name).append("tspan").style("font-size","8px").style("font-weight","normal").attr("x",0).attr("dy","1.5em").text(t=>t.dimension);let u=sn.selectAll("g.layer-label").data(l).enter().append("g").attr("class","layer-label").attr("id",(t,e)=>"layer-label-"+e).classed("hidden",gn).attr("transform",(t,e)=>`translate(${dn[e][0].x+Ye/2}, ${(nn.top+ln)/2+5})`).style("cursor",t=>t.name.includes("output")?"default":"help").on("click",t=>{let e="";t.name.includes("conv")&&(e="convolution"),t.name.includes("relu")&&(e="relu"),t.name.includes("max_pool")&&(e="pooling"),t.name.includes("input")&&(e="input");document.querySelector("#article-"+e)});u.append("title").text("Move to article section"),u.append("text").style("dominant-baseline","middle").style("opacity",.8).text(t=>t.name.includes("conv")?"conv":t.name.includes("relu")?"relu":t.name.includes("max_pool")?"max_pool":t.name),vn(sn,Je.conv,"convGradient"),vn(sn,Je.input[0],"inputGradient");((t,e)=>{for(let n=0;n<2;n++){let r=1+5*n,a=hn.local[r],o=hn.local[r+2],i=d3.scaleLinear().range([0,2*Ye+cn-1.2]).domain([-a/2,a/2]),s=d3.scaleLinear().range([0,3*Ye+2*cn-1.2]).domain([-o/2,o/2]),l=d3.axisBottom().scale(i).tickFormat(d3.format(".2f")).tickValues([-a/2,0,a/2]),c=d3.axisBottom().scale(s).tickFormat(d3.format(".2f")).tickValues([-o/2,0,o/2]),u=t.append("g").attr("class","legend local-legend").attr("id",`local-legend-${n}-1`).classed("hidden",!gn||"local"!==pn).attr("transform",`translate(${dn[r][0].x}, 0)`);u.append("g").attr("transform",`translate(0, ${e-3})`).call(l),u.append("rect").attr("width",2*Ye+cn).attr("height",e).style("fill","url(#convGradient)");let d=t.append("g").attr("class","legend local-legend").attr("id",`local-legend-${n}-2`).classed("hidden",!gn||"local"!==pn).attr("transform",`translate(${dn[r+2][0].x}, 0)`);d.append("g").attr("transform",`translate(0, ${e-3})`).call(c),d.append("rect").attr("width",3*Ye+2*cn).attr("height",e).style("fill","url(#convGradient)")}for(let n=0;n<2;n++){let r=1+5*n,a=hn.module[r],o=d3.scaleLinear().range([0,5*Ye+3*cn+1*cn*rn-1.2]).domain([-a/2,a/2]),i=d3.axisBottom().scale(o).tickFormat(d3.format(".2f")).tickValues([-a/2,-a/4,0,a/4,a/2]),s=t.append("g").attr("class","legend module-legend").attr("id","module-legend-"+n).classed("hidden",!gn||"module"!==pn).attr("transform",`translate(${dn[r][0].x}, 0)`);s.append("g").attr("transform",`translate(0, ${e-3})`).call(i),s.append("rect").attr("width",5*Ye+3*cn+1*cn*rn).attr("height",e).style("fill","url(#convGradient)")}let n=hn.global[1],r=d3.scaleLinear().range([0,10*Ye+6*cn+3*cn*rn-1.2]).domain([-n/2,n/2]),a=d3.axisBottom().scale(r).tickFormat(d3.format(".2f")).tickValues([-n/2,-n/4,0,n/4,n/2]),o=t.append("g").attr("class","legend global-legend").attr("id","global-legend").classed("hidden",!gn||"global"!==pn).attr("transform",`translate(${dn[1][0].x}, 0)`);o.append("g").attr("transform",`translate(0, ${e-3})`).call(a),o.append("rect").attr("width",10*Ye+6*cn+3*cn*rn).attr("height",e).style("fill","url(#convGradient)");let i=d3.scaleLinear().domain(hn.output).range([0,Ye-1.2]),s=d3.axisBottom().scale(i).tickFormat(d3.format(".1f")).tickValues([0,hn.output[1]]),l=t.append("g").attr("class","legend output-legend").attr("id","output-legend").classed("hidden",!gn).attr("transform",`translate(${dn[11][0].x}, 0)`);l.append("g").attr("transform",`translate(0, ${e-3})`).call(s),l.append("rect").attr("width",Ye).attr("height",e).style("fill","gray");let c=d3.scaleLinear().range([0,Ye-1.2]).domain([0,1]),u=d3.axisBottom().scale(c).tickFormat(d3.format(".1f")).tickValues([0,.5,1]),d=t.append("g").attr("class","legend input-legend").classed("hidden",!gn).attr("transform",`translate(${dn[0][0].x}, 0)`);d.append("g").attr("transform",`translate(0, ${e-3})`).call(u),d.append("rect").attr("x",.3).attr("width",Ye-.3).attr("height",e).attr("transform",`rotate(180, ${Ye/2}, ${e/2})`).style("stroke","rgb(20, 20, 20)").style("stroke-width",.3).style("fill","url(#inputGradient)")})(sn.append("g").attr("class","color-legend").attr("transform",`translate(0, ${nn.top+ln*an.length+ln+Ye*an.length})`),5);let d=d3.linkHorizontal().x(t=>t.x).y(t=>t.y),p=((t,e)=>{let n=[];for(let r=1;r<e.length;r++)for(let a=0;a<e[r].length;a++){let o="output"===e[r][a].layerName,i=Ue(t[r][a]);for(let s=0;s<e[r][a].inputLinks.length;s++){let l=e[r][a].inputLinks[s].source.index;if(o){let t=e[r-1][0].output.length*e[r-1][0].output.length;if(l%t!=0)continue;l=Math.floor(l/t)}let c=Ke(t[r-1][l]),u=e[r][a].inputLinks[s].weight;n.push({source:c,target:i,weight:u,targetLayerIndex:r,targetNodeIndex:a,sourceNodeIndex:l})}}return n})(dn,un);n.append("g").attr("class","edge-group").selectAll("path.edge").data(p).enter().append("path").attr("class",t=>`edge edge-${t.targetLayerIndex} edge-${t.targetLayerIndex}-${t.targetNodeIndex}`).attr("id",t=>`edge-${t.targetLayerIndex}-${t.targetNodeIndex}-${t.sourceNodeIndex}`).attr("d",t=>d({source:t.source,target:t.target})).style("fill","none").style("stroke-width",en).style("opacity",Ze).style("stroke",tn);let h=n.append("g").attr("class","input-annotation").append("text").attr("x",dn[0][0].x+Ye/2).attr("y",dn[0][0].y+Ye+5).attr("class","annotation-text").style("dominant-baseline","hanging").style("text-anchor","middle"),f="Red";f="Gray",h.append("tspan").style("dominant-baseline","hanging").style("fill","#C95E67").text("Gray"),h.append("tspan").style("dominant-baseline","hanging").text(" channel")},xn=()=>{let t=d3.scaleLinear().domain(hn.output).range([0,Ye]);for(let e=0;e<un.length;e++){let n=un[e],r=hn[pn][e],a=sn.select("g#cnn-layer-group-"+e).selectAll("g.node-group").data(n);e<un.length-1?a.transition("disappear").duration(300).ease(d3.easeCubicOut).style("opacity",0).on("end",(function(){d3.select(this).select("image.node-image").each((t,e,n)=>mn(t,e,n,r)),d3.select(this).transition("appear").duration(700).ease(d3.easeCubicIn).style("opacity",1)})):a.each((e,n,r)=>yn(e,n,r,t))}for(let t=0;t<2;t++){let e=1+5*t,n=hn.local[e],r=hn.local[e+2],a=d3.scaleLinear().range([0,2*Ye+cn]).domain([-n/2,n/2]),o=d3.scaleLinear().range([0,3*Ye+2*cn]).domain([-r/2,r/2]),i=d3.axisBottom().scale(a).tickFormat(d3.format(".2f")).tickValues([-n/2,0,n/2]),s=d3.axisBottom().scale(o).tickFormat(d3.format(".2f")).tickValues([-r/2,0,r/2]);sn.select(`g#local-legend-${t}-1`).select("g").call(i),sn.select(`g#local-legend-${t}-2`).select("g").call(s)}for(let t=0;t<2;t++){let e=1+5*t,n=hn.local[e],r=d3.scaleLinear().range([0,5*Ye+3*cn+1*cn*rn-1.2]).domain([-n,n]),a=d3.axisBottom().scale(r).tickFormat(d3.format(".2f")).tickValues([-n,-n/2,0,n/2,n]);sn.select("g#module-legend-"+t).select("g").call(a)}let e=hn.global[1],n=d3.scaleLinear().range([0,10*Ye+6*cn+3*cn*rn-1.2]).domain([-e,e]),r=d3.axisBottom().scale(n).tickFormat(d3.format(".2f")).tickValues([-e,-e/2,0,e/2,e]);sn.select("g#global-legend").select("g").call(r);let a=d3.axisBottom().scale(t).tickFormat(d3.format(".1f")).tickValues([0,hn.output[1]]);sn.select("g#output-legend").select("g").call(a)},wn=()=>{let t=[1],e=void 0;fn=[];for(let n=0;n<un.length-1;n++){let r=un[n],a=r.map(t=>Ve(t.output)).reduce((t,e)=>[Math.min(t[0],e[0]),Math.max(t[1],e[1])]);fn.push({min:a[0],max:a[1]}),"conv"!==r[0].type&&"fc"!==r[0].type||(a=a.map(Math.abs),e=2*(.1+Math.round(1e3*Math.max(...a))/1e3)),void 0!==e&&t.push(e)}t.push(1),fn.push({min:0,max:1});let n=[1],r=(Qe-2)/5;for(let e=0;e<r;e++){let r=t.slice(1+5*e,1+5*e+5),a=Math.max(...r);for(let t=0;t<5;t++)n.push(a)}n.push(1);let a=[1],o=Math.max(...t.slice(1,t.length-1));for(let t=0;t<Qe-2;t++)a.push(o);a.push(1),hn.local=t,hn.module=n,hn.global=a,hn.output=[0,d3.max(un[un.length-1].map(t=>t.output))],dt.set(hn),pt.set(fn)},_n=We.layerColorScales,kn=We.nodeLength,En=We.intermediateColor,$n=We.svgPaddings;let In=void 0;it.subscribe(t=>{In=t});let Mn=void 0;st.subscribe(t=>{Mn=t});const Pn=t=>{let e=t.layerIndex,n=t.targetX,r=t.disable,a=t.delay,o=t.opacity,i=t.specialIndex,s=t.onEndFunc,l=void 0===t.transitionName?"move":t.transitionName,c=void 0===t.duration?500:t.duration;In.select("g#cnn-layer-group-"+e).selectAll("g.node-group").each((t,e,s)=>{d3.select(s[e]).style("cursor",r&&e!==i?"default":"pointer").style("pointer-events",r&&e!==i?"none":"all").select("image").transition(l).ease(d3.easeCubicInOut).delay(a).duration(c).attr("x",n),d3.select(s[e]).select("rect.bounding").transition(l).ease(d3.easeCubicInOut).delay(a).duration(c).attr("x",n),void 0!==o&&e!==i&&d3.select(s[e]).select("image").style("opacity",o)}),In.selectAll("g#layer-label-"+e).transition(l).ease(d3.easeCubicInOut).delay(a).duration(c).attr("transform",()=>`translate(${n+kn/2}, ${($n.top+Mn)/2+5})`).on("end",s),In.selectAll("g#layer-detailed-label-"+e).transition(l).ease(d3.easeCubicInOut).delay(a).duration(c).attr("transform",()=>`translate(${n+kn/2}, ${($n.top+Mn)/2-6})`).on("end",s)},Sn=(t,e,n)=>{void 0===n&&(n=In);let r=n.append("defs").attr("class","overlay-gradient").append("linearGradient").attr("id",t).attr("x1","0%").attr("x2","100%").attr("y1","100%").attr("y2","100%");e.forEach(t=>{r.append("stop").attr("offset",t.offset).attr("stop-color",t.color).attr("stop-opacity",t.opacity)})},An=t=>{let e=t.legendHeight,n=t.curLayerIndex,r=t.range,a=t.group,o=t.minMax,i=t.width,s=t.x,l=t.y,c=t.isInput,u=t.colorScale,d=t.gradientAppendingName,p=t.gradientGap;void 0===u&&(u=_n.conv),void 0===p&&(p=0);let h="url(#inputGradient)",f=t=>u(t*(1-2*p)+p);if(!c){let t=(o.min+r/2)/r,e=(0+r/2)/r,n=(o.max+r/2)/r,i=o.max-o.min,s=(0-o.min)/i,l=t+(e-t)/2,c=e+(n-e)/2,u=[{offset:0,color:f(t),opacity:1},{offset:s/2,color:f(l),opacity:1},{offset:s,color:f(e),opacity:1},{offset:s+(1-e)/2,color:f(c),opacity:1},{offset:1,color:f(n),opacity:1}];void 0===d?(Sn("intermediate-legend-gradient",u,a),h="url(#intermediate-legend-gradient)"):(Sn(""+d,u,a),h=`url(#${d})`)}let g=d3.scaleLinear().range([0,i-1.2]).domain(c?[0,r]:[o.min,o.max]),m=d3.axisBottom().scale(g).tickFormat(d3.format(c?"d":".2f")).tickValues(c?[0,r]:[o.min,0,o.max]),y=a.append("g").attr("class","intermediate-legend-"+(n-1)).attr("transform",`translate(${s}, ${l})`),v=y.append("g").attr("transform",`translate(0, ${e-3})`).call(m);v.selectAll("text").style("font-size","9px").style("fill",En),v.selectAll("path, line").style("stroke",En),y.append("rect").attr("width",i).attr("height",e).attr("transform",`rotate(${c?180:0},\n      ${i/2}, ${e/2})`).style("fill",h)},Tn=t=>{let e=t.group,n=t.sx,r=t.sy,a=t.tx,o=t.ty,i=t.dr,s=t.hFlip,l=void 0===t.marker?"marker":t.marker;e.append("g").attr("class","arrow-group").append("path").attr("d",`M${n},${r}A${i},${i} 0 0,${s?0:1} ${a},${o}`).attr("marker-end",`url(#${l})`).style("stroke","gray").style("fill","none")},Cn=We.layerColorScales,Ln=We.nodeLength,Fn=We.plusSymbolRadius,Dn=We.numLayers,Nn=We.intermediateColor,Rn=We.kernelRectLength,Bn=We.svgPaddings,On=We.gapRatio,zn=We.overlayRectOffset,jn=d3.format(".4f");let Hn=!1,qn=void 0;it.subscribe(t=>{qn=t});let Wn=void 0;st.subscribe(t=>{Wn=t});let Gn=void 0;lt.subscribe(t=>{Gn=t});let Vn=void 0;ot.subscribe(t=>{Vn=t});let Kn=void 0;ct.subscribe(t=>{Kn=t});let Un=void 0;ut.subscribe(t=>{Un=t});let Xn=void 0;dt.subscribe(t=>{Xn=t});let Jn=void 0;pt.subscribe(t=>{Jn=t});let Yn=[void 0,void 0];ht.subscribe(t=>{Yn=t});let Qn=void 0;gt.subscribe(t=>{Qn=t});let Zn=void 0;ft.subscribe(t=>{Zn=t});let tr=void 0;wt.subscribe(t=>{tr=t});const er=(t,e,n,r,a)=>{const o=()=>{let i=+t.attr("data-origin-x"),s=+t.attr("data-origin-y"),l=+t.attr("data-tick"),c=l%e,u=Math.floor(l/e),d=i+c*n,p=s+u*n,h=(l+1)%(e*e);qn.selectAll(`rect.mask-${c}-${u}`).transition("window-sliding-mask").delay(r+100).duration(300).style("opacity",0),t.attr("data-tick",h).transition("window-sliding-input").delay(r).duration(200).attr("transform",`translate(${d}, ${p})`).on("end",()=>{0===h&&(Hn||rr(a)),Qn&&o()})};o()},nr=(t,e,n,r)=>{const a=()=>{let o=+t.attr("data-origin-x"),i=+t.attr("data-origin-y"),s=+e.attr("data-origin-x"),l=+t.attr("data-tick"),c=l%n,u=Math.floor(l/n),d=o+c*r,p=i+u*r,h=s+l%n*r,f=(l+1)%(n*n);qn.selectAll(`rect.mask-${c}-${u}`).transition("window-sliding-mask").delay(300).duration(300).style("opacity",0),t.attr("data-tick",f).transition("window-sliding-input").delay(200).duration(200).attr("transform",`translate(${d}, ${p})`),e.attr("data-tick",f).transition("window-sliding-result").delay(200).duration(200).attr("transform",`translate(${h}, ${p})`).on("end",()=>{Qn&&a()})};a()},rr=t=>{null!==d3.event&&d3.event.stopPropagation();let e=Ln/(3*Rn),n=3*Rn;if(Hn){gt.set(!0),qn.selectAll(".kernel-clone").transition().duration(300).style("opacity",1),qn.selectAll("rect.mask-overlay").transition().duration(300).style("opacity",1);for(let r=0;r<Kn[t-1].length;r++)nr(d3.select(".kernel-input-"+r),d3.select(".kernel-result-"+r),e,n);er(d3.select(".kernel-output"),e,n,200,t),qn.selectAll("path.flow-edge").attr("stroke-dasharray","4 2").attr("stroke-dashoffset",0).each((t,e,n)=>ar(t,e,n,-1e3)),qn.select(".animation-control-button").attr("xlink:href","/assets/img/fast_forward.svg"),Hn=!1}else{gt.set(!1),qn.selectAll("rect.mask-overlay").transition("skip").duration(600).style("opacity",0),qn.selectAll(".kernel-clone").attr("data-tick",0).transition("skip").duration(300).style("opacity",0).on("end",(t,e,n)=>{let r=d3.select(n[e]),a=+r.attr("data-origin-x"),o=+r.attr("data-origin-y");r.attr("transform",`translate(${a}, ${o})`)}),qn.selectAll("path.flow-edge").interrupt().attr("stroke-dasharray","0 0"),qn.select(".animation-control-button").attr("xlink:href","/assets/img/redo.svg"),Hn=!0}},ar=(t,e,n,r)=>{d3.select(n[e]).transition().duration(6e4).ease(d3.easeLinear).attr("stroke-dashoffset",r).on("end",(t,e,n)=>{Qn&&ar(t,e,n,r-2e3)})},or=(t,e,n,r,a,o,i,s,l,c)=>{let u=qn.append("g").attr("class","intermediate-layer").style("opacity",0);Hn=!1;let d=e+Ln+a,p=d+Ln+1.5*a,h=(Xn[Un][t],Cn[o.type],[]),f=[],g=o.inputLinks.map(t=>Ve(t.weight)).reduce((t,e)=>[Math.min(t[0],e[0]),Math.max(t[1],e[1])]),m=Math.round(1e3*Math.max(...g.map(Math.abs)))/1e3*2,y=3*Rn,v=Kn[t][i].y,b=qn.select(`#layer-${t}-node-${i}`),x=b.append("g").attr("class","overlay-group").attr("transform",`translate(${n}, ${v})`),w=Math.floor(Ln/y);for(let t=0;t<w;t++)for(let e=0;e<w;e++)x.append("rect").attr("class",`mask-overlay mask-${t}-${e}`).attr("width",y).attr("height",y).attr("x",t*y).attr("y",e*y).style("fill","var(--light-gray)").style("stroke","var(--light-gray)").style("opacity",1);b.select("rect.bounding").raise();let _=u.append("g").attr("class","kernel kernel-output kernel-clone").attr("transform",`translate(${n}, ${v})`);_.append("rect").attr("x",0).attr("y",0).attr("width",3*Rn).attr("height",3*Rn).attr("fill","none").attr("stroke",Nn),_.attr("data-tick",0).attr("data-origin-x",n).attr("data-origin-y",v);let k=Ln/(3*Rn);er(_,k,y,200,t),Kn[t-1].forEach((n,r)=>{let a=Vn[t-1][r].output,g=Vn[t][i].inputLinks[r].weight,v=Pt(a,g);h.push(Ve(v)),((t,e,n,r,a)=>{let o=r,i=document.createElement("canvas"),s=i.getContext("2d");i.width=o,i.height=o;let l=s.getImageData(0,0,o,o),c=l.data;for(let t=0;t<c.length;t+=4)c[t]=255;let u=document.createElement("canvas");u.width=3*Ln,u.height=3*Ln;let d=u.getContext("2d");s.putImageData(l,0,0),d.drawImage(i,0,0,o,o,0,0,3*Ln,3*Ln);let p=u.toDataURL();t.attr("xlink:href",p),i.remove(),u.remove()})(((t,e,n,r,a,o,i,s,l,c,u)=>{let d=n.append("g").datum(Vn[t-1][o]).attr("class","intermediate-node").attr("cursor",u?"pointer":"default").attr("pointer-events",u?"all":"none").attr("node-index",o).on("mouseover",s).on("mouseleave",l).on("click",(n,r,a)=>c(n,r,a,e,t));d.append("image").attr("width",Ln).attr("height",Ln).attr("x",r).attr("y",a);let p=Math.floor(Ln/i),h=d.append("g").attr("class","overlay-group").attr("transform",`translate(${r}, ${a})`);for(let t=0;t<p;t++)for(let e=0;e<p;e++)h.append("rect").attr("class",`mask-overlay mask-${t}-${e}`).attr("width",i).attr("height",i).attr("x",t*i).attr("y",e*i).style("fill","var(--light-gray)").style("stroke","var(--light-gray)").style("opacity",1);return d.append("rect").attr("class","bounding").attr("width",Ln).attr("height",Ln).attr("x",r).attr("y",a).style("fill","none").style("stroke",Nn).style("stroke-width",1),d})(t,i,u,d,n.y,r,y,s,l,c,!0).select("image"),0,0,o.output.length),f.push({source:Ke({x:e,y:n.y}),target:Ue({x:d,y:n.y}),name:`input-${r}-inter1-${r}`}),f.push({source:Ke({x:d,y:n.y}),target:Ue({x:p,y:Kn[t][i].y}),name:`inter1-${r}-inter2-1`});let b=e-3*Rn*2,x=u.append("g").attr("class","kernel kernel-"+r).attr("transform",`translate(${b}, ${n.y})`),w="Kernel weights: [",_=d3.format(".2f");for(let t=0;t<g.length;t++)for(let e=0;e<g[0].length;e++){x.append("rect").attr("class","kernel").attr("x",Rn*e).attr("y",Rn*t).attr("width",Rn).attr("height",Rn).attr("fill",Xe(Cn.weight,m,g[t][e],.2));let n="";n=0===e&&0==t?"":0===e?"; ":", ",w=w.concat(n,""+_(g[t][e]))}w=w.concat("]"),x.append("rect").attr("x",0).attr("y",0).attr("width",3*Rn).attr("height",3*Rn).attr("fill","none").attr("stroke",Nn),x.style("pointer-events","all").style("cursor","crosshair").on("mouseover",()=>{bt.set({show:!0,text:w})}).on("mouseleave",()=>{bt.set({show:!1,text:w})}).on("click",()=>{d3.event.stopPropagation()});let E=x.clone(!0).style("pointer-events","none").style("cursor","pointer").classed("kernel-clone",!0).classed("kernel-input-"+r,!0);E.style("opacity",.9).selectAll("rect.kernel").style("opacity",.7),E.attr("transform",`translate(${e}, ${n.y})`).attr("data-tick",0).attr("data-origin-x",e).attr("data-origin-y",n.y);let $=x.clone(!0).style("pointer-events","none").style("cursor","pointer").classed("kernel-clone",!0).classed("kernel-result-"+r,!0);$.style("opacity",.9).selectAll("rect.kernel").style("fill","none"),$.attr("transform",`translate(${d}, ${n.y})`).attr("data-origin-x",d).attr("data-origin-y",n.y),nr(E,$,k,y)});let E=h.reduce((t,e)=>[Math.min(t[0],e[0]),Math.max(t[1],e[1])]),$={min:E[0],max:E[1]},I=Kn[t][i].y+Ln/2,M=u.append("g").attr("class","plus-symbol").attr("transform",`translate(${p+Fn}, ${I})`);M.append("rect").attr("x",-Fn).attr("y",-Fn).attr("width",2*Fn).attr("height",2*Fn).attr("rx",3).attr("ry",3).style("fill","none").style("stroke",Nn),M.append("rect").attr("x",-(Fn-3)).attr("y",-.5).attr("width",2*(Fn-3)).attr("height",1).style("fill",Nn),M.append("rect").attr("x",-.5).attr("y",-(Fn-3)).attr("width",1).attr("height",2*(Fn-3)).style("fill",Nn),0==i?(M.append("circle").attr("cx",0).attr("cy",Ln/2+Rn).attr("r",4).style("stroke",Nn).style("cursor","crosshair").style("fill",Xe(Cn.weight,m,o.bias,.2)).on("mouseover",()=>{bt.set({show:!0,text:"Bias: "+jn(o.bias)})}).on("mouseleave",()=>{bt.set({show:!1,text:"Bias: "+jn(o.bias)})}),f.push({source:{x:p+Fn,y:Kn[t][i].y+Ln},target:{x:p+Fn,y:Kn[t][i].y+Ln/2+Fn},name:"bias-plus"})):(M.append("circle").attr("cx",0).attr("cy",-Ln/2-Rn).attr("r",4).style("stroke",Nn).style("cursor","crosshair").style("fill",Xe(Cn.weight,m,o.bias,.2)).on("mouseover",()=>{bt.set({show:!0,text:"Bias: "+jn(o.bias)})}).on("mouseleave",()=>{bt.set({show:!1,text:"Bias: "+jn(o.bias)})}),f.push({source:{x:p+Fn,y:Kn[t][i].y},target:{x:p+Fn,y:Kn[t][i].y+Ln/2-Fn},name:"bias-plus"})),f.push({source:Ke({x:p+2*Fn-Ln,y:Kn[t][i].y}),target:Ue({x:n,y:Kn[t][i].y}),name:"symbol-output"}),f.push({source:Ke({x:n,y:Kn[t][i].y}),target:Ue({x:r,y:Kn[t][i].y}),name:"output-next"}),u.append("g").attr("class","layer-intermediate-label layer-label").attr("transform",()=>`translate(${d+Ln/2}, ${(Bn.top+Wn)/2+5})`).classed("hidden",Zn).append("text").style("text-anchor","middle").style("dominant-baseline","middle").style("font-weight",800).style("opacity","0.8").text("intermediate"),u.append("g").attr("class","animation-control").attr("transform",()=>`translate(${d+Ln/2}, ${(Bn.top+Wn)/2-4})`).on("click",()=>rr(t)).append("image").attr("class","animation-control-button").attr("xlink:href","/assets/img/fast_forward.svg").attr("x",50).attr("y",0).attr("height",13).attr("width",13),u.append("g").attr("class","layer-intermediate-label layer-detailed-label").attr("transform",()=>`translate(${d+Ln/2}, ${(Bn.top+Wn)/2-5})`).classed("hidden",!Zn).append("text").style("text-anchor","middle").style("dominant-baseline","middle").style("opacity","0.7").style("font-weight",800).append("tspan").text("intermediate").append("tspan").style("font-size","8px").style("font-weight","normal").attr("x",0).attr("dy","1.5em").text(`(${Vn[t][0].output.length},\n      ${Vn[t][0].output[0].length},\n      ${Vn[t].length})`);let P=d3.linkHorizontal().x(t=>t.x).y(t=>t.y),S=u.append("g").attr("class","edge-group").lower();return S.selectAll("path").data(f).enter().append("path").classed("flow-edge",t=>"output-next"!==t.name).attr("id",t=>"edge-"+t.name).attr("d",t=>P({source:t.source,target:t.target})).style("fill","none").style("stroke-width",1).style("stroke",Nn),S.select("#edge-output-next").style("opacity",.1),S.selectAll("path.flow-edge").attr("stroke-dasharray","4 2").attr("stroke-dashoffset",0).each((t,e,n)=>ar(t,e,n,-1e3)),{intermediateLayer:u,intermediateMinMax:$,kernelRange:m,kernelMinMax:{min:g[0],max:g[1]}}},ir=t=>{let e,n,r,a,o,i,s,l,c,u,d,p,h=t.leftX,f=t.curLayerIndex,g=t.group,m=t.intermediateGap,y=t.isFirstConv,v=t.i,b=g.append("g").attr("class","kernel-annotation");b.append("text").text("Kernel").attr("class","annotation-text").attr("x",h-2.5*Rn*3).attr("y",Kn[f-1][0].y+3*Rn).style("dominant-baseline","baseline").style("text-anchor","end"),y?(e=h,n=Kn[f-1][0].y+Ln+3*Rn,r=h-5,a=Kn[f-1][0].y+Ln+3*Rn+5,o=20):(e=h-3*Rn*3,n=Kn[f-1][0].y+Ln/3,r=h-2*Rn*3-5,a=Kn[f-1][0].y+Ln-10,o=50,i=h-3*Rn*3,s=Kn[f-1][2].y-3,d=h-3*Rn-4,p=Kn[f-1][2].y+3*Rn+6,l=h-3*Rn-13,c=Kn[f-1][2].y+26,u=20);let x=b.append("text").attr("x",e).attr("y",n).attr("class","annotation-text").style("dominant-baseline","hanging").style("text-anchor",y?"start":"end");x.append("tspan").style("dominant-baseline","hanging").text("Slide kernel over input channel"),x.append("tspan").attr("x",e).attr("dy","1em").style("dominant-baseline","hanging").text("to get intermediate result"),x.append("tspan").attr("x",e).attr("dy","1.2em").style("dominant-baseline","hanging").style("font-weight",700).text("Click "),x.append("tspan").style("dominant-baseline","hanging").style("font-weight",400).text("to learn more"),Tn({group:g,tx:h-7,ty:Kn[f-1][0].y+Ln/2,sx:r,sy:a,hFlip:!y,dr:o,marker:"marker"});let w=b.append("text").attr("x",i).attr("y",s).attr("class","annotation-text").style("dominant-baseline","hanging").style("text-anchor",y?"start":"end");w.append("tspan").style("dominant-baseline","hanging").text("Each input chanel"),w.append("tspan").attr("x",e).attr("dy","1em").style("dominant-baseline","hanging").text("gets datatrainx different kernel"),w.append("tspan").attr("x",e).attr("dy","1.3em").style("font-weight",700).style("dominant-baseline","hanging").text("Hover over "),w.append("tspan").style("font-weight",400).style("dominant-baseline","hanging").text("to see value!"),Tn({group:g,tx:d,ty:p,sx:l,sy:c,dr:u,hFlip:!y,marker:"marker"});let _=g.append("g").attr("class","plus-annotation"),k=h+2*Ln+2.5*m,E=k,$=Kn[f][v].y+Ln+3*Rn;0===v&&(E+=30),9===v&&(E=k+Fn-10,$-=2.5*Ln);let I=_.append("text").attr("x",E).attr("y",$).attr("class","annotation-text").style("dominant-baseline","hanging").style("text-anchor","start");I.append("tspan").style("dominant-baseline","hanging").text("Add up all intermediate"),I.append("tspan").attr("x",E).attr("dy","1em").style("dominant-baseline","hanging").text("results and then add bias"),Tn(9===v?{group:g,sx:k+50,sy:Kn[f][v].y-(Ln/2+2*Rn),tx:k+2*Fn+5,ty:Kn[f][v].y+Ln/2-Fn,dr:50,hFlip:!1,marker:"marker-alt"}:{group:g,sx:k+35,sy:Kn[f][v].y+Ln+2*Rn,tx:k+2*Fn+5,ty:Kn[f][v].y+Ln/2+Fn,dr:30,hFlip:!0,marker:"marker-alt"});let M=Kn[f][v].y;0===v?M+=Ln+3*Rn:M-=2*Rn+5,_.append("text").attr("class","annotation-text").attr("x",k+Fn).attr("y",M).style("text-anchor","middle").style("dominant-baseline",0===v?"hanging":"baseline").text("Bias")},sr=(t,e,n,r,a,o,i,s)=>{let l=qn.select("g.underneath");for(let c=0;c<Vn[t-1].length;c++)l.append("rect").attr("class","underneath-gateway").attr("id","underneath-gateway-"+c).attr("x",n-a).attr("y",Kn[t-1][c].y-a).attr("width",2*Ln+r+2*a).attr("height",Ln+2*a).attr("rx",10).style("fill","rgba(160, 160, 160, 0.2)").style("opacity",0),qn.select(`g#layer-${t-1}-node-${c}`).style("pointer-events","all").style("cursor","pointer").on("mouseover",o).on("mouseleave",i).on("click",(n,r,a)=>s(n,r,a,e,t));l.lower()},lr=(t,e,n,r,a)=>{qn.select(".intermediate-layer-overlay").empty()&&qn.append("g").attr("class","intermediate-layer-overlay"),qn.select(".intermediate-layer-overlay").append("rect").attr("class","overlay").style("fill",`url(#${t})`).style("stroke","none").attr("width",r).attr("height",a).attr("x",e).attr("y",n).style("opacity",0).transition("move").duration(800).ease(d3.easeCubicInOut).style("opacity",1)},cr=(t,e)=>{let n=Xn[Un][t-1],r=Xn[Un][t],a=Math.max(n,r);n>r?(qn.select(`g#layer-${t}-node-${e}`).select("image.node-image").each((t,e,n)=>mn(t,e,n,a)),Yn=[t,e],ht.set(Yn)):n<r&&(qn.select("g#cnn-layer-group-"+(t-1)).selectAll("image.node-image").each((t,e,n)=>mn(t,e,n,a)),Yn=[t-1,void 0],ht.set(Yn));let o=Jn[t-1].min,i=Jn[t-1].max,s=Vn[t][e];for(let t=0;t<s.output.length;t++)for(let e=0;e<s.output[0].length;e++)s.output[t][e]<o&&(o=s.output[t][e]),s.output[t][e]>i&&(i=s.output[t][e]);return{range:a,minMax:{min:o,max:i}}},ur=(t,e,n,r,a,o,i,s)=>{let l=Kn[t-1][0].x+2*Ln+2*Gn*On+2*Fn,c=Gn*On*2/3,u=Kn[t-1][0].x;tr.conv_1_1=l+Ln,wt.set(tr),qn.select("g.edge-group").style("visibility","hidden"),Pn({layerIndex:t,targetX:l,disable:!0,delay:0,opacity:.15,specialIndex:n});let d=l+Ln+Gn*On,p=(r-d-10*Ln)/10;for(let e=t+1;e<Dn;e++){Pn({layerIndex:e,targetX:d+(e-(t+1))*(Ln+p),disable:!0,delay:0})}Sn("overlay-gradient",[{offset:"0%",color:"rgb(250, 250, 250)",opacity:.85},{offset:"50%",color:"rgb(250, 250, 250)",opacity:.95},{offset:"100%",color:"rgb(250, 250, 250)",opacity:1}]),lr("overlay-gradient",d-zn/2,0,r-d+zn,a+Bn.top+Bn.bottom);let{intermediateLayer:h,intermediateMinMax:f,kernelRange:g,kernelMinMax:m}=or(t,u,l,d,c,e,n,o,i,s);sr(t,n,u,c,8,o,i,s);let y=1/0,v=-1/0,b=Vn[t][n];for(let t=0;t<b.output.length;t++)for(let e=0;e<b.output[0].length;e++)b.output[t][e]<y&&(y=b.output[t][e]),b.output[t][e]>v&&(v=b.output[t][e]);Math.min(y,f.min),Math.max(v,f.max);let x=qn.append("g").attr("class","intermediate-layer-annotation").style("opacity",0);ir({leftX:u,curLayerIndex:t,group:x,intermediateGap:c,isFirstConv:!0,i:n});Xn.local[t];An({legendHeight:5,curLayerIndex:t,range:1,group:h,width:2*Ln+c,isInput:!0,x:u,y:Bn.top+10*Wn+Wn+10*Ln-25}),qn.selectAll("g.intermediate-layer, g.intermediate-layer-annotation").transition().delay(500).duration(500).ease(d3.easeCubicInOut).style("opacity",1)},dr=(t,e,n,r,a,o,i,s)=>{let l=Kn[t-1][0].x+2*Ln+2*Gn*On+2*Fn,c=Gn*On*2/3;tr.conv_1_2=l+Ln,wt.set(tr);let{range:u,minMax:d}=cr(t,n);qn.select("g.edge-group").style("visibility","hidden"),Pn({layerIndex:t,targetX:l,disable:!0,delay:0,opacity:.15,specialIndex:n});let p=l+Ln+Gn*On,h=(r-p-8*Ln)/8;for(let e=t+1;e<Dn;e++){Pn({layerIndex:e,targetX:p+(e-(t+1))*(Ln+h),disable:!0,delay:0})}let f=[{offset:"0%",color:"rgb(250, 250, 250)",opacity:.85},{offset:"50%",color:"rgb(250, 250, 250)",opacity:.95},{offset:"100%",color:"rgb(250, 250, 250)",opacity:1}];Sn("overlay-gradient-right",f),f=[{offset:"0%",color:"rgb(250, 250, 250)",opacity:.85+(.95-.85)*((2*Ln+Gn*On)/(8*Ln+7*c))},{offset:"100%",color:"rgb(250, 250, 250)",opacity:.85}],Sn("overlay-gradient-left",f),lr("overlay-gradient-right",p-zn/2,0,r-p+zn,a+Bn.top+Bn.bottom),lr("overlay-gradient-left",Kn[0][0].x-zn/2,0,2*Ln+Gn*On+zn,a+Bn.top+Bn.bottom);let g=Kn[t-1][0].x,{intermediateLayer:m,intermediateMinMax:y,kernelRange:v,kernelMinMax:b}=or(t,g,l,p,c,e,n,o,i,s);sr(t,n,g,c,5,o,i,s);let x={min:Math.min(d.min,y.min),max:Math.max(d.max,y.max)},w=qn.append("g").attr("class","intermediate-layer-annotation").style("opacity",0);ir({leftX:g,curLayerIndex:t,group:w,intermediateGap:c,i:n}),An({legendHeight:5,curLayerIndex:t,range:u,minMax:x,group:m,width:2*Ln+c,x:g,y:Bn.top+10*Wn+Wn+10*Ln}),An({legendHeight:5,curLayerIndex:t,range:v,minMax:b,group:m,width:2*Ln+c,x:l+Ln-(2*Ln+c),y:Bn.top+10*Wn+Wn+10*Ln,gradientAppendingName:"kernelColorGradient",colorScale:Cn.weight,gradientGap:.2}),qn.selectAll("g.intermediate-layer, g.intermediate-layer-annotation").transition().delay(500).duration(500).ease(d3.easeCubicInOut).style("opacity",1)},pr=(t,e,n,r,a,o,i,s)=>{let l=Kn[t][0].x,c=l-(2*Ln+2*Gn*On+2*Fn),u=Gn*On*2/3;tr.conv_2_1=l+Ln,wt.set(tr),qn.select("g.edge-group").style("visibility","hidden");let{range:d,minMax:p}=cr(t,n);Pn({layerIndex:t-1,targetX:c,disable:!0,delay:0}),Pn({layerIndex:t,targetX:l,disable:!0,delay:0,opacity:.15,specialIndex:n});let h=c-Gn,f=(h-Kn[0][0].x-5*Ln)/5,g=Kn[t][0].x+Ln+Gn;for(let e=0;e<t-1;e++){let t=Kn[0][0].x+e*(Ln+f);Pn({layerIndex:e,targetX:t,disable:!0,delay:0})}let m=[{offset:"0%",color:"rgb(250, 250, 250)",opacity:1},{offset:"50%",color:"rgb(250, 250, 250)",opacity:.9},{offset:"100%",color:"rgb(250, 250, 250)",opacity:.85}];Sn("overlay-gradient-left",m),m=[{offset:"0%",color:"rgb(250, 250, 250)",opacity:.85},{offset:"50%",color:"rgb(250, 250, 250)",opacity:.95},{offset:"100%",color:"rgb(250, 250, 250)",opacity:1}],Sn("overlay-gradient-right",m),lr("overlay-gradient-left",Kn[0][0].x-zn/2,0,h-Kn[0][0].x+zn,a+Bn.top+Bn.bottom),lr("overlay-gradient-right",g-zn/2,0,r-g+zn,a+Bn.top+Bn.bottom);let{intermediateLayer:y,intermediateMinMax:v,kernelRange:b,kernelMinMax:x}=or(t,c,Kn[t][0].x,g,u,e,n,o,i,s);sr(t,n,c,u,5,o,i,s);let w={min:Math.min(p.min,v.min),max:Math.max(p.max,v.max)},_=qn.append("g").attr("class","intermediate-layer-annotation").style("opacity",0);ir({leftX:c,curLayerIndex:t,group:_,intermediateGap:u,i:n}),An({legendHeight:5,curLayerIndex:t,range:d,group:y,width:2*Ln+u,minMax:w,x:c,y:Bn.top+10*Wn+Wn+10*Ln}),An({legendHeight:5,curLayerIndex:t,range:b,minMax:x,group:y,width:2*Ln+u,x:l+Ln-(2*Ln+u),y:Bn.top+10*Wn+Wn+10*Ln,gradientAppendingName:"kernelColorGradient",colorScale:Cn.weight,gradientGap:.2}),qn.selectAll("g.intermediate-layer, g.intermediate-layer-annotation").transition().delay(500).duration(500).ease(d3.easeCubicInOut).style("opacity",1)},hr=(t,e,n,r,a,o,i,s)=>{let l=Kn[t][0].x,c=l-(2*Ln+2*Gn*On+2*Fn),u=Gn*On*2/3;tr.conv_2_2=c,wt.set(tr),qn.select("g.edge-group").style("visibility","hidden");let{range:d,minMax:p}=cr(t,n);Pn({layerIndex:t-1,targetX:c,disable:!0,delay:0}),Pn({layerIndex:t,targetX:l,disable:!0,delay:0,opacity:.15,specialIndex:n});let h=c-Gn,f=(h-Kn[0][0].x-7*Ln)/7,g=l+Ln+Gn;for(let e=0;e<t-1;e++){let t=Kn[0][0].x+e*(Ln+f);Pn({layerIndex:e,targetX:t,disable:!0,delay:0})}let m=[{offset:"0%",color:"rgb(250, 250, 250)",opacity:1},{offset:"50%",color:"rgb(250, 250, 250)",opacity:.95},{offset:"100%",color:"rgb(250, 250, 250)",opacity:.85}];Sn("overlay-gradient-left",m),m=[{offset:"0%",color:"rgb(250, 250, 250)",opacity:.85},{offset:"50%",color:"rgb(250, 250, 250)",opacity:.95},{offset:"100%",color:"rgb(250, 250, 250)",opacity:1}],Sn("overlay-gradient-right",m),lr("overlay-gradient-left",Kn[0][0].x-zn/2,0,h-Kn[0][0].x+zn,a+Bn.top+Bn.bottom),lr("overlay-gradient-right",g-zn/2,0,r-g+zn,a+Bn.top+Bn.bottom);let{intermediateLayer:y,intermediateMinMax:v,kernelRange:b,kernelMinMax:x}=or(t,c,Kn[t][0].x,g,u,e,n,o,i,s);sr(t,n,c,u,5,o,i,s);let w={min:Math.min(p.min,v.min),max:Math.max(p.max,v.max)},_=qn.append("g").attr("class","intermediate-layer-annotation").style("opacity",0);ir({leftX:c,curLayerIndex:t,group:_,intermediateGap:u,i:n}),An({legendHeight:5,curLayerIndex:t,range:d,group:y,minMax:w,width:2*Ln+u,x:c,y:Bn.top+10*Wn+Wn+10*Ln}),An({legendHeight:5,curLayerIndex:t,range:b,minMax:x,group:y,width:2*Ln+u,x:l+Ln-(2*Ln+u),y:Bn.top+10*Wn+Wn+10*Ln,gradientAppendingName:"kernelColorGradient",colorScale:Cn.weight,gradientGap:.2}),qn.selectAll("g.intermediate-layer, g.intermediate-layer-annotation").transition().delay(500).duration(500).ease(d3.easeCubicInOut).style("opacity",1)},fr=We.layerColorScales,gr=We.nodeLength,mr=We.plusSymbolRadius,yr=We.intermediateColor,vr=We.kernelRectLength,br=We.svgPaddings,xr=We.gapRatio,wr=We.classLists,_r=d3.format(".4f");let kr=void 0;it.subscribe(t=>{kr=t});let Er=void 0;st.subscribe(t=>{Er=t});let $r=void 0;lt.subscribe(t=>{$r=t});let Ir=void 0;ot.subscribe(t=>{Ir=t});let Mr=void 0;ct.subscribe(t=>{Mr=t});let Pr=void 0;ut.subscribe(t=>{Pr=t});let Sr=void 0;dt.subscribe(t=>{Sr=t});let Ar=void 0;pt.subscribe(t=>{Ar=t});let Tr=void 0;mt.subscribe(t=>{Tr=t});let Cr=void 0;vt.subscribe(t=>{Cr=t});let Lr=void 0;yt.subscribe(t=>{Lr=t});let Fr=void 0;bt.subscribe(t=>{Fr=t});let Dr=void 0;ft.subscribe(t=>{Dr=t});let Nr=10,Rr=11,Br=!1,Or=[],zr={};const jr=(t,e,n,r,a,o)=>{let i=d3.select(n[e]);if(o){let t=+i.attr("data-preX"),e=+i.attr("data-preY");i.transition("softmax").duration(a).ease(d3.easeCubicInOut).attr("transform",`translate(${t}, ${e})`)}else{let t=i.attr("transform"),e=+t.replace(/.*\(([\d\.]+),.*/,"$1"),n=+t.replace(/.*,\s([\d\.]+)\)/,"$1");i.transition("softmax").duration(a).ease(d3.easeCubicInOut).attr("transform",`translate(${e-r}, ${n})`),i.attr("data-preX",e),i.attr("data-preY",n)}},Hr=t=>{bt.set({show:!0,text:"Logit: "+_r(Or[t])}),Lr.highlightI=t,yt.set(Lr);let e=kr.select(".logit-layer"),n=kr.select(".underneath"),r=kr.select(".intermediate-layer");e.select("#logit-circle-"+t).style("stroke-width",2),r.select("#plus-symbol-clone-"+t).style("opacity",1).select("circle").style("fill",t=>t.fill),n.select("#logit-lower-"+t).raise(),n.selectAll(".softmax-abstract-edge-"+t).style("stroke-width",.8).style("stroke","#E0E0E0"),n.selectAll(".softmax-edge-"+t).style("stroke-width",1).style("stroke","#E0E0E0"),n.selectAll(".logit-output-edge-"+t).style("stroke-width",3).style("stroke","#E0E0E0"),e.selectAll(".logit-output-edge-"+t).style("stroke-width",3).style("stroke","#E0E0E0")},qr=t=>{bt.set({show:!1,text:"Logit: "+_r(Or[t])}),Lr.highlightI=-1,yt.set(Lr);let e=kr.select(".logit-layer"),n=kr.select(".underneath"),r=kr.select(".intermediate-layer");e.select("#logit-circle-"+t).style("stroke-width",1),r.select("#plus-symbol-clone-"+t).style("opacity",.2),n.selectAll(".softmax-abstract-edge-"+t).style("stroke-width",.2).style("stroke","#EDEDED"),n.selectAll(".softmax-edge-"+t).style("stroke-width",.2).style("stroke","#F1F1F1"),n.selectAll(".logit-output-edge-"+t).style("stroke-width",1.2).style("stroke","#E5E5E5"),e.selectAll(".logit-output-edge-"+t).style("stroke-width",1.2).style("stroke","#E5E5E5")},Wr=t=>{Hr(t.detail.curI)},Gr=t=>{qr(t.detail.curI)},Vr=t=>{let e=t.curLayerIndex,n=t.moveX,r=t.symbolX,a=t.symbolY,o=t.outputX,i=t.outputY,s=t.softmaxLeftMid,l=t.selectedI,c=t.intermediateX1,u=t.intermediateX2,d=t.pixelWidth,p=t.pixelHeight,h=t.topY,f=t.bottomY,g=t.middleGap,m=t.middleRectHeight,y=t.softmaxX,v=t.softmaxTextY,b=t.softmaxWidth,x=t.symbolGroup,w=t.flattenRange,_=s-4*n/5;d3.event.stopPropagation(),Tr?(vt.set(!1),kr.select(".logit-layer").remove(),kr.select(".logit-layer-lower").remove(),kr.selectAll(".plus-symbol-clone").remove(),kr.select(".underneath").selectAll(".logit-lower").style("opacity",0),yt.set({show:!1,logits:[]})):vt.set(!0),kr.select(".intermediate-layer-overlay").select("rect.overlay").transition("softmax").ease(d3.easeCubicInOut).duration(600).attr("transform",`translate(${Tr?0:-n}, 0)`),kr.selectAll(".intermediate-legend-"+(e-1)).each((t,e,r)=>jr(0,e,r,n,600,Tr)),kr.select(".intermediate-layer").select(".layer-label").each((t,e,r)=>jr(0,e,r,n,600,Tr)),kr.select(".intermediate-layer").select(".layer-detailed-label").each((t,e,r)=>jr(0,e,r,n,600,Tr));for(let t=e-1;t>=0;t--){let e=+kr.select("g#cnn-layer-group-"+t).select("image").attr("x");Pn({layerIndex:t,targetX:Tr?e+n:e-n,disable:!0,delay:0,transitionName:"softmax",duration:600})}kr.select(".plus-annotation").transition("softmax").duration(600).style("opacity",Tr?1:0).style("pointer-events",Tr?"all":"none");let k=kr.select(".softmax-annotation").style("pointer-events",Tr?"all":"none"),E=k.selectAll(".softmax-detail-annoataion").data([0]).enter().append("g").attr("class","softmax-detail-annoataion");Tr&&k.selectAll(".softmax-detail-annoataion").remove(),k.select(".arrow-group").transition("softmax").duration(600).style("opacity",Tr?1:0),k.select(".annotation-text").style("cursor","help").style("pointer-events","all").on("click",()=>{d3.event.stopPropagation(),document.querySelector("#article-softmax").scrollIntoView({behavior:"smooth"})}).transition("softmax").duration(600).style("opacity",Tr?1:0).on("end",()=>{if(!Tr){let t=y+b/2,n=v-10;0===l&&(n=v+70);let r=E.append("text").attr("x",t).attr("y",n).attr("class","annotation-text softmax-detail-text").style("dominant-baseline","baseline").style("text-anchor","middle").text("Normalize ");r.append("tspan").attr("dx",1).style("fill","#E56014").text("logits"),r.append("tspan").attr("dx",1).text(" into"),r.append("tspan").attr("x",t).attr("dy","1.1em").text("class probabilities"),Tn(0===l?{group:E,sx:y+b/2-5,sy:v+44,tx:y+b/2,ty:n-12,dr:50,hFlip:!0,marker:"marker-alt"}:{group:E,sx:y+b/2-5,sy:v+4,tx:y+b/2,ty:a-mr-4,dr:50,hFlip:!0,marker:"marker-alt"}),t=_+45,n=(br.top+Er)/2+5;let o=_+20,i=(br.top+Er)/2+5;E.append("g").attr("class","layer-detailed-label").attr("transform",()=>`translate(${_}, ${(br.top+Er)/2-5})`).classed("hidden",!Dr).append("text").style("opacity",.7).style("dominant-baseline","middle").style("font-size","12px").style("font-weight","800").append("tspan").attr("x",0).text("logit").append("tspan").attr("x",0).style("font-size","8px").style("font-weight","normal").attr("dy","1.5em").text("(10)"),E.append("text").attr("class","annotation-text").attr("x",t).attr("y",(br.top+Er)/2+3).style("text-anchor","start").text("Before").append("tspan").attr("x",t).attr("dy","1em").text("normalization"),Tn({group:E,tx:o,ty:i,sx:t-6,sy:n+2,dr:60,hFlip:!1,marker:"marker-alt"}),E.append("text").attr("class","annotation-text").attr("x",Mr[Rr][0].x-35).attr("y",(br.top+Er)/2+3).style("text-anchor","end").text("After").append("tspan").attr("x",Mr[Rr][0].x-35).attr("dy","1em").text("normalization"),Tn({group:E,tx:Mr[Rr][0].x-8,ty:i,sx:Mr[Rr][0].x-27,sy:n+2,dr:60,hFlip:!0,marker:"marker-alt"}),console.log(Mr[e-1].length);for(let t=0;t<Mr[e-1].length;t++)E.append("text").attr("x",_).attr("y",Mr[e-1][t].y+gr/2+8).attr("class","annotation-text softmax-detail-text").attr("id","logit-text-"+t).style("text-anchor","middle").style("dominant-baseline","hanging").style("opacity",0).text(""+wr[t]);let s=E.append("g").attr("class","softmax-detail-hover-annotation").style("opacity",0);t=_+50,n=Mr[e-1][0].y+gr/2,l<3&&(n=Mr[e-1][Mr[e-1].length-1].y+gr/2);let c=s.append("text").attr("x",t).attr("y",n).attr("class","annotation-text softmax-detail-text softmax-hover-text").style("text-anchor","start").style("dominant-baseline","baseline").append("tspan").style("font-weight",700).style("dominant-baseline","baseline").text("Hover over ").append("tspan").style("font-weight",400).style("dominant-baseline","baseline").text("to see");c.append("tspan").style("dominant-baseline","baseline").attr("x",t).attr("dy","1em").text("its "),c.append("tspan").style("dominant-baseline","baseline").attr("dx",1).style("fill","#E56014").text("logit"),c.append("tspan").style("dominant-baseline","baseline").attr("dx",1).text(" value"),Tn({group:s,tx:_+15,ty:n,sx:t-8,sy:n+2,dr:60,hFlip:!1})}}),kr.select(".flatten-annotation").transition("softmax").duration(600).style("opacity",Tr?1:0).style("pointer-events",Tr?"all":"none");let $=kr.select(".flatten-layer-left");$.transition("softmax").duration(600).ease(d3.easeCubicInOut).attr("transform",`translate(${Tr?0:-n}, 0)`).on("end",()=>{if(!Tr){(t=>{let e=t.curLayerIndex,n=t.moveX,r=t.softmaxLeftMid,a=t.selectedI,o=t.intermediateX1,i=t.intermediateX2,s=t.pixelWidth,l=t.pixelHeight,c=t.topY,u=t.bottomY,d=t.softmaxX,p=t.middleGap,h=t.middleRectHeight,f=t.symbolGroup,g=t.symbolX,m=t.flattenRange,y=kr.select(".intermediate-layer").append("g").attr("class","logit-layer").raise(),v=kr.select(".intermediate-layer").select(".flatten-layer").select(".plus-symbol").clone(!0).attr("class","temp-clone-plus-symbol").attr("transform",`translate(${g-n},\n      ${Mr[e][a].y+gr/2})`).style("pointer-events","none").remove(),b=y.append(()=>v.node());kr.select(".softmax-symbol").raise();let x=kr.select(".underneath").append("g").attr("class","logit-layer-lower").lower(),w=r-4*n/5;Or=[];for(let t=0;t<Ir[Rr].length;t++)Or.push(Ir[Rr][t].logit);let _=d3.scaleLinear().domain(d3.extent(Or)).range([.2,1]);y.append("circle").attr("class","logit-circle").attr("id","logit-circle-"+a).attr("cx",w).attr("cy",Mr[e-1][a].y+gr/2).attr("r",8).style("fill",fr.logit(_(Or[a]))).style("cursor","crosshair").style("pointer-events","all").style("stroke",yr).on("mouseover",()=>Hr(a)).on("mouseleave",()=>qr(a)).on("click",()=>{d3.event.stopPropagation()});let k=kr.select(".intermediate-layer-annotation").select(".softmax-detail-annoataion");k.select("#logit-text-"+a).style("opacity",1),b.raise(),y.append("line").attr("class","logit-output-edge-"+a).attr("x1",i-n+2*mr).attr("x2",d).attr("y1",Mr[e-1][a].y+gr/2).attr("y2",Mr[e-1][a].y+gr/2).style("fill","none").style("stroke","#EAEAEA").style("stroke-width","1.2").lower();let E=[],$=Ir.flatten.length/Ir[1].length,I=[...Array(Ir[Rr].length).keys()].filter(t=>t!=a),M=0,P=d3.linkHorizontal().x(t=>t.x).y(t=>t.y);const S=()=>{if(!Cr)return void kr.select(".underneath").selectAll(".logit-lower").remove();let t=I[M],r=kr.select(".underneath").select("#logit-lower-"+t);if(r.empty()){r=kr.select(".underneath").append("g").attr("class","logit-lower").attr("id","logit-lower-"+t).style("opacity",0);for(let r=0;r<$;r+=3){[0,Mr[e-1].length-1].forEach(a=>{let d=r+a*$;E.push({source:{x:o+s+3-n,y:0===a?c+r*l:u+r*l},target:{x:i-n,y:Mr[e][t].y+gr/2},index:d,weight:Ir.flatten[d].outputLinks[t].weight,color:"#F1F1F1",width:.5,opacity:1,class:"softmax-edge-"+t})})}for(let r=0;r<Ir[Rr].length-2;r++)E.push({source:{x:o+s+3-n,y:c+$*l+p*(r+1)+h*(r+.5)},target:{x:i-n,y:Mr[e][t].y+gr/2},index:-1,color:"#EDEDED",width:.5,opacity:1,class:"softmax-abstract-edge-"+t});r.selectAll("path.softmax-edge-"+t).data(E).enter().append("path").attr("class",t=>t.class).attr("id",t=>"edge-"+t.name).attr("d",t=>P({source:t.source,target:t.target})).style("fill","none").style("stroke-width",t=>t.width).style("stroke",t=>void 0===t.color?yr:t.color).style("opacity",t=>t.opacity).style("pointer-events","none")}let v=y.append("g").attr("class","logit-layer-"+t).style("opacity",0),b=f.clone(!0).style("opacity",0);b.attr("class","plus-symbol-clone").attr("id","plus-symbol-clone-"+t).select("circle").datum({fill:Xe(fr.weight,m,Ir[Rr][t].bias,.35)}).style("pointer-events","none").style("fill","#E5E5E5"),b.attr("transform",`translate(${g},\n      ${Mr[e][t].y+gr/2})`);let A=P({source:{x:i-n+2*mr,y:Mr[e][t].y+gr/2},target:{x:w+8,y:Mr[e][t].y+gr/2}}),T=P({source:{x:w+8,y:Mr[e][t].y+gr/2},target:{x:d,y:Mr[e][a].y+gr/2}}),C=x.append("path").attr("class","logit-output-edge-"+t).attr("d",A).style("fill","none").style("stroke","#EAEAEA").style("stroke-width","1.2"),L=x.append("path").attr("class","logit-output-edge-"+t).attr("d",T).style("fill","none").style("stroke","#EAEAEA").style("stroke-width","1.2"),F=C.node().getTotalLength(),D=L.node().getTotalLength(),N=F+D,R=Br?500:800,B=Br?400:600;C.attr("stroke-dasharray",F+" "+F).attr("stroke-dashoffset",F),L.attr("stroke-dasharray",D+" "+D).attr("stroke-dashoffset",D),C.transition("softmax-output-edge").duration(F/N*R).attr("stroke-dashoffset",0),L.transition("softmax-output-edge").delay(F/N*R).duration(D/N*R).attr("stroke-dashoffset",0),v.append("circle").attr("class","logit-circle").attr("id","logit-circle-"+t).attr("cx",w).attr("cy",Mr[e-1][t].y+gr/2).attr("r",7).style("fill",fr.logit(_(Or[t]))).style("stroke",yr).style("cursor","crosshair").on("mouseover",()=>Hr(t)).on("mouseleave",()=>qr(t)).on("click",()=>{d3.event.stopPropagation()}),Lr.startAnimation={i:t,duration:B,hasInitialized:!1},yt.set(Lr),v.transition("softmax-edge").duration(B).style("opacity",1),(a<3&&9==t||a>=3&&0==t)&&k.select(".softmax-detail-hover-annotation").transition("softmax-edge").duration(B).style("opacity",1),k.select("#logit-text-"+t).transition("softmax-edge").duration(B).style("opacity",1),r.transition("softmax-edge").duration(B).style("opacity",1).on("end",()=>{M++,M<I.length?(E=[],S()):(Br=!0,Lr.hasInitialized=!0,yt.set(Lr))}),b.transition("softmax-edge").duration(B).style("opacity",.2)};let A=kr.select(".intermediate-layer").select(".layer-label").node(),T=((t,e)=>{if(void 0!==t){let n=e;for(;null==n.getScreenCTM&&null!=n.parentNode;)n=n.parentNode;let r=t.node().ownerSVGElement.createSVGPoint(),a=n.getScreenCTM(),o=n.getBBox().height;r.x+=0,r.y-=o/2;let i=r.matrixTransform(a);return{top:i.y,left:i.x}}})(kr,A),C=100+ +d3.select("#cnn-svg").style("height").replace("px","")/2-96;const L=document.getElementById("detailview");L.style.top=C+"px",L.style.left=T.left-490-50+"px",L.style.position="absolute",yt.set({show:!0,logits:Or,logitColors:Or.map(t=>fr.logit(_(t))),selectedI:a,highlightI:-1,outputName:wr[a],outputValue:Ir[Rr][a].output,startAnimation:{i:-1,duration:0,hasInitialized:Br}}),S(),An({legendHeight:5,curLayerIndex:e,range:d3.extent(Or)[1]-d3.extent(Or)[0],minMax:{min:d3.extent(Or)[0],max:d3.extent(Or)[1]},group:y,width:d-(i+2*mr-n+5),gradientAppendingName:"flatten-logit-gradient",gradientGap:.1,colorScale:fr.logit,x:i+2*mr-n+5,y:br.top+10*Er+Er+10*gr}),y.append("g").attr("class","layer-label").classed("hidden",Dr).attr("transform",()=>`translate(${w}, ${(br.top+Er)/2+5})`).append("text").style("text-anchor","middle").style("dominant-baseline","middle").style("opacity",.8).style("font-weight",800).text("logit")})({curLayerIndex:e,moveX:n,softmaxLeftMid:s,selectedI:l,intermediateX1:c,intermediateX2:u,pixelWidth:d,pixelHeight:p,topY:h,bottomY:f,middleGap:g,middleRectHeight:m,softmaxX:y,symbolGroup:x,symbolX:r,flattenRange:w})}if(Tr)$.select(".symbol-output-line").remove();else{$.select(".edge-group").append("line").attr("class","symbol-output-line").attr("x1",r).attr("y1",a).attr("x2",o+n).attr("y2",i).style("stroke-width",1.2).style("stroke","#E5E5E5").style("opacity",0).transition("softmax").delay(200).duration(400).style("opacity",1)}Tr=!Tr,mt.set(Tr)})},Kr=(t,e,n,r,a)=>{kr.selectAll(".output-legend").classed("hidden",!1);let o=Mr[t-1].length-1,i=gr/2,s=2*gr+5.5*$r*xr+i,l=Mr[t][0].x-s,c=$r*xr*4/2;let u=d3.linkHorizontal().x(t=>t.x).y(t=>t.y);kr.select("g.edge-group").style("visibility","hidden"),Pn({layerIndex:t-1,targetX:l,disable:!0,delay:0}),Pn({layerIndex:t,targetX:Mr[t][0].x,disable:!0,delay:0,opacity:.15,specialIndex:n});let d=(l-$r-Mr[0][0].x-10*gr)/10;if(d>20)for(let e=0;e<t-1;e++){let t=Mr[0][0].x+e*(gr+d);Pn({layerIndex:e,targetX:t,disable:!0,delay:0})}else{d=20;let e=l-2*d-gr;for(let n=t-2;n>=0;n--)Pn({layerIndex:n,targetX:e,disable:!0,delay:0}),e=e-d-gr}Sn("overlay-gradient-left",[{offset:"0%",color:"rgb(250, 250, 250)",opacity:1},{offset:"50%",color:"rgb(250, 250, 250)",opacity:.95},{offset:"100%",color:"rgb(250, 250, 250)",opacity:.85}]);let p=kr.append("g").attr("class","intermediate-layer-overlay");p.append("rect").attr("class","overlay").style("fill","url(#overlay-gradient-left)").style("stroke","none").attr("width",l+br.left-2*d+3).attr("height",a+br.top+br.bottom).attr("x",-br.left).attr("y",0).style("opacity",0),p.selectAll("rect.overlay").transition("move").duration(800).ease(d3.easeCubicInOut).style("opacity",1);let h=kr.append("g").attr("class","intermediate-layer").style("opacity",0),f=l+gr+c,g=f+c+i,m=Sr[Pr][t-1],y=fr.conv,v=Ir.flatten.length/Ir[1].length,b=[],x=h.append("g").attr("class","flatten-layer").append("g").attr("class","flatten-layer-left"),w=Mr[t-1][0].y,_=Mr[t-1][o].y+gr-1.1*v,k=Ir[t-1][0].output.length,E=gr/(2*k),$=gr/k,I=d3.extent(Ir.flatten.slice(v).map(t=>t.outputLinks[n].weight).concat(Ir.flatten.slice(9*v,10*v).map(t=>t.outputLinks[n].weight))),M=Math.round(1e3*Math.max(...I.map(Math.abs)))/1e3*2,P=t=>{let e=t.index;Fr=void 0===t.weight?{show:!0,text:"Pixel value: "+_r(zr[e])}:{show:!0,text:"Weight: "+_r(t.weight)},bt.set(Fr),x.select("#edge-flatten-"+e).raise().style("stroke",yr).style("stroke-width",1),x.select(`#edge-flatten-${e}-output`).raise().style("stroke-width",1).style("stroke",t=>Xe(fr.weight,M,t.weight,.1)),x.select("#bounding-"+e).raise().style("opacity",1)},S=t=>{let e=t.index;Fr=void 0===t.weight?{show:!1,text:"Pixel value: "+_r(zr[e])}:{show:!1,text:"Weight: "+_r(t.weight)},bt.set(Fr),x.select("#edge-flatten-"+e).style("stroke-width",.6).style("stroke","#E5E5E5"),x.select(`#edge-flatten-${e}-output`).style("stroke-width",.6).style("stroke",t=>Xe(fr.weight,M,t.weight,.35)),x.select("#bounding-"+e).raise().style("opacity",0)};console.log(v),zr={};for(let e=0;e<v;e++){[0,o].forEach(r=>{let a=e+r*v;zr[a]=Ir.flatten[a].output,x.append("rect").attr("x",f).attr("y",0===r?w+1.1*e:_+1.1*e).attr("width",i).attr("height",1.1).style("cursor","crosshair").style("fill",y((Ir.flatten[a].output+m/2)/m)).on("mouseover",()=>P({index:a})).on("mouseleave",()=>S({index:a})).on("click",()=>{d3.event.stopPropagation()}),b.push({source:{x:f+i+3,y:0===r?w+1.1*e:_+1.1*e},target:{x:g,y:Mr[t][n].y+gr/2},index:a,weight:Ir.flatten[a].outputLinks[n].weight,name:`flatten-${a}-output`,color:Xe(fr.weight,M,Ir.flatten[a].outputLinks[n].weight,.35),width:.6,opacity:1,class:"flatten-output"});let o=Math.floor(e/k);b.push({target:{x:f-3,y:0===r?w+1.1*e:_+1.1*e},source:{x:l+gr+3,y:Mr[t-1][r].y+(2*o+1)*E},index:a,name:"flatten-"+a,color:"#E5E5E5",width:.6,opacity:1,class:"flatten"});let s=Ir.flatten[a].inputLinks[0].weight;x.append("rect").attr("id","bounding-"+a).attr("class","flatten-bounding").attr("x",l+s[1]*$).attr("y",Mr[t-1][r].y+s[0]*$).attr("width",$).attr("height",$).style("fill","none").style("stroke",yr).style("stroke-length","0.5").style("pointer-events","all").style("cursor","crosshair").style("opacity",0).on("mouseover",()=>P({index:a})).on("mouseleave",()=>S({index:a})).on("click",()=>{d3.event.stopPropagation()})})}let A=[];for(let e=1;e<Ir[t-1].length-1;e++)A.push({index:e});let T=(10*gr+9*Er-1.1*v*2-45)/8;A.forEach((e,r)=>{x.append("rect").attr("x",f+i/4).attr("y",w+1.1*v+5*(r+1)+T*r).attr("width",i/2).attr("height",T).style("fill","#E5E5E5"),x.append("polyline").attr("points",`${l+gr+3}\n        ${Mr[t-1][e.index].y},\n        ${l+gr+10}\n        ${Mr[t-1][e.index].y+gr/2},\n        ${l+gr+3}\n        ${Mr[t-1][e.index].y+gr}`).style("fill","#E5E5E5").style("opacity",1),b.push({source:{x:l+gr+10,y:Mr[t-1][e.index].y+gr/2},target:{x:f-3,y:w+1.1*v+5*(r+1)+T*(r+.5)},index:-1,width:1,opacity:1,name:"flatten-abstract-"+e.index,color:"#E5E5E5",class:"flatten-abstract"}),b.push({source:{x:f+i+3,y:w+1.1*v+5*(r+1)+T*(r+.5)},target:{x:g,y:Mr[t][n].y+gr/2},index:-1,name:`flatten-abstract-${e.index}-output`,color:"#E5E5E5",weight:e.weight,width:1,opacity:1,class:"flatten-abstract-output"})});let C=g+mr,L=Mr[t][n].y+gr/2,F=x.append("g").attr("class","plus-symbol").attr("transform",`translate(${C}, ${L})`);F.append("rect").attr("x",-mr).attr("y",-mr).attr("width",2*mr).attr("height",2*mr).attr("rx",3).attr("ry",3).style("fill","none").style("stroke",yr),F.append("rect").attr("x",-(mr-3)).attr("y",-.5).attr("width",2*(mr-3)).attr("height",1).style("fill",yr),F.append("rect").attr("x",-.5).attr("y",-(mr-3)).attr("width",1).attr("height",2*(mr-3)).style("fill",yr),F.append("circle").attr("cx",0).attr("cy",-gr/2-.5*vr).attr("r",1.5*vr).style("stroke",yr).style("cursor","crosshair").style("fill",Xe(fr.weight,M,e.bias,.35)).on("mouseover",()=>{bt.set({show:!0,text:"Bias: "+_r(e.bias)})}).on("mouseleave",()=>{bt.set({show:!1,text:"Bias: "+_r(e.bias)})}).on("click",()=>{d3.event.stopPropagation()}),F.append("path").attr("d",u({source:{x:0,y:0},target:{x:0,y:-gr/2-.5*vr}})).attr("id","bias-plus").attr("stroke-width",1.2).attr("stroke","#E5E5E5").lower(),b.push({source:Ke({x:g+2*mr-gr,y:Mr[t][n].y}),target:Ue({x:Mr[t][n].x-3,y:Mr[t][n].y}),name:"symbol-output",width:1.2,color:"#E5E5E5"});let D=(s-2*gr-2*c-55)/2,N=g+2*mr,R=D+N,B=D/2+N,O=Mr[t][n].y-2*vr-6,z={curLayerIndex:t,moveX:2*(g-(f+i+3))/3,symbolX:C,symbolY:L,outputX:Mr[t][n].x,outputY:L,softmaxLeftMid:B,selectedI:n,intermediateX1:f,intermediateX2:g,pixelWidth:i,pixelHeight:1.1,topY:w,bottomY:_,middleGap:5,middleRectHeight:T,softmaxX:R,softmaxWidth:55,softmaxTextY:O,symbolGroup:F,flattenRange:M},j=h.append("g").attr("class","softmax-symbol").attr("transform",`translate(${R}, ${L})`).style("pointer-event","all").style("cursor","pointer").on("click",()=>Vr(z));j.append("rect").attr("x",0).attr("y",-mr).attr("width",55).attr("height",2*mr).attr("stroke",yr).attr("rx",2).attr("ry",2).attr("fill","#FAFAFA"),j.append("text").attr("x",5).attr("y",1).style("dominant-baseline","middle").style("font-size","12px").style("opacity",.5).text("softmax"),h.append("g").attr("class","layer-label").classed("hidden",Dr).attr("transform",()=>`translate(${l+gr+(4*$r*xr+i)/2}, ${(br.top+Er)/2+5})`).style("cursor","help").on("click",()=>{d3.event.stopPropagation(),document.querySelector("#article-flatten").scrollIntoView({behavior:"smooth"})}).append("text").style("dominant-baseline","middle").style("opacity",.8).style("font-weight",800).text("flatten");Number(d3.select("#cnn-svg").style("height").replace("px",""));let H=h.append("g").attr("transform",()=>`translate(${l+gr+(4*$r*xr+i)/2}, ${(br.top+Er)/2-5})`).attr("class","layer-detailed-label").classed("hidden",!Dr).style("cursor","help").on("click",()=>{d3.event.stopPropagation();document.querySelector("#article-flatten")});H.append("title").text("Move to article section");let q=H.append("text").style("text-anchor","middle").style("dominant-baseline","middle").style("opacity","0.7").style("font-weight",800).append("tspan").text("flatten"),W=Ir[Nr].length*Ir[Nr][0].output.length*Ir[Nr][0].output[0].length;q.append("tspan").attr("x",0).attr("dy","1.5em").style("font-size","8px").style("font-weight","normal").text(`(${W})`);let G=x.append("g").attr("class","edge-group").lower();G.selectAll("path").data(b).enter().append("path").attr("class",t=>t.class).attr("id",t=>"edge-"+t.name).attr("d",t=>u({source:t.source,target:t.target})).style("fill","none").style("stroke-width",t=>t.width).style("stroke",t=>void 0===t.color?yr:t.color).style("opacity",t=>t.opacity),G.selectAll("path.flatten-abstract-output").lower(),G.selectAll("path.flatten,path.flatten-output").style("cursor","crosshair").style("pointer-events","all").on("mouseover",P).on("mouseleave",S).on("click",()=>{d3.event.stopPropagation()}),An({legendHeight:5,curLayerIndex:t,range:m,minMax:Ar[10],group:h,width:c+gr-3,x:l,y:br.top+10*Er+Er+10*gr}),An({legendHeight:5,curLayerIndex:t,range:M,minMax:{min:I[0],max:I[1]},group:h,width:c-3-5,gradientAppendingName:"flatten-weight-gradient",gradientGap:.1,colorScale:fr.weight,x:l+c+gr+i+3,y:br.top+10*Er+Er+10*gr});let V=kr.append("g").attr("class","intermediate-layer-annotation").style("opacity",0),K=V.append("g").attr("class","plus-annotation"),U=g,X=Mr[t][n].y+gr+3*vr,J=Mr[t][n].y+gr+2*vr,Y=Mr[t][n].y+gr/2+mr;9==n&&(X-=110,J-=70,Y-=18);let Q=K.append("text").attr("x",U).attr("y",X).attr("class","annotation-text").style("dominant-baseline","hanging").style("text-anchor","middle");Q.append("tspan").style("dominant-baseline","hanging").text("Add up all products"),Q.append("tspan").attr("x",U).attr("dy","1em").style("dominant-baseline","hanging").text("("),Q.append("tspan").style("fill","#66a3c8").style("dominant-baseline","hanging").text("element"),Q.append("tspan").style("dominant-baseline","hanging").text(" × "),Q.append("tspan").style("dominant-baseline","hanging").style("fill","#b58946").text("weight"),Q.append("tspan").style("dominant-baseline","hanging").text(")"),Q.append("tspan").attr("x",U).attr("dy","1em").style("dominant-baseline","hanging").text("and then "),Q.append("tspan").style("dominant-baseline","hanging").style("fill","#479d94").text("bias"),Tn({group:K,sx:g-2*mr-3,sy:J,tx:g-5,ty:Y,dr:30,hFlip:9===n,marker:"marker-alt"});let Z=Mr[t][n].y;Z-=2*vr+4,x.append("text").attr("class","annotation-text").attr("x",g+mr).attr("y",Z).style("text-anchor","middle").style("dominant-baseline","baseline").text("Bias");let tt=V.append("g").attr("class","softmax-annotation");tt.append("text").attr("x",R+27.5).attr("y",O).attr("class","annotation-text").style("dominant-baseline","baseline").style("text-anchor","middle").style("font-weight",700).text("Click ").append("tspan").attr("dx",1).style("font-weight",400).text("to learn more"),Tn({group:tt,sx:R+27.5-5,sy:O+4,tx:R+27.5,ty:L-mr-4,dr:50,hFlip:!0});let et=V.append("g").attr("class","flatten-annotation");U=l-80,X=Mr[t-1][0].y;let nt=et.append("text").attr("x",U).attr("y",X).attr("class","annotation-text").style("dominant-baseline","hanging").style("text-anchor","middle");nt.append("tspan").style("dominant-baseline","hanging").style("font-weight",700).text("Hover over ").append("tspan").attr("dx",1).style("font-weight",400).style("dominant-baseline","hanging").text("matrix to"),nt.append("tspan").style("dominant-baseline","hanging").attr("x",U).attr("dy","1em").text("see how it is flattened"),nt.append("tspan").style("dominant-baseline","hanging").attr("x",U).attr("dy","1em").text("into datatrainx 1D array!"),Tn({group:et,sx:U+45,sy:X+.4*gr+12,tx:l-10,ty:X+gr/2,dr:80,hFlip:!0}),X=Mr[t-1][1].y;let rt=et.append("text").attr("x",U).attr("y",X).attr("class","annotation-text").style("dominant-baseline","hanging").style("text-anchor","middle");rt.append("tspan").style("dominant-baseline","hanging").text("Same flattening"),rt.append("tspan").style("dominant-baseline","hanging").attr("x",U).attr("dy","1em").text("operation for"),rt.append("tspan").style("dominant-baseline","hanging").attr("x",U).attr("dy","1em").text("each neuron"),Tn({group:et,sx:U+39,sy:X+25,tx:l-10,ty:X+gr/2-2,dr:80,hFlip:!0,marker:"marker-alt"}),V.append("g").attr("class","output-annotation").append("text").attr("x",Mr[Rr][n].x).attr("y",Mr[Rr][n].y+10).attr("class","annotation-text").text(`(${d3.format(".4f")(Ir[Rr][n].output)})`),kr.selectAll("g.intermediate-layer, g.intermediate-layer-annotation").transition().delay(500).duration(500).ease(d3.easeCubicInOut).style("opacity",1)};function Ur(t,e,n){const r=t.slice();return r[83]=e[n],r[85]=n,r}function Xr(t){let e,n,r,o,s,l,c,u;return{c(){var a,c;e=g("div"),n=g("img"),a=n.src,c=r="/assets/img/"+t[83].file,i||(i=document.createElement("a")),i.href=c,a!==i.href&&x(n,"src",r),x(n,"alt","image option"),x(n,"title",o=t[83].class),x(n,"data-imagename",s=t[83].file),x(n,"class","svelte-9lm4l0"),x(e,"class","image-container svelte-9lm4l0"),x(e,"data-imagename",l=t[83].file),P(e,"inactive",t[7]!==t[83].file),P(e,"disabled",t[6])},m(r,o){h(r,e,o),p(e,n),c||(u=b(e,"click",(function(){a(t[6]?ea:t[17])&&(t[6]?ea:t[17]).apply(this,arguments)})),c=!0)},p(n,r){t=n,32896&r[0]&&P(e,"inactive",t[7]!==t[83].file),64&r[0]&&P(e,"disabled",t[6])},d(t){t&&f(e),c=!1,u()}}}function Jr(t){let e,n;return e=new _e({props:{logits:t[3].logits,logitColors:t[3].logitColors,selectedI:t[3].selectedI,highlightI:t[3].highlightI,outputName:t[3].outputName,outputValue:t[3].outputValue,startAnimation:t[3].startAnimation}}),e.$on("xClicked",t[24]),e.$on("mouseOver",Wr),e.$on("mouseLeave",Gr),{c(){Y(e.$$.fragment)},m(t,r){Q(e,t,r),n=!0},p(t,n){const r={};8&n[0]&&(r.logits=t[3].logits),8&n[0]&&(r.logitColors=t[3].logitColors),8&n[0]&&(r.selectedI=t[3].selectedI),8&n[0]&&(r.highlightI=t[3].highlightI),8&n[0]&&(r.outputName=t[3].outputName),8&n[0]&&(r.outputValue=t[3].outputValue),8&n[0]&&(r.startAnimation=t[3].startAnimation),e.$set(r)},i(t){n||(X(e.$$.fragment,t),n=!0)},o(t){J(e.$$.fragment,t),n=!1},d(t){Z(e,t)}}}function Yr(t){let e,n;return e=new ve({props:{input:t[8][0].input,kernelLength:2,dataRange:t[8].colorRange,isExited:t[10]}}),e.$on("message",t[22]),{c(){Y(e.$$.fragment)},m(t,r){Q(e,t,r),n=!0},p(t,n){const r={};256&n[0]&&(r.input=t[8][0].input),256&n[0]&&(r.dataRange=t[8].colorRange),1024&n[0]&&(r.isExited=t[10]),e.$set(r)},i(t){n||(X(e.$$.fragment,t),n=!0)},o(t){J(e.$$.fragment,t),n=!1},d(t){Z(e,t)}}}function Qr(t){let e,n;return e=new le({props:{input:t[8][0].input,output:t[8][0].output,dataRange:t[8].colorRange,isExited:t[10]}}),e.$on("message",t[23]),{c(){Y(e.$$.fragment)},m(t,r){Q(e,t,r),n=!0},p(t,n){const r={};256&n[0]&&(r.input=t[8][0].input),256&n[0]&&(r.output=t[8][0].output),256&n[0]&&(r.dataRange=t[8].colorRange),1024&n[0]&&(r.isExited=t[10]),e.$set(r)},i(t){n||(X(e.$$.fragment,t),n=!0)},o(t){J(e.$$.fragment,t),n=!1},d(t){Z(e,t)}}}function Zr(t){let e,n;return e=new te({props:{input:t[8][t[9]].input,kernel:t[8][t[9]].kernel,dataRange:t[8].colorRange,colorScale:t[8].inputIsInputLayer?t[14].input[0]:t[14].conv,isInputInputLayer:t[8].inputIsInputLayer,isExited:t[11]}}),e.$on("message",t[21]),{c(){Y(e.$$.fragment)},m(t,r){Q(e,t,r),n=!0},p(t,n){const r={};768&n[0]&&(r.input=t[8][t[9]].input),768&n[0]&&(r.kernel=t[8][t[9]].kernel),256&n[0]&&(r.dataRange=t[8].colorRange),256&n[0]&&(r.colorScale=t[8].inputIsInputLayer?t[14].input[0]:t[14].conv),256&n[0]&&(r.isInputInputLayer=t[8].inputIsInputLayer),2048&n[0]&&(r.isExited=t[11]),e.$set(r)},i(t){n||(X(e.$$.fragment,t),n=!0)},o(t){J(e.$$.fragment,t),n=!1},d(t){Z(e,t)}}}function ta(t){let e,n,a,o,i,s,l,c,u,d,v,_,$,I,M,S,A,T,C,L,F,D,N,R,B,O,j,H,q,W,G,V,tt,et,nt,rt,at,ot,it=t[4].text+"",st=t[15],lt=[];for(let e=0;e<st.length;e+=1)lt[e]=Xr(Ur(t,st,e));const ct=[Zr,Qr,Yr,Jr],ut=[];function dt(t,e){return t[5].data&&"conv"===t[5].data.type&&-1!=t[9]?0:t[5].data&&"relu"===t[5].data.type?1:t[5].data&&"pool"===t[5].data.type?2:t[3].show?3:-1}return~(V=dt(t))&&(tt=ut[V]=ct[V](t)),nt=new $e({}),nt.$on("xClicked",t[19]),nt.$on("urlTyped",t[20]),{c(){e=g("div"),n=g("div"),a=g("div");for(let t=0;t<lt.length;t+=1)lt[t].c();o=y(),i=y(),s=g("button"),l=g("span"),l.innerHTML='<i class="fas fa-crosshairs "></i>',c=y(),u=g("span"),d=m(it),v=y(),_=g("div"),$=g("button"),$.innerHTML='<span class="icon"><i class="fa-solid fa-address-card"></i></span> \n            <span>Faire le test</span>',I=y(),M=g("button"),S=g("span"),S.innerHTML='<i class="fas fa-eye"></i>',A=y(),T=g("span"),T.textContent="Détail",C=y(),L=g("div"),F=g("span"),F.innerHTML='<i class="fas fa-palette"></i>',D=y(),N=g("div"),R=g("select"),B=g("option"),B.textContent="Unit",O=g("option"),O.textContent="Module",j=g("option"),j.textContent="Global",H=y(),q=g("div"),q.innerHTML='<svg id="cnn-svg" class="svelte-9lm4l0"></svg>',W=y(),G=g("div"),tt&&tt.c(),et=y(),Y(nt.$$.fragment),x(l,"class","icon"),k(l,"margin-right","5px"),x(u,"id","hover-label-text"),x(s,"class","button is-very-small is-link is-light svelte-9lm4l0"),x(s,"id","hover-label"),k(s,"opacity",t[4].show?1:0),x(a,"class","left-control svelte-9lm4l0"),x($,"class","button is-success is-very-small is-activated svelte-9lm4l0"),x(S,"class","icon"),x(T,"id","hover-label-text"),x(M,"class","button blue-button is-very-small svelte-9lm4l0"),x(M,"id","detailed-button"),M.disabled=t[6],P(M,"is-activated",t[2]),x(F,"class","icon is-left"),B.__value="local",B.value=B.__value,O.__value="module",O.value=O.__value,j.__value="global",j.value=j.__value,x(R,"id","level-select"),R.disabled=t[6],x(R,"class","svelte-9lm4l0"),void 0===t[0]&&z(()=>t[25].call(R)),x(N,"class","select svelte-9lm4l0"),x(L,"class","control is-very-small has-icons-left svelte-9lm4l0"),x(L,"title","Change color scale range"),x(_,"class","right-control svelte-9lm4l0"),x(n,"class","control-container svelte-9lm4l0"),x(q,"class","cnn svelte-9lm4l0"),x(e,"class","overview svelte-9lm4l0"),x(G,"id","detailview")},m(r,f){h(r,e,f),p(e,n),p(n,a);for(let t=0;t<lt.length;t+=1)lt[t].m(a,null);p(a,o),p(a,i),p(a,s),p(s,l),p(s,c),p(s,u),p(u,d),p(n,v),p(n,_),p(_,$),p(_,I),p(_,M),p(M,S),p(M,A),p(M,T),p(_,C),p(_,L),p(L,F),p(L,D),p(L,N),p(N,R),p(R,B),p(R,O),p(R,j),E(R,t[0]),p(e,H),p(e,q),t[26](e),h(r,W,f),h(r,G,f),~V&&ut[V].m(G,null),h(r,et,f),Q(nt,r,f),rt=!0,at||(ot=[b($,"click",t[13]),b(M,"click",t[16]),b(R,"change",t[25])],at=!0)},p(t,e){if(164032&e[0]){let n;for(st=t[15],n=0;n<st.length;n+=1){const r=Ur(t,st,n);lt[n]?lt[n].p(r,e):(lt[n]=Xr(r),lt[n].c(),lt[n].m(a,o))}for(;n<lt.length;n+=1)lt[n].d(1);lt.length=st.length}(!rt||16&e[0])&&it!==(it=t[4].text+"")&&w(d,it),(!rt||16&e[0])&&k(s,"opacity",t[4].show?1:0),(!rt||64&e[0])&&(M.disabled=t[6]),4&e[0]&&P(M,"is-activated",t[2]),(!rt||64&e[0])&&(R.disabled=t[6]),1&e[0]&&E(R,t[0]);let n=V;V=dt(t),V===n?~V&&ut[V].p(t,e):(tt&&(K(),J(ut[n],1,1,()=>{ut[n]=null}),U()),~V?(tt=ut[V],tt?tt.p(t,e):(tt=ut[V]=ct[V](t),tt.c()),X(tt,1),tt.m(G,null)):tt=null)},i(t){rt||(X(tt),X(nt.$$.fragment,t),rt=!0)},o(t){J(tt),J(nt.$$.fragment,t),rt=!1},d(n){n&&f(e),function(t,e){for(let n=0;n<t.length;n+=1)t[n]&&t[n].d(e)}(lt,n),t[26](null),n&&f(W),n&&f(G),~V&&ut[V].d(),n&&f(et),Z(nt,n),at=!1,r(ot)}}}const ea=()=>{};function na(t,e,n){let r,a=new Set(["local","module","global"]),o="local";ut.set(o);let i=o,s=void 0,l=void 0;const c=We.layerColorScales,u=We.nodeLength,d=We.numLayers,p=We.edgeOpacity,h=We.edgeInitColor,f=We.edgeHoverColor,g=We.edgeStrokeWidth,m=We.svgPaddings,y=We.overlayRectOffset;let v=[void 0,void 0];ht.subscribe(t=>{v=t});let b=void 0;ct.subscribe(t=>{b=t});let x=void 0;dt.subscribe(t=>{x=t}),pt.subscribe(t=>{});let w=void 0;ft.subscribe(t=>{n(2,w=t)}),gt.subscribe(t=>{}),st.subscribe(t=>{});let _=void 0;lt.subscribe(t=>{_=t});let k=void 0;mt.subscribe(t=>{k=t});let E=void 0;yt.subscribe(t=>{n(3,E=t)});let $=void 0;xt.subscribe(t=>{$=t});let I=void 0;bt.subscribe(t=>{n(4,I=t)});let M=void 0;wt.subscribe(t=>{M=t});let P=void 0,S=void 0,A=void 0,C={layerName:"",index:-1,data:null},L=!1,F=!1,N=-1,R=-1,B=void 0,O=!1,z=void 0;const j={input:0,conv_1_1:1,relu_1_1:2,conv_1_2:3,relu_1_2:4,max_pool_1:5,conv_2_1:6,relu_2_1:7,conv_2_2:8,relu_2_2:9,max_pool_2:10,output:11},H={0:{local:"input-legend",module:"input-legend",global:"input-legend"},1:{local:"local-legend-0-1",module:"module-legend-0",global:"global-legend"},2:{local:"local-legend-0-1",module:"module-legend-0",global:"global-legend"},3:{local:"local-legend-0-2",module:"module-legend-0",global:"global-legend"},4:{local:"local-legend-0-2",module:"module-legend-0",global:"global-legend"},5:{local:"local-legend-0-2",module:"module-legend-0",global:"global-legend"},6:{local:"local-legend-1-1",module:"module-legend-1",global:"global-legend"},7:{local:"local-legend-1-1",module:"module-legend-1",global:"global-legend"},8:{local:"local-legend-1-2",module:"module-legend-1",global:"global-legend"},9:{local:"local-legend-1-2",module:"module-legend-1",global:"global-legend"},10:{local:"local-legend-1-2",module:"module-legend-1",global:"global-legend"},11:{local:"output-legend",module:"output-legend",global:"output-legend"}};let q,W=[{file:"colere.jpg",class:"Colère"},{file:"degout.jpg",class:"Dégoût"},{file:"peur.jpg",class:"Peur"},{file:"joyeux.jpg",class:"Joyeux"},{file:"triste.jpg",class:"Triste"},{file:"surprise.jpg",class:"Surprise"},{file:"neutre.jpg",class:"Neutre"}],G=W[0].file,V=-1,K=!0,U=!0,X=null;const J=(t,e,n)=>{void 0===B&&l.select("rect#underneath-gateway-"+t.index).style("opacity",1)},Y=(t,e,n)=>{void 0===B&&l.select("rect#underneath-gateway-"+t.index).style("opacity",0)},Q=(t,e,r,a,i)=>{if(d3.event.stopPropagation(),n(11,U=!1),B===t.index)n(9,V=-1),B=void 0,l.select("rect#underneath-gateway-"+t.index).style("opacity",0);else{n(9,V=t.index);t.output,t.outputLinks[a].weight;let e=x[o][i-1],r=x[o][i],s=Math.max(e,r);void 0!==B&&(l.select("rect#underneath-gateway-"+B).style("opacity",0),l.select("rect#underneath-gateway-"+t.index).style("opacity",1));let c=d3.select("#cnn-svg"),u=+c.style("height").replace("px","")/2,d=+c.style("width").replace("px",""),p=100+u-125,h=M[Object.keys(j)[i]],f=0;i>6?(f=(h-m.left)/2,f=m.left+f-243):(f=(d+m.right-h)/2,f=h+f-243);const g=document.getElementById("detailview");g.style.top=p+"px",g.style.left=f+"px",g.style.position="absolute",B=t.index,n(8,q.colorRange=s,q),n(8,q.inputIsInputLayer=i<=1,q)}},Z=()=>{if(void 0!==B)n(9,V=-1),l.select("rect#underneath-gateway-"+B).style("opacity",0),B=void 0;else if(k)l.select(".softmax-symbol").dispatch("click");else if(L){let t=j[C.layerName];at(t,C.domG,C.domI),d3.select(C.domG[C.domI]).dispatch("mouseleave")}else F&&tt()},tt=()=>{F=!1,N=-1;let t=j[C.layerName],e=C.index;l.select(`g#layer-${t}-node-${e}`).select("rect.bounding").classed("hidden",!0),C.data.inputLinks.forEach(t=>{let e=j[t.source.layerName],n=t.source.index;l.select(`g#layer-${e}-node-${n}`).select("rect.bounding").classed("hidden",!0)}),l.select("g.underneath").selectAll("rect").remove();l.select("g.edge-group").selectAll(".edge").filter(t=>t.targetLayerIndex!==R).style("visibility",null);n(6,O=!1),l.selectAll(`.${o}-legend`).classed("hidden",!w),l.selectAll(".input-legend").classed("hidden",!w),l.selectAll(".output-legend").classed("hidden",!w),l.select("g.cnn-group").select("g.edge-group").selectAll(`path.edge-${t}-${e}`).transition().ease(d3.easeCubicOut).duration(200).style("stroke",h).style("stroke-width",g).style("opacity",p),l.selectAll("g.intermediate-layer-overlay, g.intermediate-layer-annotation").transition("remove").duration(500).ease(d3.easeCubicInOut).style("opacity",0).on("end",(t,e,n)=>{l.selectAll("g.intermediate-layer-overlay, g.intermediate-layer-annotation").remove(),l.selectAll("defs.overlay-gradient").remove(),l.select(".input-annotation").classed("hidden",!1)}),l.select("g#cnn-layer-group-"+t).selectAll("g.node-group").each((t,e,n)=>{d3.select(n[e]).style("pointer-events","all")}),l.select("g#cnn-layer-group-"+(t-1)).selectAll("g.node-group").each((t,e,n)=>{d3.select(n[e]).style("pointer-events","all").on("mouseover",Et).on("mouseleave",$t).on("click",kt)}),n(5,C.layerName="",C),n(5,C.index=-1,C),n(5,C.data=null,C),R=-1},et=(t,e,n)=>{let r=j[t.layerName],a=t.index;l.select("g.cnn-group").select("g.edge-group").selectAll(`path.edge-${R}-${a}`).raise().transition().ease(d3.easeCubicInOut).duration(400).style("stroke",f).style("stroke-width","1").style("opacity",1),d3.select(n[e]).select("rect.bounding").classed("hidden",!1);let o=r-1;r===R-1&&(o=r+1),l.select(`g#layer-${o}-node-${a}`).select("rect.bounding").classed("hidden",!1)},nt=(t,e,n)=>{let r=j[t.layerName],a=t.index;l.select("g.cnn-group").select("g.edge-group").selectAll(`path.edge-${R}-${a}`).transition().ease(d3.easeCubicOut).duration(200).style("stroke",h).style("stroke-width",g).style("opacity",p),d3.select(n[e]).select("rect.bounding").classed("hidden",!0);let o=r-1;r===R-1&&(o=r+1),l.select(`g#layer-${o}-node-${a}`).select("rect.bounding").classed("hidden",!0)},rt=(t,e,n)=>{let r=j[t.layerName],a=t.index;l.select(`g#layer-${r+1}-node-${a}`).node().dispatchEvent(new Event("click"))},at=(t,e,r)=>{k&&(l.select(".logit-layer").remove(),l.select(".logit-layer-lower").remove(),l.selectAll(".plus-symbol-clone").remove(),l.select(".underneath").selectAll(".logit-lower").style("opacity",0),yt.set({show:!1,logits:[]}),vt.set(!1)),mt.set(!1),L=!1,l.selectAll(`.${o}-legend`).classed("hidden",!w),l.selectAll(".input-legend").classed("hidden",!w),l.selectAll(".output-legend").classed("hidden",!w),n(6,O=!1);for(let e=0;e<z[t-1].length;e++)l.select(`g#layer-${t-1}-node-${e}`).on("mouseover",Et).on("mouseleave",$t).on("click",kt);l.select("g.underneath").selectAll("rect").remove(),B=void 0,l.select("g#cnn-layer-group-"+(t-1)).selectAll("rect.bounding").style("stroke-width",1),d3.select(e[r]).select("rect.bounding").style("stroke-width",1),l.selectAll(`g#layer-label-${t-1},\n      g#layer-detailed-label-${t-1},\n      g#layer-label-${t},\n      g#layer-detailed-label-${t}`).style("font-weight","normal"),n(5,C.layerName="",C),n(5,C.index=-1,C),n(5,C.data=null,C),n(11,U=!0);let a=l.select("g.intermediate-layer");if(gt.set(!1),a.transition("remove").duration(500).ease(d3.easeCubicInOut).style("opacity",0).on("end",(t,e,n)=>{d3.select(n[e]).remove()}),l.selectAll(".overlay-group").remove(),l.selectAll("g.intermediate-layer-overlay, g.intermediate-layer-annotation").transition("remove").duration(500).ease(d3.easeCubicInOut).style("opacity",0).on("end",(t,e,n)=>{l.selectAll("g.intermediate-layer-overlay, g.intermediate-layer-annotation").remove(),l.selectAll("defs.overlay-gradient").remove()}),void 0!==v[0]){let t=x[o][v[0]];void 0!==v[1]?l.select(`g#layer-${v[0]}-node-${v[1]}`).select("image.node-image").each((e,n,r)=>mn(e,n,r,t)):l.select("g#cnn-layer-group-"+v[0]).selectAll("image.node-image").each((e,n,r)=>mn(e,n,r,t))}for(let t=0;t<d;t++)Pn({layerIndex:t,targetX:b[t][0].x,disable:!1,delay:500,opacity:1});Pn({layerIndex:d-2,targetX:b[d-2][0].x,opacity:1,disable:!1,delay:500,onEndFunc:()=>{l.select("g.edge-group").style("visibility","visible"),l.select(".input-annotation").classed("hidden",!1)}})},kt=(t,e,r)=>{d3.event.stopPropagation();let a=t.index;if(n(5,C.layerName=t.layerName,C),n(5,C.index=t.index,C),n(5,C.data=t,C),n(5,C.domI=e,C),n(5,C.domG=r,C),"conv"===t.type||"relu"===t.type||"pool"===t.type){let e=[];for(let n=0;n<t.inputLinks.length;n++)e.push({input:t.inputLinks[n].source.output,kernel:t.inputLinks[n].weight,output:t.inputLinks[n].dest.output});let r=j[t.layerName];e.colorRange=x[o][r],e.isInputInputLayer=r<=1,n(8,q=e)}let i=j[t.layerName];if("relu"==t.type||"pool"==t.type)if(n(10,K=!1),F)if(t.index===N)tt();else{l.select(`g#layer-${i}-node-${N}`).select("rect.bounding").classed("hidden",!0),l.select(`g#layer-${i-1}-node-${N}`).select("rect.bounding").classed("hidden",!0);let t=l.select("g.cnn-group").select("g.edge-group");t.selectAll(`path.edge-${i}-${N}`).transition().ease(d3.easeCubicOut).duration(200).style("stroke",h).style("stroke-width",g).style("opacity",p);let e=l.select("g.underneath");e.select("#underneath-gateway-"+N).style("opacity",0),l.select(`g#layer-${i}-node-${a}`).select("rect.bounding").classed("hidden",!1),l.select(`g#layer-${i-1}-node-${a}`).select("rect.bounding").classed("hidden",!1),t.selectAll(`path.edge-${i}-${a}`).raise().transition().ease(d3.easeCubicInOut).duration(400).style("stroke",f).style("stroke-width","1").style("opacity",1),e.select("#underneath-gateway-"+a).style("opacity",1),N=a}else((t,e)=>{F=!0,N=e,R=t;let r=d3.select("#cnn-svg"),a=+r.style("height").replace("px","")/2,i=+r.style("width").replace("px",""),s=100+a-130,c=0;t>5?(c=b[t-1][0].x+50,c=c/2-250):(c=(i-b[t][0].x-u)/2,c=b[t][0].x+u+c-250);const d=document.getElementById("detailview");d.style.top=s+"px",d.style.left=c+"px",d.style.position="absolute";l.select("g.edge-group").selectAll(".edge").filter(e=>e.targetLayerIndex!==t).style("visibility","hidden");n(6,O=!0),l.select(".input-annotation").classed("hidden",!0),l.selectAll(`.${o}-legend`).classed("hidden",!0),l.selectAll(".input-legend").classed("hidden",!0),l.selectAll(".output-legend").classed("hidden",!0),l.select("#"+H[t][o]).classed("hidden",!1);let p=b[t-1][e].x,h=b[t][e].x+u+5,f=P-h-y/2,g=p-b[0][0].x;if(f>g){let t=[{offset:"0%",color:"rgb(250, 250, 250)",opacity:.85},{offset:"50%",color:"rgb(250, 250, 250)",opacity:.9},{offset:"100%",color:"rgb(250, 250, 250)",opacity:1}];Sn("overlay-gradient-right",t),t=[{offset:"0%",color:"rgb(250, 250, 250)",opacity:.85+g/f*(.95-.85)},{offset:"100%",color:"rgb(250, 250, 250)",opacity:.85}],Sn("overlay-gradient-left",t)}else{let t=[{offset:"0%",color:"rgb(250, 250, 250)",opacity:1},{offset:"50%",color:"rgb(250, 250, 250)",opacity:.9},{offset:"100%",color:"rgb(250, 250, 250)",opacity:.85}];Sn("overlay-gradient-left",t),t=[{offset:"0%",color:"rgb(250, 250, 250)",opacity:.85},{offset:"100%",color:"rgb(250, 250, 250)",opacity:.85+f/g*(.95-.85)}],Sn("overlay-gradient-right",t)}lr("overlay-gradient-right",h+y/2+.5,0,f,S+m.top),lr("overlay-gradient-left",b[0][0].x-y/2,0,g,S+m.top),l.selectAll("rect.overlay").on("click",Z);let v=l.select("g.underneath");for(let e=0;e<z[t-1].length;e++)v.append("rect").attr("class","underneath-gateway").attr("id","underneath-gateway-"+e).attr("x",b[t-1][e].x-7).attr("y",b[t-1][e].y-7).attr("width",2*u+_+14).attr("height",u+14).attr("rx",10).style("fill","rgba(160, 160, 160, 0.3)").style("opacity",0),l.select(`g#layer-${t-1}-node-${e}`).style("pointer-events","all").style("cursor","pointer").on("mouseover",et).on("mouseleave",nt).on("click",rt);v.lower(),v.select("#underneath-gateway-"+e).style("opacity",1)})(i,t.index);"conv"!==t.type&&"output"!==t.layerName||L?"conv"!==t.type&&"output"!==t.layerName||!L||at(i,r,e):(((t,e,r,a)=>{L=!0,l.selectAll(`.${o}-legend`).classed("hidden",!0),l.selectAll(".input-legend").classed("hidden",!0),l.selectAll(".output-legend").classed("hidden",!0),l.select(".input-annotation").classed("hidden",!0),l.select("g#cnn-layer-group-"+(a-1)).selectAll("rect.bounding").style("stroke-width",2),d3.select(e[r]).select("rect.bounding").style("stroke-width",2),n(6,O=!0),gt.set(!0),l.selectAll(`g#layer-label-${a-1},\n      g#layer-detailed-label-${a-1},\n      g#layer-label-${a},\n      g#layer-detailed-label-${a}`).style("font-weight","800"),d3.select("#cnn-svg").on("click",Z)})(0,r,a,i),"conv_1_1"===t.layerName?ur(i,t,a,P,S,J,Y,Q):"conv_1_2"===t.layerName?dr(i,t,a,P,S,J,Y,Q):"conv_2_1"===t.layerName?pr(i,t,a,P,S,J,Y,Q):"conv_2_2"===t.layerName?hr(i,t,a,P,S,J,Y,Q):"output"===t.layerName&&Kr(i,t,a,0,S))},Et=(t,e,n)=>{if(L)return;let r=j[t.layerName],a=t.index;if(l.select("g.cnn-group").select("g.edge-group").selectAll(`path.edge-${r}-${a}`).raise().transition().ease(d3.easeCubicInOut).duration(400).style("stroke",f).style("stroke-width","1").style("opacity",1),d3.select(n[e]).select("rect.bounding").classed("hidden",!1),1===t.inputLinks.length){let e=t.inputLinks[0],n=j[e.source.layerName],r=e.source.index;l.select(`g#layer-${n}-node-${r}`).select("rect.bounding").classed("hidden",!1)}else l.select("g#cnn-layer-group-"+(r-1)).selectAll("g.node-group").selectAll("rect.bounding").classed("hidden",!1);"output"===t.layerName&&d3.select(n[e]).select(".output-text").style("opacity",.8).style("text-decoration","underline")},$t=(t,e,n)=>{if(!L&&(F||t.layerName!==C.layerName||t.index!==C.index)){let r=j[t.layerName],a=t.index;if(l.select("g.cnn-group").select("g.edge-group").selectAll(`path.edge-${r}-${a}`).transition().ease(d3.easeCubicOut).duration(200).style("stroke",h).style("stroke-width",g).style("opacity",p),d3.select(n[e]).select("rect.bounding").classed("hidden",!0),1===t.inputLinks.length){let e=t.inputLinks[0],n=j[e.source.layerName],r=e.source.index;l.select(`g#layer-${n}-node-${r}`).select("rect.bounding").classed("hidden",!0)}else l.select("g#cnn-layer-group-"+(r-1)).selectAll("g.node-group").selectAll("rect.bounding").classed("hidden",t=>t.layerName!==C.layerName||t.index!==C.index);"output"===t.layerName&&d3.select(n[e]).select(".output-text").style("fill","black").style("opacity",.5).style("text-decoration","none")}};T(async()=>{s=d3.select(r).select("#cnn-svg"),l=s.append("g").attr("class","main-svg").attr("transform",`translate(${m.left}, 0)`),it.set(l),P=Number(s.style("width").replace("px",""))-m.left-m.right,S=Number(s.style("height").replace("px",""))-m.top-m.bottom;let t=l.append("g").attr("class","cnn-group");l.append("g").attr("class","underneath"),s.style("height").replace("px","");var e;l.append("defs").append("marker").attr("id","marker").attr("viewBox","0 -5 10 10").attr("refX",6).attr("refY",0).attr("markerWidth",6).attr("markerHeight",6).attr("orient","auto").append("path").style("stroke-width",1.2).style("fill","gray").style("stroke","gray").attr("d","M0,-5L10,0L0,5"),l.append("defs").append("marker").attr("id","marker-alt").attr("viewBox","0 -5 10 10").attr("refX",6).attr("refY",0).attr("markerWidth",6).attr("markerHeight",6).attr("orient","auto").append("path").style("fill","none").style("stroke","gray").style("stroke-width",2).attr("d","M-5,-10L10,0L-5,10"),console.time("Construct cnn"),A=await(e="/assets/data/fer_tinyVGG/model.json",tf.loadLayersModel(e)),z=await je("/assets/img/"+G,A),console.timeEnd("Construct cnn"),ot.set(z);let n=z[z.length-2];z.splice(z.length-2,1),z.flatten=n,wn(),bn(P,S,t,Et,$t,kt)});const It=async t=>{n(12,X=t.detail.url),z=await je(X,A);let e=z[z.length-2];z.splice(z.length-2,1),z.flatten=e,ot.set(z),((t,e)=>{let n=t.width,r=e[0].output.length,a=document.createElement("canvas"),o=a.getContext("2d");a.width=r,a.height=r;let i=o.getImageData(0,0,r,r),s=i.data;for(let t=0;t<s.length;t+=4){let n=Math.floor(t/4),a=Math.floor(n/r),o=n%r,i=e[0].output[a][o];s[t]=255*i,s[t]=255*i}let l=document.createElement("canvas");l.width=3*n,l.height=3*n;let c=l.getContext("2d");o.putImageData(i,0,0),c.drawImage(a,0,0,r,r,0,0,3*n,3*n);let u=l.toDataURL();t.src=u,a.remove(),l.remove()})(d3.select(r).select(".custom-image").node(),z[0]),wn(),xn()};return t.$$.update=()=>{1&t.$$.dirty[0]&&(()=>{if(void 0!==l){if(a.add(o)||console.error("Encounter unknown scale level!"),o!=i){({local:{module:[1,2,8,9,10],global:[1,2,3,4,5,8,9,10]},module:{local:[1,2,8,9,10],global:[1,2,3,4,5,8,9,10]},global:{local:[1,2,3,4,5,8,9,10],module:[1,2,3,4,5]}})[i][o].forEach(t=>{let e=x[o][t];l.select("#cnn-layer-group-"+t).selectAll(".node-image").each((t,n,r)=>mn(t,n,r,e))}),l.selectAll(`.${i}-legend`).classed("hidden",!0),l.selectAll(`.${o}-legend`).classed("hidden",!w)}i=o,ut.set(o)}})()},[o,r,w,E,I,C,O,G,q,V,K,U,X,function(){_t.update(t=>0)},c,W,()=>{n(2,w=!w),ft.set(w),L||(l.selectAll(`.${o}-legend`).classed("hidden",!w),l.selectAll(".input-legend").classed("hidden",!w),l.selectAll(".output-legend").classed("hidden",!w)),l.selectAll(".layer-detailed-label").classed("hidden",!w),l.selectAll(".layer-label").classed("hidden",w)},async t=>{let e=d3.select(t.target).attr("data-imageName");if(e!==G){n(7,G=e),z=await je("/assets/img/"+G,A);let t=z[z.length-2];z.splice(z.length-2,1),z.flatten=t,ot.set(z),wn(),xn()}},()=>{if(null===X)$.show=!0,$.preImage=G,xt.set($);else if("custom"!==G){It({detail:{url:X}})}else $.show=!0,$.preImage=G,xt.set($);"custom"!==G&&n(7,G="custom")},t=>{n(7,G=t.detail.preImage)},It,function(t){t.detail.text&&(B=void 0,l.select("rect#underneath-gateway-"+V).style("opacity",0),n(9,V=-1))},function(t){t.detail.text&&(tt(),n(10,K=!0))},function(t){t.detail.text&&(tt(),n(10,K=!0))},function(t){n(3,E.show=!1,E),yt.set(E)},function(){o=function(t){const e=t.querySelector(":checked")||t.options[0];return e&&e.__value}(this),n(0,o)},function(t){D[t?"unshift":"push"](()=>{r=t,n(1,r)})}]}class ra extends nt{constructor(t){super(),et(this,t,na,ta,o,{},null,[-1,-1,-1])}}
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
      *
-     * @param {number[][]} allOutputs Array of outputs for each layer.
-     *  allOutputs[i][j] is the output for layer i node j.
-     * @param {Model} model Loaded tf.js model.
-     * @param {Tensor} inputImageTensor Loaded input image tensor.
-     */
-    const constructCNNFromOutputs = (allOutputs, model, inputImageTensor) => {
-      let cnn = [];
-      // Add the first layer (input layer)
-      let inputLayer = [];
-      let inputShape = model.layers[0].batchInputShape.slice(1);
-      let inputImageArray = inputImageTensor.transpose([2, 0, 1]).arraySync();
-
-      // First layer's three nodes' outputs are the channels of inputImageArray
-      for (let i = 0; i < inputShape[2]; i++) {
-        let node = new Node('input', i, nodeType.INPUT, 0, inputImageArray[i]);
-        inputLayer.push(node);
-      }
-
-      cnn.push(inputLayer);
-      let curLayerIndex = 1;
-      for (let l = 0; l < model.layers.length; l++) {
-        let layer = model.layers[l];
-        // Get the current output
-        let outputs = allOutputs[l].squeeze();
-        outputs = outputs.arraySync();
-
-        let curLayerNodes = [];
-        let curLayerType;
-
-        console.log("name >> " + layer.name);
-        // Identify layer type based on the layer name
-        if (layer.name.includes('conv')) {
-          curLayerType = nodeType.CONV;
-        } else if (layer.name.includes('pool')) {
-          curLayerType = nodeType.POOL;
-        } else if (layer.name.includes('relu')) {
-          curLayerType = nodeType.RELU;
-        } else if (layer.name.includes('output')) {
-          curLayerType = nodeType.FC;
-        } else if (layer.name.includes('flatten')) {
-          curLayerType = nodeType.FLATTEN;
-        } else if (layer.name.includes('batch')) ; else if (layer.name.includes('dropout')) ; else if (layer.name.includes('dense')) ; else if (layer.name.includes('activation')) ; else {
-          console.log('Find unknown type');
-        }
-
-        //ignore if layer is undefined
-        if(curLayerType){
-
-          // Construct this layer based on its layer type
-          switch (curLayerType) {
-            case nodeType.CONV: {
-              let biases = layer.bias.val.arraySync();
-              // The new order is [output_depth, input_depth, height, width]
-              let weights = layer.kernel.val.transpose([3, 2, 0, 1]).arraySync();
-
-              // Add nodes into this layer
-              for (let i = 0; i < outputs.length; i++) {
-                let node = new Node(layer.name, i, curLayerType, biases[i],
-                    outputs[i]);
-
-                // Connect this node to all previous nodes (create links)
-                // CONV layers have weights in links. Links are one-to-multiple.
-                for (let j = 0; j < cnn[curLayerIndex - 1].length; j++) {
-                  let preNode = cnn[curLayerIndex - 1][j];
-                  let curLink = new Link(preNode, node, weights[i][j]);
-                  preNode.outputLinks.push(curLink);
-                  node.inputLinks.push(curLink);
-                }
-                curLayerNodes.push(node);
-              }
-              break;
-            }
-            case nodeType.FC: {
-              let biases = layer.bias.val.arraySync();
-              // The new order is [output_depth, input_depth]
-              let weights = layer.kernel.val.transpose([1, 0]).arraySync();
-
-              // Add nodes into this layer
-              for (let i = 0; i < outputs.length; i++) {
-                let node = new Node(layer.name, i, curLayerType, biases[i],
-                    outputs[i]);
-
-                // Connect this node to all previous nodes (create links)
-                // FC layers have weights in links. Links are one-to-multiple.
-
-                // Since we are visualizing the logit values, we need to track
-                // the raw value before softmax
-                let curLogit = 0;
-                for (let j = 0; j < cnn[curLayerIndex - 1].length; j++) {
-                  let preNode = cnn[curLayerIndex - 1][j];
-                  let curLink = new Link(preNode, node, weights[i][j]);
-                  preNode.outputLinks.push(curLink);
-                  node.inputLinks.push(curLink);
-                  curLogit += preNode.output * weights[i][j];
-                }
-                curLogit += biases[i];
-                node.logit = curLogit;
-                curLayerNodes.push(node);
-              }
-
-              // Sort flatten layer based on the node TF index
-              cnn[curLayerIndex - 1].sort((a, b) => a.realIndex - b.realIndex);
-              break;
-            }
-            case nodeType.RELU:
-            case nodeType.POOL: {
-              // RELU and POOL have no bias nor weight
-              let bias = 0;
-              let weight = null;
-
-              // Add nodes into this layer
-              for (let i = 0; i < outputs.length; i++) {
-                let node = new Node(layer.name, i, curLayerType, bias, outputs[i]);
-
-                // RELU and POOL layers have no weights. Links are one-to-one
-                let preNode = cnn[curLayerIndex - 1][i];
-                let link = new Link(preNode, node, weight);
-                preNode.outputLinks.push(link);
-                node.inputLinks.push(link);
-                curLayerNodes.push(node);
-              }
-              break;
-            }
-            case nodeType.FLATTEN: {
-              // Flatten layer has no bias nor weights.
-              let bias = 0;
-
-              for (let i = 0; i < outputs.length; i++) {
-                // Flatten layer has no weights. Links are multiple-to-one.
-                // Use dummy weights to store the corresponding entry in the previsou
-                // node as (row, column)
-                // The flatten() in tf2.keras has order: channel -> row -> column
-                let preNodeWidth = cnn[curLayerIndex - 1][0].output.length,
-                    preNodeNum = cnn[curLayerIndex - 1].length,
-                    preNodeIndex = i % preNodeNum,
-                    preNodeRow = Math.floor(Math.floor(i / preNodeNum) / preNodeWidth),
-                    preNodeCol = Math.floor(i / preNodeNum) % preNodeWidth,
-                    // Use channel, row, colume to compute the real index with order
-                    // row -> column -> channel
-                    curNodeRealIndex = preNodeIndex * (preNodeWidth * preNodeWidth) +
-                        preNodeRow * preNodeWidth + preNodeCol;
-
-                let node = new Node(layer.name, i, curLayerType,
-                    bias, outputs[i]);
-
-                // TF uses the (i) index for computation, but the real order should
-                // be (curNodeRealIndex). We will sort the nodes using the real order
-                // after we compute the logits in the output layer.
-                node.realIndex = curNodeRealIndex;
-
-                let link = new Link(cnn[curLayerIndex - 1][preNodeIndex],
-                    node, [preNodeRow, preNodeCol]);
-
-                cnn[curLayerIndex - 1][preNodeIndex].outputLinks.push(link);
-                node.inputLinks.push(link);
-
-                curLayerNodes.push(node);
-              }
-
-              // Sort flatten layer based on the node TF index
-              curLayerNodes.sort((a, b) => a.index - b.index);
-              break;
-            }
-            default:
-              console.error('Encounter unknown layer type');
-              break;
-          }
-
-          // Add current layer to the NN
-          cnn.push(curLayerNodes);
-          curLayerIndex++;
-        }
-      }
-      return cnn;
-    };
-
-    /**
-     * Construct a CNN with given model and input.
+     * http://www.apache.org/licenses/LICENSE-2.0
      *
-     * @param {string} inputImageFile filename of input image.
-     * @param {Model} model Loaded tf.js model.
-     */
-    const constructCNN = async (inputImageFile, model) => {
-
-      // Load the image file
-      let inputImageTensor = await getInputImageArray(inputImageFile, true);
-      console.log(inputImageTensor);
-      // Need to feed the model with a batch
-      let inputImageTensorBatch = tf.stack([inputImageTensor]);
-
-      // To get intermediate layer outputs, we will iterate through all layers in
-      // the model, and sequencially apply transformations.
-      let preTensor = inputImageTensorBatch;
-      let outputs = [];
-      // Iterate through all layers, and build one model with that layer as output
-      for (let l = 0; l < model.layers.length; l++) {
-        let curTensor = model.layers[l].apply(preTensor);
-        // Record the output tensor
-        // Because there is only one element in the batch, we use squeeze()
-        // We also want to use CHW order here
-
-        let output = curTensor.squeeze();
-        if (output.shape.length === 3) {
-          output = output.transpose([2, 0, 1]);
-        }
-        outputs.push(output);
-
-        // Update preTensor for next nesting iteration
-        preTensor = curTensor;
-      }
-
-      let cnn = constructCNNFromOutputs(outputs, model, inputImageTensor);
-      return cnn;
-    };
-
-    // Helper functions
-
-    /**
-     * Crop the largest central square of size 64x64x3 of a 3d array.
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */function aa(t){throw new Error(`'${t}' not yet implemented or not found in the registry. This kernel may not be supported by the tfjs backend you have chosen`)}
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
      *
-     * @param {[int8]} arr array that requires cropping and padding (if a 64x64 crop
-     * is not present)
-     * @returns 64x64x3 array
-     */
-    const cropCentralSquare = (arr) => {
-      let width = arr.length;
-      let height = arr[0].length;
-      let croppedArray;
-
-      // Crop largest square from image if the image is smaller than 64x64 and pad the
-      // cropped image.
-      if (width < networkInputSize || height < networkInputSize) {
-        // TODO(robert): Finish the padding logic.  Pushing now for Omar to work on when he is ready.
-        let cropDimensions = Math.min(width, height);
-        let startXIdx = Math.floor(width / 2) - (cropDimensions / 2);
-        let startYIdx = Math.floor(height / 2) - (cropDimensions / 2);
-        let unpaddedSubarray = arr.slice(startXIdx, startXIdx + cropDimensions).map(i => i.slice(startYIdx, startYIdx + cropDimensions));
-      } else {
-        let startXIdx = Math.floor(width / 2) - Math.floor(networkInputSize / 2);
-        let startYIdx = Math.floor(height / 2) - Math.floor(networkInputSize / 2);
-        croppedArray = arr.slice(startXIdx, startXIdx + networkInputSize).map(i => i.slice(startYIdx, startYIdx + networkInputSize));
-      }
-      return croppedArray;
-    };
-
-    /**
-     * Convert canvas image data into a 3D tensor with dimension [height, width, 3].
-     * Recall that tensorflow uses NHWC order (batch, height, width, channel).
-     * Each pixel is in 0-255 scale.
+     * http://www.apache.org/licenses/LICENSE-2.0
      *
-     * @param {[int8]} imageData Canvas image data
-     * @param {int} width Canvas image width
-     * @param {int} height Canvas image height
-     */
-    const imageDataTo3DTensor = (imageData, width, height, normalize=true) => {
-      // Create array placeholder for the 3d array [width, height, 3] for rgb
-      let imageArray = tf.fill([width, height, inputShape], 0).arraySync();
-
-      // Iterate through the data to fill out channel arrays above
-      for (let i = 0; i < imageData.length; i++) {
-        let pixelIndex = Math.floor(i / 4),
-            channelIndex = i % 4,
-            row = width === height ? Math.floor(pixelIndex / width)
-                : pixelIndex % width,
-            column = width === height ? pixelIndex % width
-                : Math.floor(pixelIndex / width);
-
-        if (channelIndex < inputShape) {
-          let curEntry  = imageData[i];
-          // Normalize the original pixel value from [0, 255] to [0, 1]
-          if (normalize) {
-            curEntry /= 255;
-          }
-          imageArray[row][column][channelIndex] = curEntry;
-        }
-      }
-
-      // If the image is not 64x64, crop and or pad the image appropriately.
-      if (width != networkInputSize && height != networkInputSize) {
-        imageArray = cropCentralSquare(imageArray);
-      }
-
-      let tensor = tf.tensor3d(imageArray);
-      return tensor;
-    };
-
-    /**
-     * Get the 3D pixel value array of the given image file.
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */function oa(t,e){if(!t)throw new Error("string"==typeof e?e:e())}function ia(t){oa(null!=t,()=>"The input to the tensor constructor must be a non-null value.")}function sa(t,e=[],n=!1){if(null==e&&(e=[]),Array.isArray(t)||pa(t)&&!n)for(let r=0;r<t.length;++r)sa(t[r],e,n);else e.push(t);return e}function la(t){if(0===t.length)return 1;let e=t[0];for(let n=1;n<t.length;n++)e*=t[n];return e}function ca(t,e){if(t===e)return!0;if(null==t||null==e)return!1;if(t.length!==e.length)return!1;for(let n=0;n<t.length;n++)if(t[n]!==e[n])return!1;return!0}function ua(t){return t%1==0}function da(t,e){return e<=t.length?t:t+" ".repeat(e-t.length)}function pa(t){return t instanceof Float32Array||t instanceof Int32Array||t instanceof Uint8Array||t instanceof Uint8ClampedArray}function ha(t){if("float32"===t||"int32"===t)return 4;if("complex64"===t)return 8;if("bool"===t)return 1;throw new Error("Unknown dtype "+t)}function fa(t){return"string"==typeof t||t instanceof String}function ga(t){return Array.isArray(t)?ga(t[0]):t instanceof Float32Array?"float32":t instanceof Int32Array||t instanceof Uint8Array||t instanceof Uint8ClampedArray?"int32":"number"==typeof t?"float32":fa(t)?"string":function(t){return"boolean"==typeof t}(t)?"bool":"float32"}function ma(t){return!!(t&&t.constructor&&t.call&&t.apply)}function ya(t){const e=t.length;if(e<2)return[];const n=new Array(e-1);n[e-2]=t[e-1];for(let r=e-3;r>=0;--r)n[r]=n[r+1]*t[r+1];return n}function va(t,e,n=!1){if(0===t.length)return e[0];const r=t.reduce((t,e)=>t*e)*(n?2:1);if(0===r)return[];if(r!==e.length)throw new Error(`[${t}] does not match the input size ${e.length}${n?" for a complex tensor":""}.`);return function t(e,n,r,a=!1){const o=new Array;if(1===n.length){const t=n[0]*(a?2:1);for(let n=0;n<t;n++)o[n]=r[e+n]}else{const i=n[0],s=n.slice(1),l=s.reduce((t,e)=>t*e)*(a?2:1);for(let n=0;n<i;n++)o[n]=t(e+n*l,s,r,a)}return o}(0,t,e,n)}function ba(t,e){if(null==e||"float32"===e||"complex64"===e)return new Float32Array(t);if("int32"===e)return new Int32Array(t);if("bool"===e)return new Uint8Array(t);throw new Error("Unknown data type "+e)}function xa(t){t.forEach(e=>{oa(Number.isInteger(e)&&e>=0,()=>`Tensor must have a shape comprised of positive integers but got shape [${t}].`)})}function wa(t){return t&&t.then&&"function"==typeof t.then}
+/**
+     * @license
+     * Copyright 2017 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
      *
-     * @param {string} imgFile File path to the image file
-     * @returns A promise with the corresponding 3D array
-     */
-    const getInputImageArray = (imgFile, normalize=true) => {
-      let canvas = document.createElement('canvas');
-      canvas.style.cssText = 'display:none;';
-      document.getElementsByTagName('body')[0].appendChild(canvas);
-      let context = canvas.getContext('2d');
-
-      return new Promise((resolve, reject) => {
-        let inputImage = new Image();
-        inputImage.crossOrigin = "Anonymous";
-        inputImage.src = imgFile;
-        let canvasImage;
-        inputImage.onload = () => {
-          canvas.width = inputImage.width;
-          canvas.height = inputImage.height;
-          // Resize the input image of the network if it is too large to simply crop
-          // the center 64x64 portion in order to still provide a representative
-          // input image into the network.
-          if (inputImage.width > networkInputSize || inputImage.height > networkInputSize) {
-            // Step 1 - Resize using smaller dimension to scale the image down. 
-            let resizeCanvas = document.createElement('canvas'),
-                resizeContext = resizeCanvas.getContext('2d');
-            let smallerDimension = Math.min(inputImage.width, inputImage.height);
-            const resizeFactor = (networkInputSize + 1) / smallerDimension;
-            resizeCanvas.width = inputImage.width * resizeFactor;
-            resizeCanvas.height = inputImage.height * resizeFactor;
-            resizeContext.drawImage(inputImage, 0, 0, resizeCanvas.width,
-                resizeCanvas.height);
-
-            // Step 2 - Flip non-square images horizontally and rotate them 90deg since
-            // non-square images are not stored upright.
-            if (inputImage.width != inputImage.height) {
-              context.translate(resizeCanvas.width, 0);
-              context.scale(-1, 1);
-              context.translate(resizeCanvas.width / 2, resizeCanvas.height / 2);
-              context.rotate(90 * Math.PI / 180);
-            }
-
-            // Step 3 - Draw resized image on original canvas.
-            if (inputImage.width != inputImage.height) {
-              context.drawImage(resizeCanvas, -resizeCanvas.width / 2, -resizeCanvas.height / 2);
-            } else {
-              context.drawImage(resizeCanvas, 0, 0);
-            }
-            canvasImage = context.getImageData(0, 0, resizeCanvas.width,
-                resizeCanvas.height);
-
-          } else {
-            context.drawImage(inputImage, 0, 0);
-            canvasImage = context.getImageData(0, 0, inputImage.width,
-                inputImage.height);
-          }
-          // Get image data and convert it to a 3D array
-          let imageData = canvasImage.data;
-          let imageWidth = canvasImage.width;
-          let imageHeight = canvasImage.height;
-
-          // Remove this newly created canvas element
-          canvas.parentNode.removeChild(canvas);
-
-          resolve(imageDataTo3DTensor(imageData, imageWidth, imageHeight, normalize));
-        };
-        inputImage.onerror = reject;
-      })
-    };
-
-    /**
-     * Wrapper to load a model.
+     * http://www.apache.org/licenses/LICENSE-2.0
      *
-     * @param {string} modelFile Filename of converted (through tensorflowjs.py)
-     *  model json file.
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */class _a{constructor(t){this.global=t,this.flags={},this.flagRegistry={},this.urlFlags={},this.getQueryParams=ka,this.populateURLFlags()}setPlatform(t,e){null!=this.platform&&(Ea().getBool("IS_TEST")||Ea().getBool("PROD")||console.warn(`Platform ${this.platformName} has already been set. Overwriting the platform with ${t}.`)),this.platformName=t,this.platform=e}registerFlag(t,e,n){if(this.flagRegistry[t]={evaluationFn:e,setHook:n},null!=this.urlFlags[t]){const e=this.urlFlags[t];Ea().getBool("IS_TEST")||Ea().getBool("PROD")||console.warn(`Setting feature override from URL ${t}: ${e}.`),this.set(t,e)}}async getAsync(t){return t in this.flags||(this.flags[t]=await this.evaluateFlag(t)),this.flags[t]}get(t){if(t in this.flags)return this.flags[t];const e=this.evaluateFlag(t);if(wa(e))throw new Error(`Flag ${t} cannot be synchronously evaluated. Please use getAsync() instead.`);return this.flags[t]=e,this.flags[t]}getNumber(t){return this.get(t)}getBool(t){return this.get(t)}getFlags(){return this.flags}get features(){return this.flags}set(t,e){if(null==this.flagRegistry[t])throw new Error(`Cannot set flag ${t} as it has not been registered.`);this.flags[t]=e,null!=this.flagRegistry[t].setHook&&this.flagRegistry[t].setHook(e)}evaluateFlag(t){if(null==this.flagRegistry[t])throw new Error(`Cannot evaluate flag '${t}': no evaluation function found.`);return this.flagRegistry[t].evaluationFn()}setFlags(t){this.flags=Object.assign({},t)}reset(){this.flags={},this.urlFlags={},this.populateURLFlags()}populateURLFlags(){if(void 0===this.global||void 0===this.global.location||void 0===this.global.location.search)return;const t=this.getQueryParams(this.global.location.search);if("tfjsflags"in t){t.tfjsflags.split(",").forEach(t=>{const[e,n]=t.split(":");this.urlFlags[e]=function(t,e){if("true"===(e=e.toLowerCase())||"false"===e)return"true"===e;if(""+ +e===e)return+e;throw new Error(`Could not parse value flag value ${e} for flag ${t}.`)}(e,n)})}}}function ka(t){const e={};return t.replace(/[?&]([^=?&]+)(?:=([^&]*))?/g,(t,...n)=>(function(t,e,n){t[decodeURIComponent(e)]=decodeURIComponent(n||"")}(e,n[0],n[1]),n.join("="))),e}function Ea(){return Ia}let $a,Ia=null;function Ma(){if(null==$a){let t;if("undefined"!=typeof window)t=window;else if("undefined"!=typeof global)t=global;else if("undefined"!=typeof process)t=process;else{if("undefined"==typeof self)throw new Error("Could not find a global object");t=self}$a=t}return $a}function Pa(t,e){const n=function(){const t=Ma();return null==t._tfGlobals&&(t._tfGlobals=new Map),t._tfGlobals}();if(n.has(t))return n.get(t);{const r=e();return n.set(t,r),n.get(t)}}
+/**
+     * @license
+     * Copyright 2018 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
      */
-    const loadTrainedModel = (modelFile) => {
-      return tf.loadLayersModel(modelFile);
-    };
-
-    /* global d3 */
-
-    const layerColorScales$1 = {
-      input: [d3.interpolateGreys, d3.interpolateGreys, d3.interpolateGreys],
-      conv: d3.interpolateRdBu,
-      relu: d3.interpolateRdBu,
-      pool: d3.interpolateRdBu,
-      fc: d3.interpolateGreys,
-      weight: d3.interpolateBrBG,
-      logit: d3.interpolateOranges
-    };
-
-    let nodeLength = 40;
-
-    const overviewConfig = {
-      nodeLength : nodeLength,
-      plusSymbolRadius : nodeLength / 5,
-      numLayers : 12,
-      edgeOpacity : 0.8,
-      edgeInitColor : 'rgb(230, 230, 230)',
-      edgeHoverColor : 'rgb(130, 130, 130)',
-      edgeHoverOuting : false,
-      edgeStrokeWidth : 0.7,
-      intermediateColor : 'gray',
-      layerColorScales: layerColorScales$1,
-      svgPaddings: {top: 25, bottom: 25, left: 50, right: 50},
-      kernelRectLength: 8/3,
-      gapRatio: 4,
-      modeImg: 1, // 1 for gray or 3 rgb
-      overlayRectOffset: 12,
-      classLists: ['Colère', 'Dégoût', 'Peur', 'Joyeux', 'Triste', 'Surprise', 'Neutre']
-    };
-
-    // Configs
-    const nodeLength$1 = overviewConfig.nodeLength;
-
-    /**
-     * Compute the [minimum, maximum] of a 1D or 2D array.
-     * @param {[number]} array 
+function Sa(...t){Ea().getBool("IS_TEST")||Ea().getBool("PROD")||console.warn(...t)}
+/**
+     * @license
+     * Copyright 2019 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const Aa=Pa("kernelRegistry",()=>new Map),Ta=Pa("gradRegistry",()=>new Map);function Ca(t,e){const n=function(t,e){return`${e}_${t}`}
+/**
+     * @license
+     * Copyright 2017 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */(t,e);return Aa.get(n)}function La(t){return Ta.get(t)}function Fa(t){const e=Aa.entries(),n=[];for(;;){const{done:r,value:a}=e.next();if(r)break;const[o,i]=a,[s]=o.split("_");s===t&&n.push(i)}return n}function Da(t,e){if("string"===e)throw new Error("Cannot convert a string[] to a TypedArray");if(Array.isArray(t)&&(t=sa(t)),Ea().getBool("DEBUG")&&function(t,e){for(let n=0;n<t.length;n++){const r=t[n];if(isNaN(r)||!isFinite(r))throw Error(`A tensor of type ${e} being uploaded contains ${r}.`)}}(t,e),function(t,e){return t instanceof Float32Array&&"float32"===e||t instanceof Int32Array&&"int32"===e||t instanceof Uint8Array&&"bool"===e}(t,e))return t;if(null==e||"float32"===e||"complex64"===e)return new Float32Array(t);if("int32"===e)return new Int32Array(t);if("bool"===e){const e=new Uint8Array(t.length);for(let n=0;n<e.length;++n)0!==Math.round(t[n])&&(e[n]=1);return e}throw new Error("Unknown data type "+e)}function Na(){return Ea().platform.now()}function Ra(t,e="utf-8"){return e=e||"utf-8",Ea().platform.decode(t,e)}
+/**
+     * @license
+     * Copyright 2018 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */class Ba{constructor(t,e){this.backendTimer=t,this.logger=e,null==e&&(this.logger=new za)}profileKernel(t,e,n){let r;const a=()=>{r=n()};let o;const i=Na();if(this.backendTimer.timerAvailable())o=this.backendTimer.time(a);else{a();for(const t of r)t.dataSync();o=Promise.resolve({kernelMs:Na()-i})}if(Ea().getBool("CHECK_COMPUTATION_FOR_ERRORS"))for(let e=0;e<r.length;e++){const n=r[e];n.data().then(e=>{Oa(e,n.dtype,t)})}return{kernelName:t,outputs:r,inputs:e,timeMs:o.then(t=>t.kernelMs),extraInfo:o.then(t=>null!=t.getExtraProfileInfo?t.getExtraProfileInfo():"")}}logKernelProfile(t){const{kernelName:e,outputs:n,timeMs:r,inputs:a,extraInfo:o}=t;n.forEach(t=>{Promise.all([t.data(),r,o]).then(n=>{this.logger.logKernelProfile(e,t,n[0],n[1],a,n[2])})})}}function Oa(t,e,n){if("float32"!==e)return!1;for(let e=0;e<t.length;e++){const r=t[e];if(isNaN(r)||!isFinite(r))return console.warn(`Found ${r} in the result of '${n}'`),!0}return!1}class za{logKernelProfile(t,e,n,r,a,o){const i="number"==typeof r?da(r+"ms",9):r.error,s=da(t,25),l=e.rank,c=e.size,u=da(e.shape.toString(),14);let d="";for(const t in a){const n=a[t];if(null!=n){const r=n.shape||e.shape,a=r.length;d+=`${t}: ${a}D ${a>0?r:""} `}}console.log(`%c${s}\t%c${i}\t%c${l}D ${u}\t%c${c}\t%c${d}\t%c${o}`,"font-weight:bold","color:red","color:blue","color: orange","color: green","color: steelblue")}}
+/**
+     * @license
+     * Copyright 2017 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */function ja(t,e,n,r){const a=ya(e),o=function(t,e,n,r){const a=la(e),o=r[r.length-1],i=new Array(o).fill(0),s=e.length,l="complex64"===n?Wa(t):t;if(s>1)for(let t=0;t<a/o;t++){const e=t*o;for(let t=0;t<o;t++)i[t]=Math.max(i[t],Ha(l[e+t],0,n).length)}return i}(t,e,n,a),i=e.length,s=function t(e,n,r,a,o,i=!0){const s="complex64"===r?2:1,l=n[0],c=n.length;if(0===c){if("complex64"===r){return[Ha(Wa(e)[0],0,r)]}return"bool"===r?[qa(e[0])]:[e[0].toString()]}if(1===c){if(l>20){const t=3*s;let n=Array.from(e.slice(0,t)),a=Array.from(e.slice((l-3)*s,l*s));return"complex64"===r&&(n=Wa(n),a=Wa(a)),["["+n.map((t,e)=>Ha(t,o[e],r)).join(", ")+", ..., "+a.map((t,e)=>Ha(t,o[l-3+e],r)).join(", ")+"]"]}return["["+("complex64"===r?Wa(e):Array.from(e)).map((t,e)=>Ha(t,o[e],r)).join(", ")+"]"]}const u=n.slice(1),d=a.slice(1),p=a[0]*s,h=[];if(l>20){for(let n=0;n<3;n++){const a=n*p,i=a+p;h.push(...t(e.slice(a,i),u,r,d,o,!1))}h.push("...");for(let n=l-3;n<l;n++){const a=n*p,i=a+p;h.push(...t(e.slice(a,i),u,r,d,o,n===l-1))}}else for(let n=0;n<l;n++){const a=n*p,i=a+p;h.push(...t(e.slice(a,i),u,r,d,o,n===l-1))}const f=2===c?",":"";h[0]="["+h[0]+f;for(let t=1;t<h.length-1;t++)h[t]=" "+h[t]+f;let g=",\n";for(let t=2;t<c;t++)g+="\n";return h[h.length-1]=" "+h[h.length-1]+"]"+(i?"":g),h}(t,e,n,a,o),l=["Tensor"];return r&&(l.push("  dtype: "+n),l.push("  rank: "+i),l.push(`  shape: [${e}]`),l.push("  values:")),l.push(s.map(t=>"    "+t).join("\n")),l.join("\n")}function Ha(t,e,n){let r;return r=Array.isArray(t)?parseFloat(t[0].toFixed(7))+" + "+parseFloat(t[1].toFixed(7))+"j":fa(t)?`'${t}'`:"bool"===n?qa(t):parseFloat(t.toFixed(7)).toString(),da(r,e)}function qa(t){return 0===t?"false":"true"}function Wa(t){const e=[];for(let n=0;n<t.length;n+=2)e.push([t[n],t[n+1]]);return e}
+/**
+     * @license
+     * Copyright 2017 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */class Ga{constructor(t,e,n){if(this.dtype=e,this.shape=t.slice(),this.size=la(t),null!=n){const t=n.length;oa(t===this.size,()=>`Length of values '${t}' does not match the size inferred by the shape '${this.size}'.`)}if("complex64"===e)throw new Error("complex64 dtype TensorBuffers are not supported. Please create a TensorBuffer for the real and imaginary parts separately and call tf.complex(real, imag).");this.values=n||function(t,e){let n=null;if(null==t||"float32"===t)n=new Float32Array(e);else if("int32"===t)n=new Int32Array(e);else if("bool"===t)n=new Uint8Array(e);else{if("string"!==t)throw new Error("Unknown data type "+t);n=new Array(e)}return n}(e,this.size),this.strides=ya(t)}set(t,...e){0===e.length&&(e=[0]),oa(e.length===this.rank,()=>`The number of provided coordinates (${e.length}) must match the rank (${this.rank})`);const n=this.locToIndex(e);this.values[n]=t}get(...t){0===t.length&&(t=[0]);let e=0;for(const n of t){if(n<0||n>=this.shape[e]){const e=`Requested out of range element at ${t}.   Buffer shape=`+this.shape;throw new Error(e)}e++}let n=t[t.length-1];for(let e=0;e<t.length-1;++e)n+=this.strides[e]*t[e];return this.values[n]}locToIndex(t){if(0===this.rank)return 0;if(1===this.rank)return t[0];let e=t[t.length-1];for(let n=0;n<t.length-1;++n)e+=this.strides[n]*t[n];return e}indexToLoc(t){if(0===this.rank)return[];if(1===this.rank)return[t];const e=new Array(this.shape.length);for(let n=0;n<e.length-1;++n)e[n]=Math.floor(t/this.strides[n]),t-=e[n]*this.strides[n];return e[e.length-1]=t,e}get rank(){return this.shape.length}toTensor(){return Va().makeTensor(this.values,this.shape,this.dtype)}}let Va=null,Ka=null;class Ua{constructor(t,e,n,r){this.kept=!1,this.isDisposedInternal=!1,this.shape=t.slice(),this.dtype=e||"float32",this.size=la(t),this.strides=ya(t),this.dataId=n,this.id=r,this.rankType=this.rank<5?this.rank.toString():"higher"}get rank(){return this.shape.length}async buffer(){const t=await this.data();return Ka.buffer(this.shape,this.dtype,t)}bufferSync(){return Ka.buffer(this.shape,this.dtype,this.dataSync())}async array(){const t=await this.data();return va(this.shape,t,"complex64"===this.dtype)}arraySync(){return va(this.shape,this.dataSync(),"complex64"===this.dtype)}async data(){this.throwIfDisposed();const t=Va().read(this.dataId);if("string"===this.dtype){const e=await t;try{return e.map(t=>Ra(t))}catch(t){throw new Error("Failed to decode the string bytes into utf-8. To get the original bytes, call tensor.bytes().")}}return t}dataToGPU(t){return this.throwIfDisposed(),Va().readToGPU(this.dataId,t)}dataSync(){this.throwIfDisposed();const t=Va().readSync(this.dataId);if("string"===this.dtype)try{return t.map(t=>Ra(t))}catch(t){throw new Error("Failed to decode the string bytes into utf-8. To get the original bytes, call tensor.bytes().")}return t}async bytes(){this.throwIfDisposed();const t=await Va().read(this.dataId);return"string"===this.dtype?t:new Uint8Array(t.buffer)}dispose(){this.isDisposed||(Va().disposeTensor(this),this.isDisposedInternal=!0)}get isDisposed(){return this.isDisposedInternal}throwIfDisposed(){if(this.isDisposed)throw new Error("Tensor is disposed.")}print(t=!1){return Ka.print(this,t)}clone(){return this.throwIfDisposed(),Ka.clone(this)}toString(t=!1){return ja(this.dataSync(),this.shape,this.dtype,t)}cast(t){return this.throwIfDisposed(),Ka.cast(this,t)}variable(t=!0,e,n){return this.throwIfDisposed(),Va().makeVariable(this,t,e,n)}}Object.defineProperty(Ua,Symbol.hasInstance,{value:t=>!!t&&null!=t.data&&null!=t.dataSync&&null!=t.throwIfDisposed}),Pa("Tensor",()=>Ua);class Xa extends Ua{constructor(t,e,n,r){super(t.shape,t.dtype,t.dataId,r),this.trainable=e,this.name=n}assign(t){if(t.dtype!==this.dtype)throw new Error(`dtype of the new value (${t.dtype}) and previous value (${this.dtype}) must match`);if(!ca(t.shape,this.shape))throw new Error(`shape of the new value (${t.shape}) and previous value (${this.shape}) must match`);Va().disposeTensor(this),this.dataId=t.dataId,Va().incRef(this,null)}dispose(){Va().disposeVariable(this),this.isDisposedInternal=!0}}
+/**
+     * @license
+     * Copyright 2017 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
      */
-    const getExtent = (array) => {
-      let min = Infinity;
-      let max = -Infinity;
-
-      // Scalar
-      if (array.length === undefined) {
-        return [array, array];
-      }
-
-      // 1D array
-      if (array[0].length === undefined) {
-        for (let i = 0; i < array[0].length; i++) {
-          if (array[i] < min) {
-            min = array[i];
-          } else if (array[i] > max) {
-            max = array[i];
-          }
-        }
-        return [min, max];
-      }
-
-      // 2D array
-      for (let i = 0; i < array.length; i++) {
-        for (let j = 0; j < array[0].length; j++) {
-          if (array[i][j] < min) {
-            min = array[i][j];
-          } else if (array[i][j] > max) {
-            max = array[i][j];
-          }
-        }
-      }
-      return [min, max];
-    };
-
-    /**
-     * Convert the svg element center coord to document absolute value
-     * // Inspired by https://github.com/caged/d3-tip/blob/master/index.js#L286
-     * @param {elem} elem 
+var Ja,Ya,Qa,Za,to;Object.defineProperty(Xa,Symbol.hasInstance,{value:t=>t instanceof Ua&&null!=t.assign&&t.assign instanceof Function}),function(t){t.R0="R0",t.R1="R1",t.R2="R2",t.R3="R3",t.R4="R4",t.R5="R5",t.R6="R6"}(Ja||(Ja={})),function(t){t.float32="float32",t.int32="int32",t.bool="int32",t.complex64="complex64"}(Ya||(Ya={})),function(t){t.float32="float32",t.int32="int32",t.bool="bool",t.complex64="complex64"}(Qa||(Qa={})),function(t){t.float32="float32",t.int32="float32",t.bool="float32",t.complex64="complex64"}(Za||(Za={})),function(t){t.float32="complex64",t.int32="complex64",t.bool="complex64",t.complex64="complex64"}(to||(to={}));const eo={float32:Za,int32:Ya,bool:Qa,complex64:to};
+/**
+     * @license
+     * Copyright 2018 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
      */
-    const getMidCoords = (svg, elem) => {
-      if (svg !== undefined) {
-        let targetel = elem;
-        while (targetel.getScreenCTM == null && targetel.parentNode != null) {
-          targetel = targetel.parentNode;
-        }
-        // Get the absolute coordinate of the E point of element bbox
-        let point = svg.node().ownerSVGElement.createSVGPoint();
-        let matrix = targetel.getScreenCTM();
-        let tbbox = targetel.getBBox();
-        // let width = tbbox.width;
-        let height = tbbox.height;
-
-        point.x += 0;
-        point.y -= height / 2;
-        let bbox = point.matrixTransform(matrix);
-        return {
-          top: bbox.y,
-          left: bbox.x
-        };
-      }
-    };
-
-    /**
-     * Return the output knot (right boundary center)
-     * @param {object} point {x: x, y:y}
+function no(t,e){if(t.dtype===e.dtype)return[t,e];const n=function(t,e){if("string"===t||"string"===e){if("string"===t&&"string"===e)return"string";throw new Error(`Can not upcast ${t} with ${e}`)}return eo[t][e]}(t.dtype,e.dtype);return[t.cast(n),e.cast(n)]}function ro(t){const e=[];return function t(e,n,r){if(null==e)return;if(e instanceof Ua)return void n.push(e);if(a=e,!Array.isArray(a)&&"object"!=typeof a)return;var a;
+/**
+     * @license
+     * Copyright 2018 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const o=e;for(const e in o){const a=o[e];r.has(a)||(r.add(a),t(a,n,r))}}(t,e,new Set),e}function ao(t){return null!=t.kernelName}class oo{constructor(){this.registeredVariables={},this.nextTapeNodeId=0,this.numBytes=0,this.numTensors=0,this.numStringTensors=0,this.numDataBuffers=0,this.gradientDepth=0,this.kernelDepth=0,this.scopeStack=[],this.numDataMovesStack=[],this.nextScopeId=0,this.tensorInfo=new WeakMap,this.profiling=!1,this.activeProfile={newBytes:0,newTensors:0,peakBytes:0,kernels:[],result:null,get kernelNames(){return Array.from(new Set(this.kernels.map(t=>t.name)))}}}dispose(){for(const t in this.registeredVariables)this.registeredVariables[t].dispose()}}class io{constructor(t){this.ENV=t,this.registry={},this.registryFactory={},this.pendingBackendInitId=0,this.state=new oo}async ready(){if(null!=this.pendingBackendInit)return this.pendingBackendInit.then(()=>{});if(null!=this.backendInstance)return;const t=this.getSortedBackends();for(let e=0;e<t.length;e++){const n=t[e];if(await this.initializeBackend(n).success)return void await this.setBackend(n)}throw new Error("Could not initialize any backends, all backend initializations failed.")}get backend(){if(null!=this.pendingBackendInit)throw new Error(`Backend '${this.backendName}' has not yet been initialized. Make sure to await tf.ready() or await tf.setBackend() before calling other methods`);if(null==this.backendInstance){const{name:t,asyncInit:e}=this.initializeBackendsAndReturnBest();if(e)throw new Error(`The highest priority backend '${t}' has not yet been initialized. Make sure to await tf.ready() or await tf.setBackend() before calling other methods`);this.setBackend(t)}return this.backendInstance}backendNames(){return Object.keys(this.registryFactory)}findBackend(t){if(!(t in this.registry)){if(!(t in this.registryFactory))return null;{const{asyncInit:e}=this.initializeBackend(t);if(e)return null}}return this.registry[t]}findBackendFactory(t){return t in this.registryFactory?this.registryFactory[t].factory:null}registerBackend(t,e,n=1){return t in this.registryFactory?(Sa(t+" backend was already registered. Reusing existing backend factory."),!1):(this.registryFactory[t]={factory:e,priority:n},!0)}async setBackend(t){if(null==this.registryFactory[t])throw new Error(`Backend name '${t}' not found in registry`);if(this.backendName=t,null==this.registry[t]){this.backendInstance=null;const{success:e,asyncInit:n}=this.initializeBackend(t);if(!(n?await e:e))return!1}return this.backendInstance=this.registry[t],this.setupRegisteredKernels(),this.profiler=new Ba(this.backendInstance),!0}setupRegisteredKernels(){Fa(this.backendName).forEach(t=>{null!=t.setupFunc&&t.setupFunc(this.backendInstance)})}disposeRegisteredKernels(t){Fa(t).forEach(e=>{null!=e.disposeFunc&&e.disposeFunc(this.registry[t])})}initializeBackend(t){const e=this.registryFactory[t];if(null==e)throw new Error(`Cannot initialize backend ${t}, no registration found.`);try{const n=e.factory();if(!n||n instanceof class{refCount(t){return aa("refCount")}incRef(t){return aa("incRef")}timerAvailable(){return!0}time(t){return aa("time")}read(t){return aa("read")}readSync(t){return aa("readSync")}readToGPU(t,e){return aa("readToGPU")}numDataIds(){return aa("numDataIds")}disposeData(t,e){return aa("disposeData")}write(t,e,n){return aa("write")}move(t,e,n,r,a){return aa("move")}memory(){return aa("memory")}floatPrecision(){return aa("floatPrecision")}epsilon(){return 32===this.floatPrecision()?1e-7:1e-4}dispose(){return aa("dispose")}}||"function"!=typeof n.then)return this.registry[t]=n,{success:!0,asyncInit:!1};{const e=++this.pendingBackendInitId,r=n.then(n=>!(e<this.pendingBackendInitId)&&(this.registry[t]=n,this.pendingBackendInit=null,!0)).catch(n=>(e<this.pendingBackendInitId||(this.pendingBackendInit=null,Sa(`Initialization of backend ${t} failed`),Sa(n.stack||n.message)),!1));return this.pendingBackendInit=r,{success:r,asyncInit:!0}}}catch(e){return Sa(`Initialization of backend ${t} failed`),Sa(e.stack||e.message),{success:!1,asyncInit:!1}}}removeBackend(t){if(!(t in this.registryFactory))throw new Error(t+" backend not found in registry");this.backendName===t&&null!=this.pendingBackendInit&&this.pendingBackendInitId++,t in this.registry&&(this.disposeRegisteredKernels(t),this.registry[t].dispose(),delete this.registry[t]),delete this.registryFactory[t],this.backendName===t&&(this.pendingBackendInit=null,this.backendName=null,this.backendInstance=null)}getSortedBackends(){if(0===Object.keys(this.registryFactory).length)throw new Error("No backend found in registry.");return Object.keys(this.registryFactory).sort((t,e)=>this.registryFactory[e].priority-this.registryFactory[t].priority)}initializeBackendsAndReturnBest(){const t=this.getSortedBackends();for(let e=0;e<t.length;e++){const n=t[e],{success:r,asyncInit:a}=this.initializeBackend(n);if(a||r)return{name:n,asyncInit:a}}throw new Error("Could not initialize any backends, all backend initializations failed.")}moveData(t,e){const n=this.state.tensorInfo.get(e),r=n.backend,a=this.readSync(e),o=r.refCount(e);r.disposeData(e,!0),n.backend=t,t.move(e,a,n.shape,n.dtype,o),this.shouldCheckForMemLeaks()&&this.state.numDataMovesStack[this.state.numDataMovesStack.length-1]++}tidy(t,e){let n,r=null;if(null==e){if("function"!=typeof t)throw new Error("Please provide a function to tidy()");e=t}else{if("string"!=typeof t&&!(t instanceof String))throw new Error("When calling with two arguments, the first argument to tidy() must be a string");if("function"!=typeof e)throw new Error("When calling with two arguments, the 2nd argument to tidy() must be a function");r=t}return this.scopedRun(()=>this.startScope(r),()=>this.endScope(n),()=>(n=e(),n instanceof Promise&&console.error("Cannot return a Promise inside of tidy."),n))}scopedRun(t,e,n){t();try{const t=n();return e(),t}catch(t){throw e(),t}}nextTensorId(){return io.nextTensorId++}nextVariableId(){return io.nextVariableId++}clone(t){const e=lo.runKernel("Identity",{x:t}),n={x:t};return this.addTapeNode(this.state.activeScope.name,n,[e],t=>({x:()=>{const e={x:t},n={dtype:"float32"};return lo.runKernel("Cast",e,n)}}),[],{}),e}runKernel(t,e,n){null==this.backendName&&this.backend;if(!(null!=Ca(t,this.backendName)))throw new Error(`Kernel '${t}' not registered for backend '${this.backendName}'`);return this.runKernelFunc({kernelName:t,inputs:e,attrs:n})}shouldCheckForMemLeaks(){return this.ENV.getBool("IS_TEST")}checkKernelForMemLeak(t,e,n){const r=this.backend.numDataIds();let a=0;n.forEach(t=>{a+="complex64"===t.dtype?3:1});const o=this.state.numDataMovesStack[this.state.numDataMovesStack.length-1],i=r-e-a-o;if(i>0)throw new Error(`Backend '${this.backendName}' has an internal memory leak (${i} data ids) after running '${t}'`)}runKernelFunc(t){let e,n=[];const r=this.isTapeOn(),a=this.state.numBytes,o=this.state.numTensors;let i,s;this.shouldCheckForMemLeaks()&&this.state.numDataMovesStack.push(0),null==this.backendName&&this.backend;const l=ao(t)?t.kernelName:null!=this.state.activeScope?this.state.activeScope.name:"";if(ao(t)){const{kernelName:e,inputs:a,attrs:o}=t;null==this.backendName&&this.backend;const l=Ca(e,this.backendName);oa(null!=l,()=>`Cannot find registered kernel '${e}' for backend '${this.backendName}'`),i=()=>{const t=this.backend.numDataIds();s=l.kernelFunc({inputs:a,attrs:o,backend:this.backend});const i=Array.isArray(s)?s:[s];this.shouldCheckForMemLeaks()&&this.checkKernelForMemLeak(e,t,i);const c=i.map(t=>{if(null!=t.rank)return t;const{dataId:e,shape:n,dtype:r}=t;return this.makeTensorFromDataId(e,n,r)});if(r){const t=this.getTensorsForGradient(e,a,c);n=this.saveTensorsForBackwardMode(t)}return c}}else{const{forwardFunc:e}=t,a=t=>{r&&(n=t.map(t=>this.keep(this.clone(t))))};i=()=>{const t=this.backend.numDataIds();s=this.tidy(()=>e(this.backend,a));const n=Array.isArray(s)?s:[s];return this.shouldCheckForMemLeaks()&&this.checkKernelForMemLeak(l,t,n),n}}const{inputs:c,attrs:u}=t,d=ao(t)?null:t.backwardsFunc;let p;return this.scopedRun(()=>this.state.kernelDepth++,()=>this.state.kernelDepth--,()=>{this.ENV.getBool("DEBUG")||this.state.profiling?(p=this.profiler.profileKernel(l,c,()=>i()),this.ENV.getBool("DEBUG")&&this.profiler.logKernelProfile(p),e=p.outputs):e=i()}),r&&this.addTapeNode(l,c,e,d,n,u),this.state.profiling&&this.state.activeProfile.kernels.push({name:l,bytesAdded:this.state.numBytes-a,totalBytesSnapshot:this.state.numBytes,tensorsAdded:this.state.numTensors-o,totalTensorsSnapshot:this.state.numTensors,inputShapes:Object.keys(c).map(t=>null!=c[t]?c[t].shape:null),outputShapes:e.map(t=>t.shape),kernelTimeMs:p.timeMs,extraInfo:p.extraInfo}),Array.isArray(s)?e:e[0]}saveTensorsForBackwardMode(t){return t.map(t=>this.keep(this.clone(t)))}getTensorsForGradient(t,e,n){const r=La(t);if(null!=r){const t=r.inputsToSave||[],a=r.outputsToSave||[];let o;r.saveAllInputs?(oa(Array.isArray(e),()=>"saveAllInputs is true, expected inputs to be an array."),o=Object.keys(e).map(t=>e[t])):o=t.map(t=>e[t]);const i=n.filter((t,e)=>a[e]);return o.concat(i)}return[]}makeTensor(t,e,n,r){if(null==t)throw new Error("Values passed to engine.makeTensor() are null");n=n||"float32",r=r||this.backend;let a=t;"string"===n&&fa(t[0])&&(a=t.map(t=>function(t,e="utf-8"){return e=e||"utf-8",Ea().platform.encode(t,e)}(t)));const o=r.write(a,e,n),i=new Ua(e,n,o,this.nextTensorId());if(this.trackTensor(i,r),"string"===n){const t=this.state.tensorInfo.get(o),e=function(t){if(null==t)return 0;let e=0;return t.forEach(t=>e+=t.length),e}(a);this.state.numBytes+=e-t.bytes,t.bytes=e}return i}makeTensorFromDataId(t,e,n,r){const a=new Ua(e,n=n||"float32",t,this.nextTensorId());return this.trackTensor(a,r),a}makeVariable(t,e=!0,n,r){n=n||this.nextVariableId().toString(),null!=r&&r!==t.dtype&&(t=t.cast(r));const a=new Xa(t,e,n,this.nextTensorId());if(null!=this.state.registeredVariables[a.name])throw new Error(`Variable with name ${a.name} was already registered`);return this.state.registeredVariables[a.name]=a,this.incRef(a,this.backend),a}trackTensor(t,e){this.state.numTensors++,"string"===t.dtype&&this.state.numStringTensors++;let n=0;"complex64"!==t.dtype&&"string"!==t.dtype&&(n=t.size*ha(t.dtype)),this.state.numBytes+=n,this.state.tensorInfo.has(t.dataId)||(this.state.numDataBuffers++,this.state.tensorInfo.set(t.dataId,{backend:e||this.backend,dtype:t.dtype,shape:t.shape,bytes:n})),t instanceof Xa||this.track(t)}incRef(t,e){this.trackTensor(t,e),this.backend.incRef(t.dataId)}removeDataId(t,e){this.state.tensorInfo.has(t)&&this.state.tensorInfo.get(t).backend===e&&(this.state.tensorInfo.delete(t),this.state.numDataBuffers--)}disposeTensor(t){if(!this.state.tensorInfo.has(t.dataId))return;const e=this.state.tensorInfo.get(t.dataId);if(this.state.numTensors--,"string"===t.dtype&&(this.state.numStringTensors--,this.state.numBytes-=e.bytes),"complex64"!==t.dtype&&"string"!==t.dtype){const e=t.size*ha(t.dtype);this.state.numBytes-=e}e.backend.disposeData(t.dataId)&&this.removeDataId(t.dataId,e.backend)}disposeVariables(){for(const t in this.state.registeredVariables){const e=this.state.registeredVariables[t];this.disposeVariable(e)}}disposeVariable(t){this.disposeTensor(t),null!=this.state.registeredVariables[t.name]&&delete this.state.registeredVariables[t.name]}memory(){const t=this.backend.memory();return t.numTensors=this.state.numTensors,t.numDataBuffers=this.state.numDataBuffers,t.numBytes=this.state.numBytes,this.state.numStringTensors>0&&(t.unreliable=!0,null==t.reasons&&(t.reasons=[]),t.reasons.push("Memory usage by string tensors is approximate (2 bytes per character)")),t}async profile(t){this.state.profiling=!0;const e=this.state.numBytes,n=this.state.numTensors;this.state.activeProfile.kernels=[],this.state.activeProfile.result=await t(),this.state.profiling=!1,this.state.activeProfile.peakBytes=Math.max(...this.state.activeProfile.kernels.map(t=>t.totalBytesSnapshot)),this.state.activeProfile.newBytes=this.state.numBytes-e,this.state.activeProfile.newTensors=this.state.numTensors-n;for(const t of this.state.activeProfile.kernels)t.kernelTimeMs=await t.kernelTimeMs,t.extraInfo=await t.extraInfo;return this.state.activeProfile}isTapeOn(){return this.state.gradientDepth>0&&0===this.state.kernelDepth}addTapeNode(t,e,n,r,a,o){const i={id:this.state.nextTapeNodeId++,kernelName:t,inputs:e,outputs:n,saved:a},s=La(t);null!=s&&(r=s.gradFunc),null!=r&&(i.gradient=t=>(t=t.map((t,e)=>{if(null==t){const t=n[e],r=ba(t.size,t.dtype);return this.makeTensor(r,t.shape,t.dtype)}return t}),r(t.length>1?t:t[0],a,o))),this.state.activeTape.push(i)}keep(t){return t.kept=!0,t}startTape(){0===this.state.gradientDepth&&(this.state.activeTape=[]),this.state.gradientDepth++}endTape(){this.state.gradientDepth--}startScope(t){const e={track:[],name:"unnamed scope",id:this.state.nextScopeId++};t&&(e.name=t),this.state.scopeStack.push(e),this.state.activeScope=e}endScope(t){const e=ro(t),n=new Set(e.map(t=>t.id));for(let t=0;t<this.state.activeScope.track.length;t++){const e=this.state.activeScope.track[t];e.kept||n.has(e.id)||e.dispose()}const r=this.state.scopeStack.pop();this.state.activeScope=0===this.state.scopeStack.length?null:this.state.scopeStack[this.state.scopeStack.length-1],e.forEach(t=>{t.kept||t.scopeId!==r.id||this.track(t)})}gradients(t,e,n,r=!1){if(oa(e.length>0,()=>"gradients() received an empty list of xs."),null!=n&&"float32"!==n.dtype)throw new Error(`dy must have 'float32' dtype, but has '${n.dtype}'`);const a=this.scopedRun(()=>this.startTape(),()=>this.endTape(),()=>this.tidy("forward",t));oa(a instanceof Ua,()=>"The result y returned by f() must be a tensor.");const o=function(t,e,n){const r={},a={};for(let t=0;t<e.length;t++)r[e[t].id]=!0;for(let n=0;n<t.length;n++){const o=t[n],i=o.inputs;for(const t in i){const n=i[t];let s=!1;for(let t=0;t<e.length;t++)if(r[n.id]){o.outputs.forEach(t=>r[t.id]=!0),s=!0,a[o.id]=!0;break}if(s)break}}const o={};o[n.id]=!0;const i={};for(let e=t.length-1;e>=0;e--){const n=t[e],r=n.inputs;for(let t=0;t<n.outputs.length;t++)if(o[n.outputs[t].id]){for(const t in r)o[r[t].id]=!0,i[n.id]=!0;break}}const s=[];for(let e=0;e<t.length;e++){const n=t[e];if(a[n.id]&&i[n.id]){const t={};for(const e in n.inputs){const a=n.inputs[e];r[a.id]&&(t[e]=a)}const e=Object.assign({},n);e.inputs=t,e.outputs=n.outputs,s.push(e)}}return s}(this.state.activeTape,e,a);if(!r&&0===o.length&&e.length>0)throw new Error("Cannot compute gradient of y=f(x) with respect to x. Make sure that the f you passed encloses all operations that lead from x to y.");return this.tidy("backward",()=>{const t={};t[a.id]=null==n?function(t){const e=function(t,e){const n=ba(t,e);for(let t=0;t<n.length;t++)n[t]=1;return n}(la(t),"float32");return lo.makeTensor(e,t,"float32")}(a.shape):n,function(t,e,n,r){for(let a=e.length-1;a>=0;a--){const o=e[a],i=[];if(o.outputs.forEach(e=>{const n=t[e.id];null!=n?i.push(n):i.push(null)}),null==o.gradient)throw new Error(`Cannot compute gradient: gradient function not found for ${o.kernelName}.`);const s=o.gradient(i);for(const e in o.inputs){if(!(e in s))throw new Error(`Cannot backprop through input ${e}. Available gradients found: ${Object.keys(s)}.`);const a=n(()=>s[e]());if("float32"!==a.dtype)throw new Error(`Error in gradient for op ${o.kernelName}. The gradient of input ${e} must have 'float32' dtype, but has '${a.dtype}'`);const i=o.inputs[e];if(!ca(a.shape,i.shape))throw new Error(`Error in gradient for op ${o.kernelName}. The gradient of input '${e}' has shape '${a.shape}', which does not match the shape of the input '${i.shape}'`);if(null==t[i.id])t[i.id]=a;else{const e=t[i.id];t[i.id]=r(e,a),e.dispose()}}}}
+/**
+     * @license
+     * Copyright 2018 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */(t,o,t=>this.tidy(t),co);const r=e.map(e=>t[e.id]);return 0===this.state.gradientDepth&&(this.state.activeTape.forEach(t=>{for(const e of t.saved)e.dispose()}),this.state.activeTape=null),{value:a,grads:r}})}customGrad(t){return oa(ma(t),()=>"The f passed in customGrad(f) must be a function."),(...e)=>{let n;oa(e.every(t=>t instanceof Ua),()=>"The args passed in customGrad(f)(x1, x2,...) must all be tensors");const r={};e.forEach((t,e)=>{r[e]=t});return this.runKernelFunc({forwardFunc:(r,a)=>(n=t(...e,a),oa(n.value instanceof Ua,()=>"The function f passed in customGrad(f) must return an object where `obj.value` is a tensor"),oa(ma(n.gradFunc),()=>"The function f passed in customGrad(f) must return an object where `obj.gradFunc` is a function."),n.value),backwardsFunc:(t,r)=>{const a=n.gradFunc(t,r),o=Array.isArray(a)?a:[a];oa(o.length===e.length,()=>"The function f passed in customGrad(f) must return an object where `obj.gradFunc` is a function that returns the same number of tensors as inputs passed to f(...)."),oa(o.every(t=>t instanceof Ua),()=>"The function f passed in customGrad(f) must return an object where `obj.gradFunc` is a function that returns a list of only tensors.");const i={};return o.forEach((t,e)=>{i[e]=()=>t}),i},inputs:r})}}readSync(t){return this.state.tensorInfo.get(t).backend.readSync(t)}read(t){return this.state.tensorInfo.get(t).backend.read(t)}readToGPU(t,e){return this.state.tensorInfo.get(t).backend.readToGPU(t,e)}async time(t){const e=Na(),n=await this.backend.time(t);return n.wallMs=Na()-e,n}track(t){return null!=this.state.activeScope&&(t.scopeId=this.state.activeScope.id,this.state.activeScope.track.push(t)),t}get registeredVariables(){return this.state.registeredVariables}reset(){this.pendingBackendInitId++,this.state.dispose(),this.ENV.reset(),this.state=new oo;for(const t in this.registry)this.disposeRegisteredKernels(t),this.registry[t].dispose(),delete this.registry[t];this.backendName=null,this.backendInstance=null,this.pendingBackendInit=null}}function so(){const t=Ma();if(null==t._tfengine){const e=new _a(t);t._tfengine=new io(e)}return function(t){Ia=t}
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */(t._tfengine.ENV),Va=()=>t._tfengine,t._tfengine}io.nextTensorId=0,io.nextVariableId=0;const lo=so();function co(t,e){const n={a:t,b:e};return lo.runKernel("Add",n)}
+/**
+     * @license
+     * Copyright 2017 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
      */
-    const getOutputKnot = (point) => {
-      return {
-        x: point.x + nodeLength$1,
-        y: point.y + nodeLength$1 / 2
-      };
-    };
-
-    /**
-     * Return the output knot (left boundary center)
-     * @param {object} point {x: x, y:y}
+/**
+     * @license
+     * Copyright 2019 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
      */
-    const getInputKnot = (point) => {
-      return {
-        x: point.x,
-        y: point.y + nodeLength$1 / 2
-      }
-    };
-
-    /**
-     * Compute edge data
-     * @param {[[[number, number]]]} nodeCoordinate Constructed neuron svg locations
-     * @param {[object]} cnn Constructed CNN model
+const uo=Ea();
+/**
+     * @license
+     * Copyright 2018 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
      */
-    const getLinkData = (nodeCoordinate, cnn) => {
-      let linkData = [];
-      // Create links backward (starting for the first conv layer)
-      for (let l = 1; l < cnn.length; l++) {
-        for (let n = 0; n < cnn[l].length; n++) {
-          let isOutput = cnn[l][n].layerName === 'output';
-          let curTarget = getInputKnot(nodeCoordinate[l][n]);
-          for (let p = 0; p < cnn[l][n].inputLinks.length; p++) {
-            // Specially handle output layer (since we are ignoring the flatten)
-            let inputNodeIndex = cnn[l][n].inputLinks[p].source.index;
-            
-            if (isOutput) {
-              let flattenDimension = cnn[l-1][0].output.length *
-                cnn[l-1][0].output.length;
-              if (inputNodeIndex % flattenDimension !== 0){
-                  continue;
-              }
-              inputNodeIndex = Math.floor(inputNodeIndex / flattenDimension);
-            }
-            let curSource = getOutputKnot(nodeCoordinate[l-1][inputNodeIndex]);
-            let curWeight = cnn[l][n].inputLinks[p].weight;
-            linkData.push({
-              source: curSource,
-              target: curTarget,
-              weight: curWeight,
-              targetLayerIndex: l,
-              targetNodeIndex: n,
-              sourceNodeIndex: inputNodeIndex
-            });
-          }
-        }
-      }
-      return linkData;
-    };
-
-
-    /**
-     * Color scale wrapper (support artificially lighter color!)
-     * @param {function} colorScale D3 color scale function
-     * @param {number} range Color range (max - min)
-     * @param {number} value Color value
-     * @param {number} gap Tail of the color scale to skip
+function po(t,e){let n=t;if(pa(t))return"string"===e?[]:[t.length];if(!Array.isArray(t))return[];const r=[];for(;Array.isArray(n)||pa(n)&&"string"!==e;)r.push(n.length),n=n[0];return Array.isArray(t)&&Ea().getBool("TENSORLIKE_CHECK_SHAPE_CONSISTENCY")&&function t(e,n,r){if(r=r||[],!Array.isArray(e)&&!pa(e))return void oa(0===n.length,()=>`Element arr[${r.join("][")}] is a primitive, but should be an array/TypedArray of ${n[0]} elements`);oa(n.length>0,()=>`Element arr[${r.join("][")}] should be a primitive, but is an array of ${e.length} elements`),oa(e.length===n[0],()=>`Element arr[${r.join("][")}] should have ${n[0]} elements, but has ${e.length} elements`);const a=n.slice(1);for(let n=0;n<e.length;++n)t(e[n],a,r.concat(n))}(t,r,[]),r}function ho(t,e,n,r){if("string_or_numeric"!==t){if(null==t)throw new Error("Expected dtype cannot be null.");if("numeric"!==t&&t!==e||"numeric"===t&&"string"===e)throw new Error(`Argument '${n}' passed to '${r}' must be ${t} tensor, but got ${e} tensor`)}}function fo(t,e,n,r="numeric"){if(t instanceof Ua)return ho(r,t.dtype,e,n),t;let a=ga(t);if("string"!==a&&["bool","int32","float32"].indexOf(r)>=0&&(a=r),ho(r,a,e,n),null==t||!pa(t)&&!Array.isArray(t)&&"number"!=typeof t&&"boolean"!=typeof t&&"string"!=typeof t){const r=null==t?"null":t.constructor.name;throw new Error(`Argument '${e}' passed to '${n}' must be a Tensor or TensorLike, but got '${r}'`)}const o=po(t,a);pa(t)||Array.isArray(t)||(t=[t]);const i="string"!==a?Da(t,a):sa(t,[],!0);return lo.makeTensor(i,o,a)}function go(t,e,n,r="numeric"){if(!Array.isArray(t))throw new Error(`Argument ${e} passed to ${n} must be a \`Tensor[]\` or \`TensorLike[]\``);return t.map((t,a)=>fo(t,`${e}[${a}]`,n,r))}
+/**
+     * @license
+     * Copyright 2018 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */uo.registerFlag("DEBUG",()=>!1,t=>{t&&console.warn("Debugging mode is ON. The output of every math call will be downloaded to CPU and checked for NaNs. This significantly impacts performance.")}),uo.registerFlag("IS_BROWSER",()=>"undefined"!=typeof window&&null!=window.document||"undefined"!=typeof WorkerGlobalScope),uo.registerFlag("IS_NODE",()=>"undefined"!=typeof process&&void 0!==process.versions&&void 0!==process.versions.node),uo.registerFlag("IS_CHROME",()=>"undefined"!=typeof navigator&&null!=navigator&&null!=navigator.userAgent&&/Chrome/.test(navigator.userAgent)&&/Google Inc/.test(navigator.vendor)),uo.registerFlag("PROD",()=>!1),uo.registerFlag("TENSORLIKE_CHECK_SHAPE_CONSISTENCY",()=>uo.getBool("DEBUG")),uo.registerFlag("DEPRECATION_WARNINGS_ENABLED",()=>!0),uo.registerFlag("IS_TEST",()=>!1),uo.registerFlag("CHECK_COMPUTATION_FOR_ERRORS",()=>!0),uo.registerFlag("WRAP_TO_IMAGEBITMAP",()=>!1),uo.registerFlag("ENGINE_COMPILE_ONLY",()=>!1);function mo(t){const e=Object.keys(t);if(1!==e.length)throw new Error("Please provide an object with a single key (operation name) mapping to a function. Got an object with "+e.length+" keys.");let n=e[0];const r=t[n];n.endsWith("_")&&(n=n.substring(0,n.length-1)),n+="__op";const a=(...t)=>{lo.startScope(n);try{const e=r(...t);return wa(e)&&console.error("Cannot return a Promise inside of tidy."),lo.endScope(e),e}catch(t){throw lo.endScope(null),t}};return Object.defineProperty(a,"name",{value:n,configurable:!0}),a}
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const yo=mo({complex_:function(t,e){const n=fo(t,"real","complex"),r=fo(e,"imag","complex");!function(t,e,n=""){oa(ca(t,e),()=>n+` Shapes ${t} and ${e} must match`)}(n.shape,r.shape,`real and imag shapes, ${n.shape} and ${r.shape}, must match in call to tf.complex().`);const a={real:n,imag:r};return lo.runKernel("Complex",a)}});
+/**
+     * @license
+     * Copyright 2018 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */function vo(t,e,n,r){if(null==r&&(r=ga(t)),"complex64"===r)throw new Error("Cannot construct a complex64 tensor directly. Please use tf.complex(real, imag).");if(!pa(t)&&!Array.isArray(t)&&"number"!=typeof t&&"boolean"!=typeof t&&"string"!=typeof t)throw new Error("values passed to tensor(values) must be a number/boolean/string or an array of numbers/booleans/strings, or a TypedArray");if(null!=e){xa(e);const t=la(e),r=la(n);oa(t===r,()=>`Based on the provided shape, [${e}], the tensor should have ${t} values but has ${r}`);for(let t=0;t<n.length;++t){const r=n[t],a=t!==n.length-1||r!==la(e.slice(t));oa(n[t]===e[t]||!a,()=>`Error creating a new Tensor. Inferred shape (${n}) does not match the provided shape (${e}). `)}}return pa(t)||Array.isArray(t)||(t=[t]),e=e||n,t="string"!==r?Da(t,r):sa(t,[],!0),lo.makeTensor(t,e,r)}
+/**
+     * @license
+     * Copyright 2018 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */function bo(t,e,n){return vo(t,e,po(t,n),n)}
+/**
+     * @license
+     * Copyright 2018 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const xo={float32:4,float16:2,int32:4,uint16:2,uint8:1,bool:1,complex64:8};
+/**
+     * @license
+     * Copyright 2018 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const wo="undefined"!=typeof Buffer&&("undefined"==typeof Blob||"undefined"==typeof atob||"undefined"==typeof btoa);function _o(t){return wo?Buffer.byteLength(t):new Blob([t]).size}function ko(t){if(t.modelTopology instanceof ArrayBuffer)throw new Error("Expected JSON model topology, received ArrayBuffer.");return{dateSaved:new Date,modelTopologyType:"JSON",modelTopologyBytes:null==t.modelTopology?0:_o(JSON.stringify(t.modelTopology)),weightSpecsBytes:null==t.weightSpecs?0:_o(JSON.stringify(t.weightSpecs)),weightDataBytes:null==t.weightData?0:t.weightData.byteLength}}function Eo(){const t=function(){const t=t=>{let e=t<<13,n=0;for(;0==(8388608&e);)n-=8388608,e<<=1;return e&=-8388609,n+=947912704,e|n},e=new Uint32Array(2048);e[0]=0;for(let n=1;n<1024;n++)e[n]=t(n);for(let t=1024;t<2048;t++)e[t]=939524096+(t-1024<<13);return e}(),e=function(){const t=new Uint32Array(64);t[0]=0,t[31]=1199570944,t[32]=2147483648,t[63]=3347054592;for(let e=1;e<31;e++)t[e]=e<<23;for(let e=33;e<63;e++)t[e]=2147483648+(e-32<<23);return t}(),n=function(){const t=new Uint32Array(64);for(let e=0;e<64;e++)t[e]=1024;return t[0]=t[32]=0,t}();return r=>{const a=new ArrayBuffer(4*r.length),o=new Uint32Array(a);for(let a=0;a<r.length;a++){const i=r[a],s=t[n[i>>10]+(1023&i)]+e[i>>10];o[a]=s}return new Float32Array(a)}}
+/**
+     * @license
+     * Copyright 2018 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */class $o{constructor(){this.saveRouters=[],this.loadRouters=[]}static getInstance(){return null==$o.instance&&($o.instance=new $o),$o.instance}static registerSaveRouter(t){$o.getInstance().saveRouters.push(t)}static registerLoadRouter(t){$o.getInstance().loadRouters.push(t)}static getSaveHandlers(t){return $o.getHandlers(t,"save")}static getLoadHandlers(t,e){return $o.getHandlers(t,"load",e)}static getHandlers(t,e,n){const r=[];return("load"===e?$o.getInstance().loadRouters:$o.getInstance().saveRouters).forEach(e=>{const a=e(t,n);null!==a&&r.push(a)}),r}}
+/**
+     * @license
+     * Copyright 2018 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */function Io(){if(!Ea().getBool("IS_BROWSER"))throw new Error("Failed to obtain IndexedDB factory because the current environmentis not a web browser.");const t="undefined"==typeof window?self:window,e=t.indexedDB||t.mozIndexedDB||t.webkitIndexedDB||t.msIndexedDB||t.shimIndexedDB;if(null==e)throw new Error("The current browser does not appear to support IndexedDB.");return e}function Mo(t){const e=t.result;e.createObjectStore("models_store",{keyPath:"modelPath"}),e.createObjectStore("model_info_store",{keyPath:"modelPath"})}class Po{constructor(t){if(this.indexedDB=Io(),null==t||!t)throw new Error("For IndexedDB, modelPath must not be null, undefined or empty.");this.modelPath=t}async save(t){if(t.modelTopology instanceof ArrayBuffer)throw new Error("BrowserLocalStorage.save() does not support saving model topology in binary formats yet.");return this.databaseAction(this.modelPath,t)}async load(){return this.databaseAction(this.modelPath)}databaseAction(t,e){return new Promise((t,n)=>{const r=this.indexedDB.open("tensorflowjs",1);r.onupgradeneeded=()=>Mo(r),r.onsuccess=()=>{const a=r.result;if(null==e){const e=a.transaction("models_store","readonly"),r=e.objectStore("models_store").get(this.modelPath);r.onsuccess=()=>{if(null==r.result)return a.close(),n(new Error(`Cannot find model with path '${this.modelPath}' in IndexedDB.`));t(r.result.modelArtifacts)},r.onerror=t=>(a.close(),n(r.error)),e.oncomplete=()=>a.close()}else{const r=ko(e),o=a.transaction("model_info_store","readwrite");let i=o.objectStore("model_info_store");const s=i.put({modelPath:this.modelPath,modelArtifactsInfo:r});let l;s.onsuccess=()=>{l=a.transaction("models_store","readwrite");const s=l.objectStore("models_store").put({modelPath:this.modelPath,modelArtifacts:e,modelArtifactsInfo:r});s.onsuccess=()=>t({modelArtifactsInfo:r}),s.onerror=t=>{i=o.objectStore("model_info_store");const e=i.delete(this.modelPath);e.onsuccess=()=>(a.close(),n(s.error)),e.onerror=t=>(a.close(),n(s.error))}},s.onerror=t=>(a.close(),n(s.error)),o.oncomplete=()=>{null==l?a.close():l.oncomplete=()=>a.close()}}},r.onerror=t=>n(r.error)})}}Po.URL_SCHEME="indexeddb://";const So=t=>{return Ea().getBool("IS_BROWSER")&&!Array.isArray(t)&&t.startsWith(Po.URL_SCHEME)?(e=t.slice(Po.URL_SCHEME.length),new Po(e)):null;var e};$o.registerSaveRouter(So),$o.registerLoadRouter(So);class Ao{constructor(){this.indexedDB=Io()}async listModels(){return new Promise((t,e)=>{const n=this.indexedDB.open("tensorflowjs",1);n.onupgradeneeded=()=>Mo(n),n.onsuccess=()=>{const r=n.result,a=r.transaction("model_info_store","readonly"),o=a.objectStore("model_info_store").getAll();o.onsuccess=()=>{const e={};for(const t of o.result)e[t.modelPath]=t.modelArtifactsInfo;t(e)},o.onerror=t=>(r.close(),e(o.error)),a.oncomplete=()=>r.close()},n.onerror=t=>e(n.error)})}async removeModel(t){var e;return t=(e=t).startsWith(Po.URL_SCHEME)?e.slice(Po.URL_SCHEME.length):e,new Promise((e,n)=>{const r=this.indexedDB.open("tensorflowjs",1);r.onupgradeneeded=()=>Mo(r),r.onsuccess=()=>{const a=r.result,o=a.transaction("model_info_store","readwrite"),i=o.objectStore("model_info_store"),s=i.get(t);let l;s.onsuccess=()=>{if(null==s.result)return a.close(),n(new Error(`Cannot find model with path '${t}' in IndexedDB.`));{const r=i.delete(t),o=()=>{l=a.transaction("models_store","readwrite");const r=l.objectStore("models_store").delete(t);r.onsuccess=()=>e(s.result.modelArtifactsInfo),r.onerror=t=>n(s.error)};r.onsuccess=o,r.onerror=t=>(o(),a.close(),n(s.error))}},s.onerror=t=>(a.close(),n(s.error)),o.oncomplete=()=>{null==l?a.close():l.oncomplete=()=>a.close()}},r.onerror=t=>n(r.error)})}}
+/**
+     * @license
+     * Copyright 2018 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const To="tensorflowjs_models",Co="info",Lo="model_topology",Fo="weight_specs",Do="weight_data",No="model_metadata";function Ro(t){return{info:[To,t,Co].join("/"),topology:[To,t,Lo].join("/"),weightSpecs:[To,t,Fo].join("/"),weightData:[To,t,Do].join("/"),modelMetadata:[To,t,No].join("/")}}function Bo(t){for(const e of Object.values(t))window.localStorage.removeItem(e)}function Oo(t){const e=t.split("/");if(e.length<3)throw new Error("Invalid key format: "+t);return e.slice(1,e.length-1).join("/")}class zo{constructor(t){if(!Ea().getBool("IS_BROWSER")||"undefined"==typeof window||void 0===window.localStorage)throw new Error("The current environment does not support local storage.");if(this.LS=window.localStorage,null==t||!t)throw new Error("For local storage, modelPath must not be null, undefined or empty.");this.modelPath=t,this.keys=Ro(this.modelPath)}async save(t){if(t.modelTopology instanceof ArrayBuffer)throw new Error("BrowserLocalStorage.save() does not support saving model topology in binary formats yet.");{const e=JSON.stringify(t.modelTopology),n=JSON.stringify(t.weightSpecs),r=ko(t);try{this.LS.setItem(this.keys.info,JSON.stringify(r)),this.LS.setItem(this.keys.topology,e),this.LS.setItem(this.keys.weightSpecs,n),this.LS.setItem(this.keys.weightData,function(t){if(wo)return Buffer.from(t).toString("base64");const e=new Uint8Array(t);let n="";for(let t=0,r=e.length;t<r;t++)n+=String.fromCharCode(e[t]);return btoa(n)}(t.weightData));const a={format:t.format,generatedBy:t.generatedBy,convertedBy:t.convertedBy,signature:null!=t.signature?t.signature:void 0,userDefinedMetadata:null!=t.userDefinedMetadata?t.userDefinedMetadata:void 0,modelInitializer:null!=t.modelInitializer?t.modelInitializer:void 0,trainingConfig:null!=t.trainingConfig?t.trainingConfig:void 0};return this.LS.setItem(this.keys.modelMetadata,JSON.stringify(a)),{modelArtifactsInfo:r}}catch(t){throw Bo(this.keys),new Error(`Failed to save model '${this.modelPath}' to local storage: size quota being exceeded is a possible cause of this failure: modelTopologyBytes=${r.modelTopologyBytes}, weightSpecsBytes=${r.weightSpecsBytes}, weightDataBytes=${r.weightDataBytes}.`)}}}async load(){const t=JSON.parse(this.LS.getItem(this.keys.info));if(null==t)throw new Error(`In local storage, there is no model with name '${this.modelPath}'`);if("JSON"!==t.modelTopologyType)throw new Error("BrowserLocalStorage does not support loading non-JSON model topology yet.");const e={},n=JSON.parse(this.LS.getItem(this.keys.topology));if(null==n)throw new Error(`In local storage, the topology of model '${this.modelPath}' is missing.`);e.modelTopology=n;const r=JSON.parse(this.LS.getItem(this.keys.weightSpecs));if(null==r)throw new Error(`In local storage, the weight specs of model '${this.modelPath}' are missing.`);e.weightSpecs=r;const a=this.LS.getItem(this.keys.modelMetadata);if(null!=a){const t=JSON.parse(a);e.format=t.format,e.generatedBy=t.generatedBy,e.convertedBy=t.convertedBy,null!=t.signature&&(e.signature=t.signature),null!=t.userDefinedMetadata&&(e.userDefinedMetadata=t.userDefinedMetadata),null!=t.modelInitializer&&(e.modelInitializer=t.modelInitializer),null!=t.trainingConfig&&(e.trainingConfig=t.trainingConfig)}const o=this.LS.getItem(this.keys.weightData);if(null==o)throw new Error(`In local storage, the binary weight values of model '${this.modelPath}' are missing.`);return e.weightData=function(t){if(wo){const e=Buffer.from(t,"base64");return e.buffer.slice(e.byteOffset,e.byteOffset+e.byteLength)}const e=atob(t),n=new Uint8Array(e.length);for(let t=0;t<e.length;++t)n.set([e.charCodeAt(t)],t);return n.buffer}(o),e}}zo.URL_SCHEME="localstorage://";const jo=t=>{return Ea().getBool("IS_BROWSER")&&!Array.isArray(t)&&t.startsWith(zo.URL_SCHEME)?(e=t.slice(zo.URL_SCHEME.length),new zo(e)):null;var e};$o.registerSaveRouter(jo),$o.registerLoadRouter(jo);class Ho{constructor(){oa(Ea().getBool("IS_BROWSER"),()=>"Current environment is not a web browser"),oa("undefined"==typeof window||void 0!==window.localStorage,()=>"Current browser does not appear to support localStorage"),this.LS=window.localStorage}async listModels(){const t={},e=To+"/",n="/"+Co;for(let r=0;r<this.LS.length;++r){const a=this.LS.key(r);if(a.startsWith(e)&&a.endsWith(n)){t[Oo(a)]=JSON.parse(this.LS.getItem(a))}}return t}async removeModel(t){var e;const n=Ro(t=(e=t).startsWith(zo.URL_SCHEME)?e.slice(zo.URL_SCHEME.length):e);if(null==this.LS.getItem(n.info))throw new Error(`Cannot find model at path '${t}'`);const r=JSON.parse(this.LS.getItem(n.info));return Bo(n),r}}
+/**
+     * @license
+     * Copyright 2018 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */class qo{constructor(){this.managers={}}static getInstance(){return null==qo.instance&&(qo.instance=new qo),qo.instance}static registerManager(t,e){oa(null!=t,()=>"scheme must not be undefined or null."),t.endsWith("://")&&(t=t.slice(0,t.indexOf("://"))),oa(t.length>0,()=>"scheme must not be an empty string.");const n=qo.getInstance();oa(null==n.managers[t],()=>`A model store manager is already registered for scheme '${t}'.`),n.managers[t]=e}static getManager(t){const e=this.getInstance().managers[t];if(null==e)throw new Error(`Cannot find model manager for scheme '${t}'`);return e}static getSchemes(){return Object.keys(this.getInstance().managers)}}
+/**
+     * @license
+     * Copyright 2019 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */class Wo{fetch(t,e){return fetch(t,e)}now(){return performance.now()}encode(t,e){if("utf-8"!==e&&"utf8"!==e)throw new Error("Browser's encoder only supports utf-8, but got "+e);return null==this.textEncoder&&(this.textEncoder=new TextEncoder),this.textEncoder.encode(t)}decode(t,e){return new TextDecoder(e).decode(t)}}if(Ea().get("IS_BROWSER")){Ea().setPlatform("browser",new Wo);try{qo.registerManager(zo.URL_SCHEME,new Ho)}catch(t){}try{qo.registerManager(Po.URL_SCHEME,new Ao)}catch(t){}}
+/**
+     * @license
+     * Copyright 2019 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const Go=()=>require("node-fetch");let Vo;class Ko{constructor(){this.util=require("util"),this.textEncoder=new this.util.TextEncoder}fetch(t,e){return null!=Ea().global.fetch?Ea().global.fetch(t,e):(null==Vo&&(Vo=Go()),Vo(t,e))}now(){const t=process.hrtime();return 1e3*t[0]+t[1]/1e6}encode(t,e){if("utf-8"!==e&&"utf8"!==e)throw new Error("Node built-in encoder only supports utf-8, but got "+e);return this.textEncoder.encode(t)}decode(t,e){return 0===t.length?"":new this.util.TextDecoder(e).decode(t)}}Ea().get("IS_NODE")&&!Ea().get("IS_BROWSER")&&Ea().setPlatform("node",new Ko)
+/**
+     * @license
+     * Copyright 2020 Google Inc. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */;const Uo=mo({cast_:
+/**
+     * @license
+     * Copyright 2020 Google Inc. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
      */
-    const gappedColorScale = (colorScale, range, value, gap) => {
-      if (gap === undefined) { gap = 0; }
-      let normalizedValue = (value + range / 2) / range;
-      return colorScale(normalizedValue * (1 - 2 * gap) + gap);
-    };
-
-    /* global d3, SmoothScroll */
-
-    // Configs
-    const layerColorScales$2 = overviewConfig.layerColorScales;
-    const nodeLength$2 = overviewConfig.nodeLength;
-    const numLayers = overviewConfig.numLayers;
-    const edgeOpacity = overviewConfig.edgeOpacity;
-    const edgeInitColor = overviewConfig.edgeInitColor;
-    const edgeStrokeWidth = overviewConfig.edgeStrokeWidth;
-    const svgPaddings = overviewConfig.svgPaddings;
-    const gapRatio = overviewConfig.gapRatio;
-    const classLists = overviewConfig.classLists;
-    const formater = d3.format('.4f');
-
-    // Shared variables
-    let svg$1 = undefined;
-    svgStore.subscribe( value => {svg$1 = value;} );
-
-    let vSpaceAroundGap = undefined;
-    vSpaceAroundGapStore.subscribe( value => {vSpaceAroundGap = value;} );
-
-    let hSpaceAroundGap = undefined;
-    hSpaceAroundGapStore.subscribe( value => {hSpaceAroundGap = value;} );
-
-    let cnn = undefined;
-    cnnStore.subscribe( value => {cnn = value;} );
-
-    let nodeCoordinate = undefined;
-    nodeCoordinateStore.subscribe( value => {nodeCoordinate = value;} );
-
-    let selectedScaleLevel = undefined;
-    selectedScaleLevelStore.subscribe( value => {selectedScaleLevel = value;} );
-
-    let cnnLayerRanges = undefined;
-    cnnLayerRangesStore.subscribe( value => {cnnLayerRanges = value;} );
-
-    let cnnLayerMinMax = undefined;
-    cnnLayerMinMaxStore.subscribe( value => {cnnLayerMinMax = value;} );
-
-    let detailedMode = undefined;
-    detailedModeStore.subscribe( value => {detailedMode = value;} );
-
-    /**
-     * Use bounded d3 data to draw one canvas
-     * @param {object} d d3 data
-     * @param {index} i d3 data index
-     * @param {[object]} g d3 group
-     * @param {number} range color range map (max - min)
+function(t,e){const n=fo(t,"x","cast");if(!function(t){return"bool"===t||"complex64"===t||"float32"===t||"int32"===t||"string"===t}(e))throw new Error("Failed to cast to unknown dtype "+e);if("string"===e&&"string"!==n.dtype||"string"!==e&&"string"===n.dtype)throw new Error("Only strings can be casted to strings");const r={x:n},a={dtype:e};return lo.runKernel("Cast",r,a)}});
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const Xo=mo({clone_:function(t){const e={x:fo(t,"x","clone","string_or_numeric")};return lo.runKernel("Identity",e)}});
+/**
+     * @license
+     * Copyright 2020 Google Inc. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
      */
-    const drawOutput = (d, i, g, range) => {
-      let image = g[i];
-      let colorScale = layerColorScales$2[d.type];
-
-      if (d.type === 'input') {
-        colorScale = colorScale[d.index];
-      }
-
-      // Set up a second convas in order to resize image
-      let imageLength = d.output.length === undefined ? 1 : d.output.length;
-      let bufferCanvas = document.createElement("canvas");
-      let bufferContext = bufferCanvas.getContext("2d");
-      bufferCanvas.width = imageLength;
-      bufferCanvas.height = imageLength;
-
-      // Fill image pixel array
-      let imageSingle = bufferContext.getImageData(0, 0, imageLength, imageLength);
-      let imageSingleArray = imageSingle.data;
-
-      if (imageLength === 1) {
-        imageSingleArray[0] = d.output;
-      } else {
-        for (let i = 0; i < imageSingleArray.length; i+=4) {
-          let pixeIndex = Math.floor(i / 4);
-          let row = Math.floor(pixeIndex / imageLength);
-          let column = pixeIndex % imageLength;
-          let color = undefined;
-          if (d.type === 'input' || d.type === 'fc' ) {
-            color = d3.rgb(colorScale(1 - d.output[row][column]));
-          } else {
-            color = d3.rgb(colorScale((d.output[row][column] + range / 2) / range));
-          }
-
-          imageSingleArray[i] = color.r;
-          imageSingleArray[i + 1] = color.g;
-          imageSingleArray[i + 2] = color.b;
-          imageSingleArray[i + 3] = 255;
-        }
-      }
-
-      // canvas.toDataURL() only exports image in 96 DPI, so we can hack it to have
-      // higher DPI by rescaling the image using canvas magic
-      let largeCanvas = document.createElement('canvas');
-      largeCanvas.width = nodeLength$2 * 3;
-      largeCanvas.height = nodeLength$2 * 3;
-      let largeCanvasContext = largeCanvas.getContext('2d');
-
-      // Use drawImage to resize the original pixel array, and put the new image
-      // (canvas) into corresponding canvas
-      bufferContext.putImageData(imageSingle, 0, 0);
-      largeCanvasContext.drawImage(bufferCanvas, 0, 0, imageLength, imageLength,
-          0, 0, nodeLength$2 * 3, nodeLength$2 * 3);
-
-      let imageDataURL = largeCanvas.toDataURL();
-      d3.select(image).attr('xlink:href', imageDataURL);
-
-      // Destory the buffer canvas
-      bufferCanvas.remove();
-      largeCanvas.remove();
-    };
-
-    /**
-     * Draw bar chart to encode the output value
-     * @param {object} d d3 data
-     * @param {index} i d3 data index
-     * @param {[object]} g d3 group
-     * @param {function} scale map value to length
+/**
+     * @license
+     * Copyright 2020 Google Inc. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
      */
-    const drawOutputScore = (d, i, g, scale) => {
-      let group = d3.select(g[i]);
-      group.select('rect.output-rect')
-          .transition('output')
-          .delay(500)
-          .duration(800)
-          .ease(d3.easeCubicIn)
-          .attr('width', scale(d.output));
-    };
-
-    const drawCustomImage = (image, inputLayer) => {
-
-      let imageWidth = image.width;
-      // Set up a second convas in order to resize image
-      let imageLength = inputLayer[0].output.length;
-      let bufferCanvas = document.createElement("canvas");
-      let bufferContext = bufferCanvas.getContext("2d");
-      bufferCanvas.width = imageLength;
-      bufferCanvas.height = imageLength;
-
-      // Fill image pixel array
-      let imageSingle = bufferContext.getImageData(0, 0, imageLength, imageLength);
-      let imageSingleArray = imageSingle.data;
-
-      for (let i = 0; i < imageSingleArray.length; i+=4) {
-        let pixeIndex = Math.floor(i / 4);
-        let row = Math.floor(pixeIndex / imageLength);
-        let column = pixeIndex % imageLength;
-
-
-          let red = inputLayer[0].output[row][column];
-          imageSingleArray[i] = red * 255;
-          imageSingleArray[i] = red * 255;
-
-        if(overviewConfig.modeImg == 3){
-          let green = inputLayer[1].output[row][column];
-          let blue = inputLayer[2].output[row][column];
-          imageSingleArray[i + 1] = green * 255;
-          imageSingleArray[i + 2] = blue * 255;
-          imageSingleArray[i + 3] = 255;
-        }
-
-
-
-      }
-
-      // canvas.toDataURL() only exports image in 96 DPI, so we can hack it to have
-      // higher DPI by rescaling the image using canvas magic
-      let largeCanvas = document.createElement('canvas');
-      largeCanvas.width = imageWidth * 3;
-      largeCanvas.height = imageWidth * 3;
-      let largeCanvasContext = largeCanvas.getContext('2d');
-
-      // Use drawImage to resize the original pixel array, and put the new image
-      // (canvas) into corresponding canvas
-      bufferContext.putImageData(imageSingle, 0, 0);
-      largeCanvasContext.drawImage(bufferCanvas, 0, 0, imageLength, imageLength,
-          0, 0, imageWidth * 3, imageWidth * 3);
-
-      let imageDataURL = largeCanvas.toDataURL();
-      // d3.select(image).attr('xlink:href', imageDataURL);
-      image.src = imageDataURL;
-
-      // Destory the buffer canvas
-      bufferCanvas.remove();
-      largeCanvas.remove();
-    };
-
-    /**
-     * Create color gradient for the legend
-     * @param {[object]} g d3 group
-     * @param {function} colorScale Colormap
-     * @param {string} gradientName Label for gradient def
-     * @param {number} min Min of legend value
-     * @param {number} max Max of legend value
+so();
+/**
+     * @license
+     * Copyright 2019 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
      */
-    const getLegendGradient = (g, colorScale, gradientName, min, max) => {
-      if (min === undefined) { min = 0; }
-      if (max === undefined) { max = 1; }
-      let gradient = g.append('defs')
-          .append('svg:linearGradient')
-          .attr('id', `${gradientName}`)
-          .attr('x1', '0%')
-          .attr('y1', '100%')
-          .attr('x2', '100%')
-          .attr('y2', '100%')
-          .attr('spreadMethod', 'pad');
-      let interpolation = 10;
-      for (let i = 0; i < interpolation; i++) {
-        let curProgress = i / (interpolation - 1);
-        let curColor = colorScale(curProgress * (max - min) + min);
-        gradient.append('stop')
-            .attr('offset', `${curProgress * 100}%`)
-            .attr('stop-color', curColor)
-            .attr('stop-opacity', 1);
-      }
-    };
-
-    /**
-     * Draw all legends
-     * @param {object} legends Parent group
-     * @param {number} legendHeight Height of the legend element
+function Jo(t,e,n,r){!function(t){oa(null!=t&&Array.isArray(t)&&t.length>0,()=>"promises must be a none empty array")}(t),function(t,e){oa(t>=0&&t<=1,()=>"Progress fraction must be in range [0, 1], but got startFraction "+t),oa(e>=0&&e<=1,()=>"Progress fraction must be in range [0, 1], but got endFraction "+e),oa(e>=t,()=>`startFraction must be no more than endFraction, but got startFraction ${t} and endFraction `+e)}(n=null==n?0:n,r=null==r?1:r);let a=0;return Promise.all(t.map(o=>(o.then(o=>{const i=n+ ++a/t.length*(r-n);return e(i),o}),o)))}
+/**
+     * @license
+     * Copyright 2018 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */async function Yo(t,e="",n,r){return Qo(t=>async function(t,e){null==e&&(e={});const n=null==e.fetchFunc?Ea().platform.fetch:e.fetchFunc,r=t.map(t=>n(t,e.requestInit,{isBinary:!0})),a=(null==e.onProgress?await Promise.all(r):await Jo(r,e.onProgress,0,.5)).map(t=>t.arrayBuffer());return null==e.onProgress?await Promise.all(a):await Jo(a,e.onProgress,.5,1)}(t,{requestInit:r}))(t,e,n)}function Qo(t){return async(e,n="",r)=>{const a=e.map(()=>!1),o={},i=null!=r?r.map(()=>!1):[],s=[];if(e.forEach((t,e)=>{let n=0;t.weights.forEach(t=>{const l="quantization"in t?t.quantization.dtype:t.dtype,c=xo[l]*la(t.shape),u=()=>{a[e]=!0,null==o[e]&&(o[e]=[]),o[e].push({manifestEntry:t,groupOffset:n,sizeBytes:c})};null!=r?r.forEach((e,n)=>{e===t.name&&(u(),i[n]=!0)}):u(),s.push(t.name),n+=c})}),!i.every(t=>t)){const t=r.filter((t,e)=>!i[e]);throw new Error("Could not find weights in manifest with names: "+t.join(", ")+". \nManifest JSON has weights with names: "+s.join(", ")+".")}const l=a.reduce((t,e,n)=>(e&&t.push(n),t),[]),c=[];l.forEach(t=>{e[t].paths.forEach(t=>{const e=n+(n.endsWith("/")?"":"/")+t;c.push(e)})});const u=await t(c),d={};let p=0;return l.forEach(t=>{const n=e[t].paths.length;let r=0;for(let t=0;t<n;t++)r+=u[p+t].byteLength;const a=new ArrayBuffer(r),i=new Uint8Array(a);let s=0;for(let t=0;t<n;t++){const e=new Uint8Array(u[p+t]);i.set(e,s),s+=e.byteLength}o[t].forEach(t=>{const e=function(t,e){const n={};let r,a=0;for(const o of e){const e=o.name,i=o.dtype,s=o.shape,l=la(s);let c;if("quantization"in o){const n=o.quantization;if("uint8"===n.dtype||"uint16"===n.dtype){if(!("min"in n)||!("scale"in n))throw new Error(`Weight ${o.name} with quantization ${n.dtype} doesn't have corresponding metadata min and scale.`)}else{if("float16"!==n.dtype)throw new Error(`Weight ${o.name} has unknown quantization dtype ${n.dtype}. Supported quantization dtypes are: 'uint8', 'uint16', and 'float16'.`);if("float32"!==i)throw new Error(`Weight ${o.name} is quantized with ${n.dtype} which only supports weights of type float32 not ${i}.`)}const s=xo[n.dtype],u=t.slice(a,a+l*s),d="uint8"===n.dtype?new Uint8Array(u):new Uint16Array(u);if("float32"===i)if("uint8"===n.dtype||"uint16"===n.dtype){c=new Float32Array(d.length);for(let t=0;t<d.length;t++){const e=d[t];c[t]=e*n.scale+n.min}}else{if("float16"!==n.dtype)throw new Error(`Unsupported quantization type ${n.dtype} for weight type float32.`);void 0===r&&(r=Eo()),c=r(d)}else{if("int32"!==i)throw new Error(`Unsupported dtype in weight '${e}': ${i}`);if("uint8"!==n.dtype&&"uint16"!==n.dtype)throw new Error(`Unsupported quantization type ${n.dtype} for weight type int32.`);c=new Int32Array(d.length);for(let t=0;t<d.length;t++){const e=d[t];c[t]=Math.round(e*n.scale+n.min)}}a+=l*s}else if("string"===i){const e=la(o.shape);c=[];for(let n=0;n<e;n++){const e=new Uint32Array(t.slice(a,a+4))[0];a+=4;const n=new Uint8Array(t.slice(a,a+e));c.push(n),a+=e}}else{const r=xo[i],o=t.slice(a,a+l*r);if("float32"===i)c=new Float32Array(o);else if("int32"===i)c=new Int32Array(o);else if("bool"===i)c=new Uint8Array(o);else{if("complex64"!==i)throw new Error(`Unsupported dtype in weight '${e}': ${i}`);{c=new Float32Array(o);const t=new Float32Array(c.length/2),r=new Float32Array(c.length/2);for(let e=0;e<t.length;e++)t[e]=c[2*e],r[e]=c[2*e+1];const a=bo(t,s,"float32"),i=bo(r,s,"float32");n[e]=yo(a,i),a.dispose(),i.dispose()}}a+=l*r}"complex64"!==i&&(n[e]=bo(c,s,i))}return n}(a.slice(t.groupOffset,t.groupOffset+t.sizeBytes),[t.manifestEntry]);for(const t in e)d[t]=e[t]}),p+=n}),d}}
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */Ka={buffer:function(t,e="float32",n){return e=e||"float32",xa(t),new Ga(t,e,n)},cast:Uo,clone:Xo,print:function(t,e=!1){console.log(t.toString(e))}};const Zo=mo({matMul_:function(t,e,n=!1,r=!1){let a=fo(t,"a","matMul"),o=fo(e,"b","matMul");[a,o]=no(a,o);const i={a:a,b:o},s={transposeA:n,transposeB:r};return lo.runKernel("BatchMatMul",i,s)}});
+/**
+     * @license
+     * Copyright 2018 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const ti=mo({transpose_:function(t,e){const n=fo(t,"x","transpose");if(null==e&&(e=n.shape.map((t,e)=>e).reverse()),oa(n.rank===e.length,()=>`Error in transpose: rank of input ${n.rank} must match length of perm ${e}.`),e.forEach(t=>{oa(t>=0&&t<n.rank,()=>"All entries in 'perm' must be between 0 and "+(n.rank-1)+" but got "+e)}),n.rank<=1)return n.clone();const r={x:n},a={perm:e};return lo.runKernel("Transpose",r,a)}});
+/**
+     * @license
+     * Copyright 2017 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */function ei(t,e){const n=[],r=Math.max(t.length,e.length);for(let a=0;a<r;a++){let r=t[t.length-a-1];null==r&&(r=1);let o=e[e.length-a-1];if(null==o&&(o=1),1===r)n.unshift(o);else if(1===o)n.unshift(r);else{if(r!==o){throw Error(`Operands could not be broadcast together with shapes ${t} and ${e}.`)}n.unshift(r)}}return n}
+/**
+     * @license
+     * Copyright 2018 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */function ni(t,e,n){if(ia(t),null!=e&&3!==e.length)throw new Error("tensor3d() requires shape to have three numbers");const r=po(t,n);if(3!==r.length&&1!==r.length)throw new Error("tensor3d() requires values to be number[][][] or flat/TypedArray");if(1===r.length&&null==e)throw new Error("tensor3d() requires shape to be provided when `values` are a flat array");return vo(t,e,r,n)}
+/**
+     * @license
+     * Copyright 2019 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */let ri;async function ai(t,e){let n=fo(t,"img","toPixels");if(!(t instanceof Ua)){const t=n;n=Uo(t,"int32"),t.dispose()}if(2!==n.rank&&3!==n.rank)throw new Error(`toPixels only supports rank 2 or 3 tensors, got rank ${n.rank}.`);const[r,a]=n.shape.slice(0,2),o=2===n.rank?1:n.shape[2];if(o>4||2===o)throw new Error("toPixels only supports depth of size 1, 3 or 4 but got "+o);if("float32"!==n.dtype&&"int32"!==n.dtype)throw new Error(`Unsupported type for toPixels: ${n.dtype}. Please use float32 or int32 tensors.`);const i=await n.data(),s="float32"===n.dtype?255:1,l=new Uint8ClampedArray(a*r*4);for(let t=0;t<r*a;++t){const e=[0,0,0,255];for(let r=0;r<o;r++){const a=i[t*o+r];if("float32"===n.dtype){if(a<0||a>1)throw new Error(`Tensor values for a float32 Tensor must be in the range [0 - 1] but encountered ${a}.`)}else if("int32"===n.dtype&&(a<0||a>255))throw new Error(`Tensor values for a int32 Tensor must be in the range [0 - 255] but encountered ${a}.`);1===o?(e[0]=a*s,e[1]=a*s,e[2]=a*s):e[r]=a*s}const r=4*t;l[r+0]=Math.round(e[0]),l[r+1]=Math.round(e[1]),l[r+2]=Math.round(e[2]),l[r+3]=Math.round(e[3])}if(null!=e){e.width=a,e.height=r;const t=e.getContext("2d"),n=new ImageData(l,a,r);t.putImageData(n,0,0)}return n!==t&&n.dispose(),l}const oi=mo({fromPixels_:function(t,e=3){if(e>4)throw new Error("Cannot construct Tensor with more than 4 channels from pixels.");if(null==t)throw new Error("pixels passed to tf.browser.fromPixels() can not be null");let n=!1,r=!1,a=!1,o=!1,i=!1,s=!1;if(t.data instanceof Uint8Array)n=!0;else if("undefined"!=typeof ImageData&&t instanceof ImageData)r=!0;else if("undefined"!=typeof HTMLVideoElement&&t instanceof HTMLVideoElement)a=!0;else if("undefined"!=typeof HTMLImageElement&&t instanceof HTMLImageElement)o=!0;else if(null!=t.getContext)i=!0;else{if(!("undefined"!=typeof ImageBitmap&&t instanceof ImageBitmap))throw new Error("pixels passed to tf.browser.fromPixels() must be either an HTMLVideoElement, HTMLImageElement, HTMLCanvasElement, ImageData in browser, or OffscreenCanvas, ImageData in webworker or {data: Uint32Array, width: number, height: number}, but was "+t.constructor.name);s=!0}if(a){const e=2;if(a&&t.readyState<e)throw new Error("The video element has not loaded data yet. Please wait for `loadeddata` event on the <video> element.")}if(null!=Ca("FromPixels",lo.backendName)){const n={pixels:t},r={numChannels:e};return lo.runKernel("FromPixels",n,r)}const[l,c]=a?[t.videoWidth,t.videoHeight]:[t.width,t.height];let u,d;if(i)u=t.getContext("2d").getImageData(0,0,l,c).data;else if(r||n)u=t.data;else if(o||a||s){if(null==ri)if("undefined"==typeof document){if("undefined"==typeof OffscreenCanvas||"undefined"==typeof OffscreenCanvasRenderingContext2D)throw new Error("Cannot parse input in current context. Reason: OffscreenCanvas Context2D rendering is not supported.");ri=new OffscreenCanvas(1,1).getContext("2d")}else ri=document.createElement("canvas").getContext("2d");ri.canvas.width=l,ri.canvas.height=c,ri.drawImage(t,0,0,l,c),u=ri.getImageData(0,0,l,c).data}if(4===e)d=new Int32Array(u);else{const t=l*c;d=new Int32Array(t*e);for(let n=0;n<t;n++)for(let t=0;t<e;++t)d[n*e+t]=u[4*n+t]}return ni(d,[c,l,e],"int32")}});
+/**
+     * @license
+     * Copyright 2018 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */function ii(t,e){return lo.tidy(t,e)}
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const si=mo({add_:function(t,e){let n=fo(t,"a","add"),r=fo(e,"b","add");[n,r]=no(n,r);const a={a:n,b:r};return lo.runKernel("Add",a)}});
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const li=mo({floorDiv_:function(t,e){let n=fo(t,"a","floorDiv"),r=fo(e,"b","floorDiv");[n,r]=no(n,r);const a={a:n,b:r};return lo.runKernel("FloorDiv",a)}});
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const ci=mo({div_:function(t,e){let n=fo(t,"a","div"),r=fo(e,"b","div");if([n,r]=no(n,r),"int32"===n.dtype&&"int32"===r.dtype)return li(n,r);const a={a:n,b:r};return lo.runKernel("RealDiv",a,{})}});
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const ui=mo({mul_:function(t,e){let n=fo(t,"a","mul"),r=fo(e,"b","mul");[n,r]=no(n,r);const a={a:n,b:r};return lo.runKernel("Multiply",a)}});
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */function di(t){const[e,n,r]=function(t){return"number"==typeof t?[t,t,t]:2===t.length?[t[0],t[1],1]:t}(t);return 1===e&&1===n&&1===r}function pi(t,e){return di(t)||di(e)}function hi(t,e,n){if(null!=n){if("string"==typeof e)throw Error(`Error in ${t}: pad must be an integer when using dimRoundingMode ${n} but got pad ${e}.`);if("number"==typeof e)oa(ua(e),()=>`Error in ${t}: pad must be an integer when using dimRoundingMode ${n} but got pad ${e}.`);else{if("object"!=typeof e)throw Error(`Error in ${t}: Unknown padding parameter: ${e}`);e.forEach(e=>{e.forEach(e=>{oa(ua(e),()=>`Error in ${t}: pad must be an integer when using dimRoundingMode ${n} but got pad ${e}.`)})})}}}
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const fi=mo({reshape_:function(t,e){const n={x:fo(t,"x","reshape","string_or_numeric")},r={shape:e};return lo.runKernel("Reshape",n,r)}});
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const gi=mo({avgPool_:function(t,e,n,r,a){const o=fo(t,"x","avgPool","float32");oa(pi(n,1),()=>`Error in avgPool: Either strides or dilations must be 1. Got strides ${n} and dilations '1'`);let i=o,s=!1;3===o.rank&&(s=!0,i=fi(o,[1,o.shape[0],o.shape[1],o.shape[2]])),oa(4===i.rank,()=>`Error in avgPool: x must be rank 4 but got rank ${i.rank}.`),hi("avgPool",r,a);const l={x:i},c={filterSize:e,strides:n,pad:r,dimRoundingMode:a};let u=lo.runKernel("AvgPool",l,c);return u=Uo(u,o.dtype),s?fi(u,[u.shape[1],u.shape[2],u.shape[3]]):u}});
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const mi=mo({concat_:function(t,e=0){oa(t.length>=1,()=>"Pass at least one tensor to concat");const n=go(t,"tensors","concat","string_or_numeric");if("complex64"===n[0].dtype&&n.forEach(t=>{if("complex64"!==t.dtype)throw new Error(`Cannot concatenate complex64 tensors with a tensor\n          with dtype ${t.dtype}. `)}),1===n.length)return Xo(n[0]);const r=n,a={axis:e};return lo.runKernel("Concat",r,a)}});
+/**
+     * @license
+     * Copyright 2018 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const yi=mo({sigmoid_:function(t){const e={x:fo(t,"x","sigmoid","float32")};return lo.runKernel("Sigmoid",e)}});
+/**
+     * @license
+     * Copyright 2018 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const vi=mo({slice_:function(t,e,n){const r=fo(t,"x","slice","string_or_numeric");if(0===r.rank)throw new Error("Slicing scalar is not possible");const a={x:r},o={begin:e,size:n};return lo.runKernel("Slice",a,o)}});const bi=mo({batchNorm_:
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
      */
-    const drawLegends = (legends, legendHeight) => {
-      // Add local legends
-      for (let i = 0; i < 2; i++){
-        let start = 1 + i * 5;
-        let range1 = cnnLayerRanges.local[start];
-        let range2 = cnnLayerRanges.local[start + 2];
-
-        let localLegendScale1 = d3.scaleLinear()
-            .range([0, 2 * nodeLength$2 + hSpaceAroundGap - 1.2])
-            .domain([-range1 / 2, range1 / 2]);
-
-        let localLegendScale2 = d3.scaleLinear()
-            .range([0, 3 * nodeLength$2 + 2 * hSpaceAroundGap - 1.2])
-            .domain([-range2 / 2, range2 / 2]);
-
-        let localLegendAxis1 = d3.axisBottom()
-            .scale(localLegendScale1)
-            .tickFormat(d3.format('.2f'))
-            .tickValues([-range1 / 2, 0, range1 / 2]);
-
-        let localLegendAxis2 = d3.axisBottom()
-            .scale(localLegendScale2)
-            .tickFormat(d3.format('.2f'))
-            .tickValues([-range2 / 2, 0, range2 / 2]);
-
-        let localLegend1 = legends.append('g')
-            .attr('class', 'legend local-legend')
-            .attr('id', `local-legend-${i}-1`)
-            .classed('hidden', !detailedMode || selectedScaleLevel !== 'local')
-            .attr('transform', `translate(${nodeCoordinate[start][0].x}, ${0})`);
-
-        localLegend1.append('g')
-            .attr('transform', `translate(0, ${legendHeight - 3})`)
-            .call(localLegendAxis1);
-
-        localLegend1.append('rect')
-            .attr('width', 2 * nodeLength$2 + hSpaceAroundGap)
-            .attr('height', legendHeight)
-            .style('fill', 'url(#convGradient)');
-
-        let localLegend2 = legends.append('g')
-            .attr('class', 'legend local-legend')
-            .attr('id', `local-legend-${i}-2`)
-            .classed('hidden', !detailedMode || selectedScaleLevel !== 'local')
-            .attr('transform', `translate(${nodeCoordinate[start + 2][0].x}, ${0})`);
-
-        localLegend2.append('g')
-            .attr('transform', `translate(0, ${legendHeight - 3})`)
-            .call(localLegendAxis2);
-
-        localLegend2.append('rect')
-            .attr('width', 3 * nodeLength$2 + 2 * hSpaceAroundGap)
-            .attr('height', legendHeight)
-            .style('fill', 'url(#convGradient)');
-      }
-
-      // Add module legends
-      for (let i = 0; i < 2; i++){
-        let start = 1 + i * 5;
-        let range = cnnLayerRanges.module[start];
-
-        let moduleLegendScale = d3.scaleLinear()
-            .range([0, 5 * nodeLength$2 + 3 * hSpaceAroundGap +
-            1 * hSpaceAroundGap * gapRatio - 1.2])
-            .domain([-range / 2, range / 2]);
-
-        let moduleLegendAxis = d3.axisBottom()
-            .scale(moduleLegendScale)
-            .tickFormat(d3.format('.2f'))
-            .tickValues([-range / 2, -(range / 4), 0, range / 4, range / 2]);
-
-        let moduleLegend = legends.append('g')
-            .attr('class', 'legend module-legend')
-            .attr('id', `module-legend-${i}`)
-            .classed('hidden', !detailedMode || selectedScaleLevel !== 'module')
-            .attr('transform', `translate(${nodeCoordinate[start][0].x}, ${0})`);
-
-        moduleLegend.append('g')
-            .attr('transform', `translate(0, ${legendHeight - 3})`)
-            .call(moduleLegendAxis);
-
-        moduleLegend.append('rect')
-            .attr('width', 5 * nodeLength$2 + 3 * hSpaceAroundGap +
-                1 * hSpaceAroundGap * gapRatio)
-            .attr('height', legendHeight)
-            .style('fill', 'url(#convGradient)');
-      }
-
-      // Add global legends
-      let start = 1;
-      let range = cnnLayerRanges.global[start];
-
-      let globalLegendScale = d3.scaleLinear()
-          .range([0, 10 * nodeLength$2 + 6 * hSpaceAroundGap +
-          3 * hSpaceAroundGap * gapRatio - 1.2])
-          .domain([-range / 2, range / 2]);
-
-      let globalLegendAxis = d3.axisBottom()
-          .scale(globalLegendScale)
-          .tickFormat(d3.format('.2f'))
-          .tickValues([-range / 2, -(range / 4), 0, range / 4, range / 2]);
-
-      let globalLegend = legends.append('g')
-          .attr('class', 'legend global-legend')
-          .attr('id', 'global-legend')
-          .classed('hidden', !detailedMode || selectedScaleLevel !== 'global')
-          .attr('transform', `translate(${nodeCoordinate[start][0].x}, ${0})`);
-
-      globalLegend.append('g')
-          .attr('transform', `translate(0, ${legendHeight - 3})`)
-          .call(globalLegendAxis);
-
-      globalLegend.append('rect')
-          .attr('width', 10 * nodeLength$2 + 6 * hSpaceAroundGap +
-              3 * hSpaceAroundGap * gapRatio)
-          .attr('height', legendHeight)
-          .style('fill', 'url(#convGradient)');
-
-
-      // Add output legend
-      let outputRectScale = d3.scaleLinear()
-          .domain(cnnLayerRanges.output)
-          .range([0, nodeLength$2 - 1.2]);
-
-      let outputLegendAxis = d3.axisBottom()
-          .scale(outputRectScale)
-          .tickFormat(d3.format('.1f'))
-          .tickValues([0, cnnLayerRanges.output[1]]);
-
-      console.log(nodeCoordinate);
-
-      let outputLegend = legends.append('g')
-          .attr('class', 'legend output-legend')
-          .attr('id', 'output-legend')
-          .classed('hidden', !detailedMode)
-          .attr('transform', `translate(${nodeCoordinate[11][0].x}, ${0})`);
-
-      outputLegend.append('g')
-          .attr('transform', `translate(0, ${legendHeight - 3})`)
-          .call(outputLegendAxis);
-
-      outputLegend.append('rect')
-          .attr('width', nodeLength$2)
-          .attr('height', legendHeight)
-          .style('fill', 'gray');
-
-      // Add input image legend
-      let inputScale = d3.scaleLinear()
-          .range([0, nodeLength$2 - 1.2])
-          .domain([0, 1]);
-
-      let inputLegendAxis = d3.axisBottom()
-          .scale(inputScale)
-          .tickFormat(d3.format('.1f'))
-          .tickValues([0, 0.5, 1]);
-
-      let inputLegend = legends.append('g')
-          .attr('class', 'legend input-legend')
-          .classed('hidden', !detailedMode)
-          .attr('transform', `translate(${nodeCoordinate[0][0].x}, ${0})`);
-
-      inputLegend.append('g')
-          .attr('transform', `translate(0, ${legendHeight - 3})`)
-          .call(inputLegendAxis);
-
-      inputLegend.append('rect')
-          .attr('x', 0.3)
-          .attr('width', nodeLength$2 - 0.3)
-          .attr('height', legendHeight)
-          .attr('transform', `rotate(180, ${nodeLength$2/2}, ${legendHeight/2})`)
-          .style('stroke', 'rgb(20, 20, 20)')
-          .style('stroke-width', 0.3)
-          .style('fill', 'url(#inputGradient)');
-    };
-
-    /**
-     * Draw the overview
-     * @param {number} width Width of the cnn group
-     * @param {number} height Height of the cnn group
-     * @param {object} cnnGroup Group to appen cnn elements to
-     * @param {function} nodeMouseOverHandler Callback func for mouseOver
-     * @param {function} nodeMouseLeaveHandler Callback func for mouseLeave
-     * @param {function} nodeClickHandler Callback func for click
+function(t,e,n,r,a,o){null==o&&(o=.001);const i=fo(t,"x","batchNorm"),s=fo(e,"mean","batchNorm"),l=fo(n,"variance","batchNorm");let c,u;null!=a&&(c=fo(a,"scale","batchNorm")),null!=r&&(u=fo(r,"offset","batchNorm")),oa(s.rank===l.rank,()=>"Batch normalization gradient requires mean and variance to have equal ranks."),oa(null==u||s.rank===u.rank,()=>"Batch normalization gradient requires mean and offset to have equal ranks."),oa(null==c||s.rank===c.rank,()=>"Batch normalization gradient requires mean and scale to have equal ranks.");const d={x:function(t){let e;return e=0===t.rank||1===t.rank?fi(t,[1,1,1,t.size]):2===t.rank?fi(t,[1,1,t.shape[0],t.shape[1]]):3===t.rank?fi(t,[1,t.shape[0],t.shape[1],t.shape[2]]):t,e}(i),scale:c,offset:u,mean:s,variance:l},p={varianceEpsilon:o},h=lo.runKernel("FusedBatchNorm",d,p);return fi(h,i.shape)}});
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const xi=mo({bincount_:function(t,e,n){const r=fo(t,"x","bincount"),a=fo(e,"weights","bincount");oa("int32"===r.dtype,()=>"Error in bincount: input dtype must be int32, but got "+r.dtype),oa(n>=0,()=>`size must be non-negative, but got ${n}.`),oa(a.size===r.size||0===a.size,()=>`Error in bincount: weights must have the same size as input or0-length, but got input shape: ${r.shape}, weights shape: `+a.shape+".");const o={x:r,weights:a},i={size:n};return lo.runKernel("Bincount",o,i)}});
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const wi=mo({broadcastTo_:function(t,e){let n=fo(t,"broadcastTo","x");const r=n.shape;if(e.some(t=>!(t>0)||t%1!=0))throw new Error(`broadcastTo(): Invalid broadcast shape [${e}].`);if(e.length<n.rank)throw new Error(`broadcastTo(): shape.length=${e.length} < input.rank=${n.rank}.`);if(e.length>n.rank){const t=n.shape.slice();for(;t.length<e.length;)t.unshift(1);n=fi(n,t)}const a=n.shape,o=Array.from(e);for(let t=e.length-1;t>=0;t--)if(a[t]===e[t])o[t]=1;else if(1!==n.shape[t])throw new Error(`broadcastTo(): [${r}] cannot be broadcast to [${e}].`);if(0===o.map((t,e)=>t>1?e:-1).filter(t=>t>=0).length)return Xo(n);const i={x:n},s={reps:o};return lo.runKernel("Tile",i,s)}});
+/**
+     * @license
+     * Copyright 2018 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const _i=mo({clipByValue_:function(t,e,n){const r=fo(t,"x","clipByValue");oa(e<=n,()=>`Error in clip: min (${e}) must be less than or equal to max (${n}).`);const a={x:r},o={clipValueMin:e,clipValueMax:n};return lo.runKernel("ClipByValue",a,o)}});
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const ki=mo({conv2d_:function(t,e,n,r,a="NHWC",o=[1,1],i){const s=fo(t,"x","conv2d","float32"),l=fo(e,"filter","conv2d","float32");let c=s,u=!1;3===s.rank&&(u=!0,c=fi(s,[1,s.shape[0],s.shape[1],s.shape[2]])),oa(4===c.rank,()=>`Error in conv2d: input must be rank 4, but got rank ${c.rank}.`),oa(4===l.rank,()=>"Error in conv2d: filter must be rank 4, but got rank "+l.rank+"."),hi("conv2d",r,i);const d="NHWC"===a?c.shape[3]:c.shape[1];oa(d===l.shape[2],()=>`Error in conv2d: depth of input (${d}) must match input depth for filter ${l.shape[2]}.`),oa(pi(n,o),()=>`Error in conv2D: Either strides or dilations must be 1. Got strides ${n} and dilations '${o}'`);const p={x:c,filter:l},h={strides:n,pad:r,dataFormat:a,dilations:o,dimRoundingMode:i},f=lo.runKernel("Conv2D",p,h);return u?fi(f,[f.shape[1],f.shape[2],f.shape[3]]):f}});
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const Ei=mo({depthwiseConv2d_:function(t,e,n,r,a="NHWC",o=[1,1],i){const s=fo(t,"x","depthwiseConv2d","float32"),l=fo(e,"filter","depthwiseConv2d","float32");let c=s,u=!1;3===s.rank&&(u=!0,c=fi(s,[1,s.shape[0],s.shape[1],s.shape[2]])),oa(4===c.rank,()=>`Error in depthwiseConv2d: input must be rank 4, but got rank ${c.rank}.`),oa(4===l.rank,()=>"Error in depthwiseConv2d: filter must be rank 4, but got rank "+l.rank+"."),oa(c.shape[3]===l.shape[2],()=>`Error in depthwiseConv2d: number of input channels (${c.shape[3]}) must match the inChannels dimension in filter ${l.shape[2]}.`),hi("depthwiseConv2d",r,i);const d={x:c,filter:l},p={strides:n,pad:r,dataFormat:a,dilations:o,dimRoundingMode:i},h=lo.runKernel("DepthwiseConv2dNative",d,p);return u?fi(h,[h.shape[1],h.shape[2],h.shape[3]]):h}});
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const $i=mo({where_:function(t,e,n){const r=fo(e,"a","where"),a=fo(n,"b","where"),o=fo(t,"condition","where","bool"),i=ei(ei(o.shape,r.shape),a.shape),s={condition:wi(o,i),t:wi(r,i),e:wi(a,i)};return lo.runKernel("Select",s)}});
+/**
+     * @license
+     * Copyright 2018 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const Ii=mo({exp_:function(t){const e={x:fo(t,"x","exp")};return lo.runKernel("Exp",e)}});
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const Mi=mo({expandDims_:function(t,e=0){const n=fo(t,"x","expandDims","string_or_numeric");oa(e<=n.rank,()=>"Axis must be <= rank of the tensor");const r={input:n},a={dim:e};return lo.runKernel("ExpandDims",r,a)}});
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const Pi=mo({tile_:function(t,e){const n=fo(t,"x","tile","string_or_numeric");oa(n.rank===e.length,()=>`Error in transpose: rank of input ${n.rank} must match length of reps ${e}.`);const r={x:n},a={reps:e};return lo.runKernel("Tile",r,a)}});
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */function Si(t,e,n){const r={shape:t,value:e,dtype:n};return lo.runKernel("Fill",{},r)}
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const Ai=mo({greater_:function(t,e){let n=fo(t,"a","greater","string_or_numeric"),r=fo(e,"b","greater","string_or_numeric");[n,r]=no(n,r),ei(n.shape,r.shape);const a={a:n,b:r};return lo.runKernel("Greater",a)}});
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const Ti=mo({lessEqual_:function(t,e){let n=fo(t,"a","lessEqual","string_or_numeric"),r=fo(e,"b","lessEqual","string_or_numeric");[n,r]=no(n,r),ei(n.shape,r.shape);const a={a:n,b:r};return lo.runKernel("LessEqual",a)}});
+/**
+     * @license
+     * Copyright 2018 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const Ci=mo({neg_:function(t){const e={x:fo(t,"x","neg")};return lo.runKernel("Neg",e)}});
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const Li=mo({max_:function(t,e=null,n=!1){const r={x:fo(t,"x","max")},a={reductionIndices:e,keepDims:n};return lo.runKernel("Max",r,a)}});
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const Fi=mo({sub_:function(t,e){let n=fo(t,"a","sub"),r=fo(e,"b","sub");[n,r]=no(n,r);const a={a:n,b:r};return lo.runKernel("Sub",a)}});
+/**
+     * @license
+     * Copyright 2018 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const Di=mo({sum_:function(t,e=null,n=!1){let r=fo(t,"x","sum");"bool"===r.dtype&&(r=Uo(r,"int32"));const a={x:r},o={axis:e,keepDims:n};return lo.runKernel("Sum",a,o)}});
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const Ni=mo({maxPool_:function(t,e,n,r,a){const o=fo(t,"x","maxPool");let i=o,s=!1;3===o.rank&&(s=!0,i=fi(o,[1,o.shape[0],o.shape[1],o.shape[2]])),oa(4===i.rank,()=>`Error in maxPool: input must be rank 4 but got rank ${i.rank}.`),oa(pi(n,1),()=>`Error in maxPool: Either strides or dilations must be 1. Got strides ${n} and dilations '1'`),hi("maxPool",r,a);const l={x:i},c={filterSize:e,strides:n,pad:r,dimRoundingMode:a},u=lo.runKernel("MaxPool",l,c);return s?fi(u,[u.shape[1],u.shape[2],u.shape[3]]):u}});
+/**
+     * @license
+     * Copyright 2018 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */function Ri(t,e="float32"){if("complex64"===e){const e=Ri(t,"float32"),n=Ri(t,"float32");return yo(e,n)}const n=ba(la(t),e);return lo.makeTensor(n,t,e)}
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const Bi=mo({pad_:function(t,e,n=0){const r=fo(t,"x","pad");if(0===r.rank)throw new Error("pad(scalar) is not defined. Pass non-scalar to pad");const a={paddings:e,constantValue:n},o={x:r};return lo.runKernel("PadV2",o,a)}});
+/**
+     * @license
+     * Copyright 2018 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */function Oi(t,e,n=1,r="float32"){if(0===n)throw new Error("Cannot have a step of zero");const a={start:t,stop:e,step:n,dtype:r};return lo.runKernel("Range",{},a)}
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const zi=mo({relu_:function(t){const e={x:fo(t,"x","relu")};return lo.runKernel("Relu",e)}});
+/**
+     * @license
+     * Copyright 2018 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const ji=mo({round_:function(t){const e={x:fo(t,"x","round")};return lo.runKernel("Round",e)}});
+/**
+     * @license
+     * Copyright 2018 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */function Hi(t,e){if((pa(t)&&"string"!==e||Array.isArray(t))&&"complex64"!==e)throw new Error("Error creating a new Scalar: value must be a primitive (number|boolean|string)");if("string"===e&&pa(t)&&!(t instanceof Uint8Array))throw new Error("When making a scalar from encoded string, the value must be `Uint8Array`.");return vo(t,[],[],e)}const qi=mo({separableConv2d_:function(t,e,n,r,a,o=[1,1],i="NHWC"){const s=fo(t,"x","separableConv2d"),l=fo(e,"depthwiseFilter","separableConv2d"),c=fo(n,"pointwiseFilter","separableConv2d");let u=s,d=!1;if(3===s.rank&&(d=!0,u=fi(s,[1,s.shape[0],s.shape[1],s.shape[2]])),"NCHW"===i)throw new Error("separableConv2d currently does not support dataFormat NCHW; only NHWC is supported");oa(4===u.rank,()=>`Error in separableConv2d: input must be rank 4, but got rank ${u.rank}.`),oa(4===l.rank,()=>`Error in separableConv2d: depthwise filter must be rank 4, but got rank ${l.rank}.`),oa(4===c.rank,()=>`Error in separableConv2d: pointwise filter must be rank 4, but got rank ${l.rank}.`),oa(1===c.shape[0],()=>`Error in separableConv2d: the first dimension of pointwise filter  must be 1, but got ${c.shape[0]}.`),oa(1===c.shape[1],()=>`Error in separableConv2d: the second dimension of pointwise filter must be 1, but got ${c.shape[1]}.`);const p=l.shape[2],h=l.shape[3];oa(c.shape[2]===p*h,()=>`Error in separableConv2d: the third dimension of pointwise filter must be ${p*h}, but got ${c.shape[2]}.`);const f=Ei(u,l,r,a,i,o),g=ki(f,c,1,"valid",i);return d?fi(g,[g.shape[1],g.shape[2],g.shape[3]]):g}});
+/**
+     * @license
+     * Copyright 2018 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const Wi=mo({slice3d_:function(t,e,n){const r=fo(t,"x","slice3d");return oa(3===r.rank,()=>`slice3d expects a rank-3 tensor, but got a rank-${r.rank} tensor`),vi(r,e,n)}});
+/**
+     * @license
+     * Copyright 2018 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const Gi=mo({softmax_:function(t,e=-1){const n=fo(t,"logits","softmax","float32");if(-1===e&&(e=n.rank-1),e!==n.rank-1)throw Error(`Softmax along a non-last dimension is not yet supported. Logits was rank ${n.rank} and dim was ${e}`);const r={logits:n},a={dim:e};return lo.runKernel("Softmax",r,a)}});
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const Vi=mo({split_:function(t,e,n=0){const r={x:fo(t,"x","split")},a={numOrSizeSplits:e,axis:n};return lo.runKernel("SplitV",r,a)}});
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const Ki=mo({stack_:function(t,e=0){const n=go(t,"tensors","stack","string_or_numeric");oa(n.length>=1,()=>"Pass at least one tensor to tf.stack"),n.length>0&&oa(e<=n[0].rank,()=>"Axis must be <= rank of the tensor");const r=n,a={axis:e};return lo.runKernel("Pack",r,a)}});
+/**
+     * @license
+     * Copyright 2018 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */function Ui(t,e){ia(t);const n=po(t,e);if(1!==n.length)throw new Error("tensor1d() requires values to be a flat/TypedArray");return vo(t,null,n,e)}
+/**
+     * @license
+     * Copyright 2018 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */function Xi(t,e,n){if(ia(t),null!=e&&2!==e.length)throw new Error("tensor2d() requires shape to have two numbers");const r=po(t,n);if(2!==r.length&&1!==r.length)throw new Error("tensor2d() requires values to be number[][] or flat/TypedArray");if(1===r.length&&null==e)throw new Error("tensor2d() requires shape to be provided when `values` are a flat/TypedArray");return vo(t,e,r,n)}
+/**
+     * @license
+     * Copyright 2018 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */function Ji(t,e,n){if(ia(t),null!=e&&4!==e.length)throw new Error("tensor4d() requires shape to have four numbers");const r=po(t,n);if(4!==r.length&&1!==r.length)throw new Error("tensor4d() requires values to be number[][][][] or flat/TypedArray");if(1===r.length&&null==e)throw new Error("tensor4d() requires shape to be provided when `values` are a flat array");return vo(t,e,r,n)}
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const Yi=mo({unstack_:function(t,e=0){const n=fo(t,"x","unstack","string_or_numeric");oa(e>=-n.shape.length&&e<n.shape.length,()=>`Axis = ${e} is not in [-${n.shape.length}, ${n.shape.length})`);const r={value:n},a={axis:e};return lo.runKernel("Unpack",r,a)}});
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const Qi=mo({cropAndResize_:function(t,e,n,r,a="bilinear",o=0){const i=fo(t,"image","cropAndResize"),s=fo(e,"boxes","cropAndResize","float32"),l=fo(n,"boxInd","cropAndResize","int32"),c=s.shape[0];oa(4===i.rank,()=>`Error in cropAndResize: image must be rank 4,but got rank ${i.rank}.`),oa(2===s.rank&&4===s.shape[1],()=>`Error in cropAndResize: boxes must be have size [${c},4] but had shape ${s.shape}.`),oa(1===l.rank&&l.shape[0]===c,()=>`Error in cropAndResize: boxInd must be have size [${c}] but had shape ${s.shape}.`),oa(2===r.length,()=>`Error in cropAndResize: cropSize must be of length 2, but got length ${r.length}.`),oa(r[0]>=1&&r[1]>=1,()=>"cropSize must be atleast [1,1], but was "+r),oa("bilinear"===a||"nearest"===a,()=>"method must be bilinear or nearest, but was "+a);const u={image:i,boxes:s,boxInd:l},d={method:a,extrapolationValue:o,cropSize:r};return lo.runKernel("CropAndResize",u,d)}});
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const Zi=mo({flipLeftRight_:function(t){const e=fo(t,"image","flipLeftRight","float32");oa(4===e.rank,()=>`Error in flipLeftRight: image must be rank 4,but got rank ${e.rank}.`);const n={image:e};return lo.runKernel("FlipLeftRight",n,{})}});
+/**
+     * @license
+     * Copyright 2021 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const ts=mo({grayscaleToRGB_:function(t){const e=fo(t,"image","grayscaleToRGB"),n=e.rank-1,r=e.shape[n];oa(e.rank>=2,()=>`Error in grayscaleToRGB: images must be at least rank 2, but got rank ${e.rank}.`),oa(1===r,()=>`Error in grayscaleToRGB: last dimension of a grayscale image should be size 1, but got size ${r}.`);const a=new Array(e.rank);return a.fill(1,0,n),a[n]=3,Pi(e,a)}});
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const es=mo({rotateWithOffset_:function(t,e,n=0,r=.5){const a=fo(t,"image","rotateWithOffset","float32");oa(4===a.rank,()=>`Error in rotateWithOffset: image must be rank 4,but got rank ${a.rank}.`);const o={image:a},i={radians:e,fillValue:n,center:r};return lo.runKernel("RotateWithOffset",o,i)}});
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */function ns(t,e,n,r,a,o){null==r&&(r=.5),null==a&&(a=Number.NEGATIVE_INFINITY),null==o&&(o=0);const i=t.shape[0];return n=Math.min(n,i),oa(0<=r&&r<=1,()=>`iouThreshold must be in [0, 1], but was '${r}'`),oa(2===t.rank,()=>`boxes must be a 2D tensor, but was of rank '${t.rank}'`),oa(4===t.shape[1],()=>"boxes must have 4 columns, but 2nd dimension was "+t.shape[1]),oa(1===e.rank,()=>"scores must be a 1D tensor"),oa(e.shape[0]===i,()=>`scores has incompatible shape with boxes. Expected ${i}, but was `+e.shape[0]),oa(0<=o&&o<=1,()=>`softNmsSigma must be in [0, 1], but was '${o}'`),{maxOutputSize:n,iouThreshold:r,scoreThreshold:a,softNmsSigma:o}}
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const rs=mo({nonMaxSuppression_:function(t,e,n,r=.5,a=Number.NEGATIVE_INFINITY){const o=fo(t,"boxes","nonMaxSuppression","float32"),i=fo(e,"scores","nonMaxSuppression","float32"),s=ns(o,i,n,r,a),l={maxOutputSize:n=s.maxOutputSize,iouThreshold:r=s.iouThreshold,scoreThreshold:a=s.scoreThreshold};return lo.runKernel("NonMaxSuppressionV3",{boxes:o,scores:i},l)}});
+/**
+     * @license
+     * Copyright 2019 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */function as(t,e,n){const r=function(t,e,n){return function(t,e,n){let r=0,a=t.length,o=0,i=!1;for(;r<a;){o=r+(a-r>>>1);const s=n(e,t[o]);s>0?r=o+1:(a=o,i=!s)}return i?r:-r-1}
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */(t,e,n||os)}(t,e,n),a=r<0?-(r+1):r;t.splice(a,0,e)}function os(t,e){return t>e?1:t<e?-1:0}function is(t,e,n,r,a,o,i=!1,s=!1,l=!1){const c=[];for(let t=0;t<e.length;t++)e[t]>a&&c.push({score:e[t],boxIndex:t,suppressBeginIndex:0});c.sort(cs);const u=o>0?-.5/o:0,d=[],p=[];for(;d.length<n&&c.length>0;){const e=c.pop(),{score:n,boxIndex:o,suppressBeginIndex:i}=e;if(n<a)break;let s=!1;for(let n=d.length-1;n>=i;--n){const i=ss(t,o,d[n]);if(i>=r){s=!0;break}if(e.score=e.score*ls(r,u,i),e.score<=a)break}e.suppressBeginIndex=d.length,s||(e.score===n?(d.push(o),p.push(e.score)):e.score>a&&as(c,e,cs))}const h=d.length,f=n-h;s&&f>0&&(d.push(...new Array(f).fill(0)),p.push(...new Array(f).fill(0)));const g={selectedIndices:d};return i&&(g.selectedScores=p),l&&(g.validOutputs=h),g}function ss(t,e,n){const r=t.subarray(4*e,4*e+4),a=t.subarray(4*n,4*n+4),o=Math.min(r[0],r[2]),i=Math.min(r[1],r[3]),s=Math.max(r[0],r[2]),l=Math.max(r[1],r[3]),c=Math.min(a[0],a[2]),u=Math.min(a[1],a[3]),d=Math.max(a[0],a[2]),p=Math.max(a[1],a[3]),h=(s-o)*(l-i),f=(d-c)*(p-u);if(h<=0||f<=0)return 0;const g=Math.max(o,c),m=Math.max(i,u),y=Math.min(s,d),v=Math.min(l,p),b=Math.max(y-g,0)*Math.max(v-m,0);return b/(h+f-b)}function ls(t,e,n){const r=Math.exp(e*n*n);return n<=t?r:0}function cs(t,e){return t.score-e.score||t.score===e.score&&e.boxIndex-t.boxIndex}
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const us=async function(t,e,n,r=.5,a=Number.NEGATIVE_INFINITY){const o=fo(t,"boxes","nonMaxSuppressionAsync"),i=fo(e,"scores","nonMaxSuppressionAsync"),s=ns(o,i,n,r,a);n=s.maxOutputSize,r=s.iouThreshold,a=s.scoreThreshold;const l=await Promise.all([o.data(),i.data()]),c=l[0],u=l[1],{selectedIndices:d}=function(t,e,n,r,a){return is(t,e,n,r,a,0)}(c,u,n,r,a);return o!==t&&o.dispose(),i!==e&&i.dispose(),Ui(d,"int32")};
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const ds=mo({nonMaxSuppressionWithScore_:function(t,e,n,r=.5,a=Number.NEGATIVE_INFINITY,o=0){const i=fo(t,"boxes","nonMaxSuppression"),s=fo(e,"scores","nonMaxSuppression"),l=ns(i,s,n,r,a,o),c={boxes:i,scores:s},u={maxOutputSize:n=l.maxOutputSize,iouThreshold:r=l.iouThreshold,scoreThreshold:a=l.scoreThreshold,softNmsSigma:o=l.softNmsSigma},d=lo.runKernel("NonMaxSuppressionV5",c,u);return{selectedIndices:d[0],selectedScores:d[1]}}});
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const ps=async function(t,e,n,r=.5,a=Number.NEGATIVE_INFINITY,o=0){const i=fo(t,"boxes","nonMaxSuppressionAsync"),s=fo(e,"scores","nonMaxSuppressionAsync"),l=ns(i,s,n,r,a,o);n=l.maxOutputSize,r=l.iouThreshold,a=l.scoreThreshold,o=l.softNmsSigma;const c=await Promise.all([i.data(),s.data()]),u=c[0],d=c[1],{selectedIndices:p,selectedScores:h}=function(t,e,n,r,a,o){return is(t,e,n,r,a,o,!0)}(u,d,n,r,a,o);return i!==t&&i.dispose(),s!==e&&s.dispose(),{selectedIndices:Ui(p,"int32"),selectedScores:Ui(h)}};
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const hs=mo({nonMaxSuppressionPadded_:function(t,e,n,r=.5,a=Number.NEGATIVE_INFINITY,o=!1){const i=fo(t,"boxes","nonMaxSuppression"),s=fo(e,"scores","nonMaxSuppression"),l=ns(i,s,n,r,a,null),c={boxes:i,scores:s},u={maxOutputSize:l.maxOutputSize,iouThreshold:l.iouThreshold,scoreThreshold:l.scoreThreshold,padToMaxOutputSize:o},d=lo.runKernel("NonMaxSuppressionV4",c,u);return{selectedIndices:d[0],validOutputs:d[1]}}});
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const fs=async function(t,e,n,r=.5,a=Number.NEGATIVE_INFINITY,o=!1){const i=fo(t,"boxes","nonMaxSuppressionAsync"),s=fo(e,"scores","nonMaxSuppressionAsync"),l=ns(i,s,n,r,a,null),c=l.maxOutputSize,u=l.iouThreshold,d=l.scoreThreshold,[p,h]=await Promise.all([i.data(),s.data()]),{selectedIndices:f,validOutputs:g}=function(t,e,n,r,a,o){return is(t,e,n,r,a,0,!1,o,!0)}(p,h,c,u,d,o);return i!==t&&i.dispose(),s!==e&&s.dispose(),{selectedIndices:Ui(f,"int32"),validOutputs:Hi(g,"int32")}};
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const gs=mo({resizeBilinear_:function(t,e,n=!1,r=!1){const a=fo(t,"images","resizeBilinear");oa(3===a.rank||4===a.rank,()=>`Error in resizeBilinear: x must be rank 3 or 4, but got rank ${a.rank}.`),oa(2===e.length,()=>"Error in resizeBilinear: new shape must 2D, but got shape "+e+"."),oa(!1===r||!1===n,()=>"Error in resizeBilinear: If halfPixelCenters is true, alignCorners must be false.");let o=a,i=!1;3===a.rank&&(i=!0,o=fi(a,[1,a.shape[0],a.shape[1],a.shape[2]]));const s={images:o},l={alignCorners:n,halfPixelCenters:r,size:e},c=lo.runKernel("ResizeBilinear",s,l);return i?fi(c,[c.shape[1],c.shape[2],c.shape[3]]):c}});
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */const ms={flipLeftRight:Zi,grayscaleToRGB:ts,resizeNearestNeighbor:mo({resizeNearestNeighbor_:function(t,e,n=!1,r=!1){const a=fo(t,"images","resizeNearestNeighbor");oa(3===a.rank||4===a.rank,()=>`Error in resizeNearestNeighbor: x must be rank 3 or 4, but got rank ${a.rank}.`),oa(2===e.length,()=>"Error in resizeNearestNeighbor: new shape must 2D, but got shape "+e+"."),oa("float32"===a.dtype||"int32"===a.dtype,()=>"`images` must have `int32` or `float32` as dtype"),oa(!1===r||!1===n,()=>"Error in resizeNearestNeighbor: If halfPixelCenters is true, alignCorners must be false.");let o=a,i=!1;3===a.rank&&(i=!0,o=fi(a,[1,a.shape[0],a.shape[1],a.shape[2]]));const s={images:o},l={alignCorners:n,halfPixelCenters:r,size:e},c=lo.runKernel("ResizeNearestNeighbor",s,l);return i?fi(c,[c.shape[1],c.shape[2],c.shape[3]]):c}}),resizeBilinear:gs,rotateWithOffset:es,cropAndResize:Qi,nonMaxSuppression:rs,nonMaxSuppressionAsync:us,nonMaxSuppressionWithScore:ds,nonMaxSuppressionWithScoreAsync:ps,nonMaxSuppressionPadded:hs,nonMaxSuppressionPaddedAsync:fs,threshold:mo({threshold_:
+/**
+     * @license
+     * Copyright 2021 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * https://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
      */
-    const drawCNN = (width, height, cnnGroup, nodeMouseOverHandler,
-                            nodeMouseLeaveHandler, nodeClickHandler) => {
-      // Draw the CNN
-      // There are 8 short gaps and 5 long gaps
-      hSpaceAroundGap = (width - nodeLength$2 * numLayers) / (8 + 5 * gapRatio);
-      hSpaceAroundGapStore.set(hSpaceAroundGap);
-      let leftAccuumulatedSpace = 0;
-
-      // Iterate through the cnn to draw nodes in each layer
-      console.log("cnn.length = " + cnn.length);
-      for (let l = 0; l < cnn.length; l++) {
-        let curLayer = cnn[l];
-        let isOutput = curLayer[0].layerName === 'output';
-
-        nodeCoordinate.push([]);
-
-        // Compute the x coordinate of the whole layer
-        // Output layer and conv layer has long gaps
-        if (isOutput || curLayer[0].type === 'conv') {
-          leftAccuumulatedSpace += hSpaceAroundGap * gapRatio;
-        } else {
-          leftAccuumulatedSpace += hSpaceAroundGap;
-        }
-
-        // All nodes share the same x coordiante (left in div style)
-        let left = leftAccuumulatedSpace;
-
-        let layerGroup = cnnGroup.append('g')
-            .attr('class', 'cnn-layer-group')
-            .attr('id', `cnn-layer-group-${l}`);
-
-        vSpaceAroundGap = (height - nodeLength$2 * curLayer.length) /
-            (curLayer.length + 1);
-        vSpaceAroundGapStore.set(vSpaceAroundGap);
-
-        let nodeGroups = layerGroup.selectAll('g.node-group')
-            .data(curLayer, d => d.index)
-            .enter()
-            .append('g')
-            .attr('class', 'node-group')
-            .style('cursor', 'pointer')
-            .style('pointer-events', 'all')
-            .on('click', nodeClickHandler)
-            .on('mouseover', nodeMouseOverHandler)
-            .on('mouseleave', nodeMouseLeaveHandler)
-            .classed('node-output', isOutput)
-            .attr('id', (d, i) => {
-              // Compute the coordinate
-              // Not using transform on the group object because of a decade old
-              // bug on webkit (safari)
-              // https://bugs.webkit.org/show_bug.cgi?id=23113
-              let top = i * nodeLength$2 + (i + 1) * vSpaceAroundGap;
-              top += svgPaddings.top;
-              nodeCoordinate[l].push({x: left, y: top});
-              return `layer-${l}-node-${i}`
-            });
-
-        // Overwrite the mouseover and mouseleave function for output nodes to show
-        // hover info in the UI
-        layerGroup.selectAll('g.node-output')
-            .on('mouseover', (d, i, g) => {
-              nodeMouseOverHandler(d, i, g);
-              hoverInfoStore.set( {show: true, text: `Output value: ${formater(d.output)}`} );
-            })
-            .on('mouseleave', (d, i, g) => {
-              nodeMouseLeaveHandler(d, i, g);
-              hoverInfoStore.set( {show: false, text: `Output value: ${formater(d.output)}`} );
-            });
-
-        if (curLayer[0].layerName !== 'output') {
-          // Embed raster image in these groups
-          nodeGroups.append('image')
-              .attr('class', 'node-image')
-              .attr('width', nodeLength$2)
-              .attr('height', nodeLength$2)
-              .attr('x', left)
-              .attr('y', (d, i) => nodeCoordinate[l][i].y);
-
-          // Add a rectangle to show the border
-          nodeGroups.append('rect')
-              .attr('class', 'bounding')
-              .attr('width', nodeLength$2)
-              .attr('height', nodeLength$2)
-              .attr('x', left)
-              .attr('y', (d, i) => nodeCoordinate[l][i].y)
-              .style('fill', 'none')
-              .style('stroke', 'gray')
-              .style('stroke-width', 1)
-              .classed('hidden', true);
-        } else {
-          nodeGroups.append('rect')
-              .attr('class', 'output-rect')
-              .attr('x', left)
-              .attr('y', (d, i) => nodeCoordinate[l][i].y + nodeLength$2 / 2 + 8)
-              .attr('height', nodeLength$2 / 4)
-              .attr('width', 0)
-              .style('fill', 'gray');
-          nodeGroups.append('text')
-              .attr('class', 'output-text')
-              .attr('x', left)
-              .attr('y', (d, i) => nodeCoordinate[l][i].y + nodeLength$2 / 2)
-              .style('dominant-baseline', 'middle')
-              .style('font-size', '11px')
-              .style('fill', 'black')
-              .style('opacity', 0.5)
-              .text((d, i) => classLists[i]);
-
-          // Add annotation text to tell readers the exact output probability
-          // nodeGroups.append('text')
-          //   .attr('class', 'annotation-text')
-          //   .attr('id', (d, i) => `output-prob-${i}`)
-          //   .attr('x', left)
-          //   .attr('y', (d, i) => nodeCoordinate[l][i].y + 10)
-          //   .text(d => `(${d3.format('.4f')(d.output)})`);
-        }
-        leftAccuumulatedSpace += nodeLength$2;
-      }
-
-      // Share the nodeCoordinate
-      nodeCoordinateStore.set(nodeCoordinate);
-
-      // Compute the scale of the output score width (mapping the the node
-      // width to the max output score)
-      let outputRectScale = d3.scaleLinear()
-          .domain(cnnLayerRanges.output)
-          .range([0, nodeLength$2]);
-
-      // Draw the canvas
-      for (let l = 0; l < cnn.length; l++) {
-        let range = cnnLayerRanges[selectedScaleLevel][l];
-        svg$1.select(`g#cnn-layer-group-${l}`)
-            .selectAll('image.node-image')
-            .each((d, i, g) => drawOutput(d, i, g, range));
-      }
-
-      svg$1.selectAll('g.node-output').each(
-          (d, i, g) => drawOutputScore(d, i, g, outputRectScale)
-      );
-
-      // Add layer label
-      let layerNames = cnn.map(d => {
-        if (d[0].layerName === 'output') {
-          return {
-            name: d[0].layerName,
-            dimension: `(${d.length})`
-          }
-        } else {
-          return {
-            name: d[0].layerName,
-            dimension: `(${d[0].output.length}, ${d[0].output.length}, ${d.length})`
-          }
-        }
-      });
-
-      let svgHeight = Number(d3.select('#cnn-svg').style('height').replace('px', '')) + 150;
-      let scroll = new SmoothScroll('a[href*="#"]', {offset: -svgHeight});
-
-      let detailedLabels = svg$1.selectAll('g.layer-detailed-label')
-          .data(layerNames)
-          .enter()
-          .append('g')
-          .attr('class', 'layer-detailed-label')
-          .attr('id', (d, i) => `layer-detailed-label-${i}`)
-          .classed('hidden', !detailedMode)
-          .attr('transform', (d, i) => {
-            let x = nodeCoordinate[i][0].x + nodeLength$2 / 2;
-            let y = (svgPaddings.top + vSpaceAroundGap) / 2 - 6;
-            return `translate(${x}, ${y})`;
-          })
-          .style('cursor', d => d.name.includes('output') ? 'default' : 'help')
-          .on('click', (d) => {
-            let target = '';
-            if (d.name.includes('conv')) { target = 'convolution'; }
-            if (d.name.includes('relu')) { target = 'relu'; }
-            if (d.name.includes('max_pool')) { target = 'pooling';}
-            if (d.name.includes('input')) { target = 'input';}
-
-            // Scroll to a article element
-            let anchor = document.querySelector(`#article-${target}`);
-            scroll.animateScroll(anchor);
-          });
-
-      detailedLabels.append('title')
-          .text('Move to article section');
-
-      detailedLabels.append('text')
-          .style('opacity', 0.7)
-          .style('dominant-baseline', 'middle')
-          .append('tspan')
-          .style('font-size', '12px')
-          .text(d => d.name)
-          .append('tspan')
-          .style('font-size', '8px')
-          .style('font-weight', 'normal')
-          .attr('x', 0)
-          .attr('dy', '1.5em')
-          .text(d => d.dimension);
-
-      let labels = svg$1.selectAll('g.layer-label')
-          .data(layerNames)
-          .enter()
-          .append('g')
-          .attr('class', 'layer-label')
-          .attr('id', (d, i) => `layer-label-${i}`)
-          .classed('hidden', detailedMode)
-          .attr('transform', (d, i) => {
-            let x = nodeCoordinate[i][0].x + nodeLength$2 / 2;
-            let y = (svgPaddings.top + vSpaceAroundGap) / 2 + 5;
-            return `translate(${x}, ${y})`;
-          })
-          .style('cursor', d => d.name.includes('output') ? 'default' : 'help')
-          .on('click', (d) => {
-            let target = '';
-            if (d.name.includes('conv')) { target = 'convolution'; }
-            if (d.name.includes('relu')) { target = 'relu'; }
-            if (d.name.includes('max_pool')) { target = 'pooling';}
-            if (d.name.includes('input')) { target = 'input';}
-
-            // Scroll to a article element
-            let anchor = document.querySelector(`#article-${target}`);
-            scroll.animateScroll(anchor);
-          });
-
-      labels.append('title')
-          .text('Move to article section');
-
-      labels.append('text')
-          .style('dominant-baseline', 'middle')
-          .style('opacity', 0.8)
-          .text(d => {
-            if (d.name.includes('conv')) { return 'conv' }
-            if (d.name.includes('relu')) { return 'relu' }
-            if (d.name.includes('max_pool')) { return 'max_pool'}
-            return d.name
-          });
-
-      // Add layer color scale legends
-      getLegendGradient(svg$1, layerColorScales$2.conv, 'convGradient');
-      getLegendGradient(svg$1, layerColorScales$2.input[0], 'inputGradient');
-
-      let legendHeight = 5;
-      let legends = svg$1.append('g')
-          .attr('class', 'color-legend')
-          .attr('transform', `translate(${0}, ${
-          svgPaddings.top + vSpaceAroundGap * (classLists.length) + vSpaceAroundGap +
-          nodeLength$2 * classLists.length
-      })`);
-
-      drawLegends(legends, legendHeight);
-
-      // Add edges between nodes
-      let linkGen = d3.linkHorizontal()
-          .x(d => d.x)
-          .y(d => d.y);
-
-      let linkData = getLinkData(nodeCoordinate, cnn);
-
-      let edgeGroup = cnnGroup.append('g')
-          .attr('class', 'edge-group');
-
-      edgeGroup.selectAll('path.edge')
-          .data(linkData)
-          .enter()
-          .append('path')
-          .attr('class', d =>
-              `edge edge-${d.targetLayerIndex} edge-${d.targetLayerIndex}-${d.targetNodeIndex}`)
-          .attr('id', d =>
-              `edge-${d.targetLayerIndex}-${d.targetNodeIndex}-${d.sourceNodeIndex}`)
-          .attr('d', d => linkGen({source: d.source, target: d.target}))
-          .style('fill', 'none')
-          .style('stroke-width', edgeStrokeWidth)
-          .style('opacity', edgeOpacity)
-          .style('stroke', edgeInitColor);
-
-      // Add input channel annotations
-      let inputAnnotation = cnnGroup.append('g')
-          .attr('class', 'input-annotation');
-
-      let redChannel = inputAnnotation.append('text')
-          .attr('x', nodeCoordinate[0][0].x + nodeLength$2 / 2)
-          .attr('y', nodeCoordinate[0][0].y + nodeLength$2 + 5)
-          .attr('class', 'annotation-text')
-          .style('dominant-baseline', 'hanging')
-          .style('text-anchor', 'middle');
-
-      let color1 = "Red";
-
-      if(overviewConfig.modeImg < 3){
-
-        color1 = "Gray";
-
-      }
-      redChannel.append('tspan')
-          .style('dominant-baseline', 'hanging')
-          .style('fill', '#C95E67')
-          .text(color1);
-
-      redChannel.append('tspan')
-          .style('dominant-baseline', 'hanging')
-          .text(' channel');
-
-      if(overviewConfig.modeImg == 3){
-        inputAnnotation.append('text')
-            .attr('x', nodeCoordinate[0][1].x + nodeLength$2 / 2)
-            .attr('y', nodeCoordinate[0][1].y + nodeLength$2 + 5)
-            .attr('class', 'annotation-text')
-            .style('dominant-baseline', 'hanging')
-            .style('text-anchor', 'middle')
-            .style('fill', '#3DB665')
-            .text('Green');
-
-        inputAnnotation.append('text')
-            .attr('x', nodeCoordinate[0][2].x + nodeLength$2 / 2)
-            .attr('y', nodeCoordinate[0][2].y + nodeLength$2 + 5)
-            .attr('class', 'annotation-text')
-            .style('dominant-baseline', 'hanging')
-            .style('text-anchor', 'middle')
-            .style('fill', '#3F7FBC')
-            .text('Blue');
-      }
-    };
-
-    /**
-     * Update canvas values when user changes input image
+function(t,e="binary",n=!1,r=.5){const a=fo(t,"image","threshold"),o=a.shape[0]*a.shape[1];let i,s,l,c,u=ui(Ui([r]),255);if(oa(3===a.rank,()=>`Error in threshold: image must be rank 3,but got rank ${a.rank}.`),oa(3===a.shape[2]||1===a.shape[2],()=>`Error in threshold: image color channel must be equal to 3 or 1but got ${a.shape[2]}.`),oa("int32"===a.dtype||"float32"===a.dtype,()=>`Error in dtype: image dtype must be int32 or float32,but got dtype ${a.dtype}.`),oa("otsu"===e||"binary"===e,()=>"Method must be binary or otsu, but was "+e),3===a.shape[2]){[i,s,l]=Vi(a,[1,1,1],-1);const t=ui(i,.2989),e=ui(s,.587),n=ui(l,.114);c=si(si(t,e),n)}else c=t;if("otsu"===e){u=function(t,e){let n,r,a,o,i,s,l=Ui([-1]),c=Ui([0]),u=Ui([0]);for(let d=0;d<t.size-1;d++){n=vi(t,0,d+1),r=vi(t,d+1),i=ci(Di(n),e),s=ci(Di(r),e);const p=Di(ui(n,Oi(0,n.size)));a=ci(p,Di(n));const h=Si(r.shape,n.size),f=si(Oi(0,r.size),h),g=ui(r,f);o=ci(Di(g),Di(r));const m=Fi(a,o),y=Fi(a,o),v=ui(i,s);u=ui(ui(v,m),y);const b=Ai(u,c);c=$i(b,u,c),l=$i(b,Ui([d]),l)}return l}(xi(Uo(ji(c),"int32"),bo([]),256),o)}const d=n?Ti(c,u):Ai(c,u);return Uo(ui(d,255),"int32")}}),transform:mo({transform_:
+/**
+     * @license
+     * Copyright 2021 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
      */
-    const updateCNN = () => {
-      // Compute the scale of the output score width (mapping the the node
-      // width to the max output score)
-      let outputRectScale = d3.scaleLinear()
-          .domain(cnnLayerRanges.output)
-          .range([0, nodeLength$2]);
-
-      // Rebind the cnn data to layer groups layer by layer
-      for (let l = 0; l < cnn.length; l++) {
-        let curLayer = cnn[l];
-        let range = cnnLayerRanges[selectedScaleLevel][l];
-        let layerGroup = svg$1.select(`g#cnn-layer-group-${l}`);
-
-        let nodeGroups = layerGroup.selectAll('g.node-group')
-            .data(curLayer);
-
-        if (l < cnn.length - 1) {
-          // Redraw the canvas and output node
-          nodeGroups.transition('disappear')
-              .duration(300)
-              .ease(d3.easeCubicOut)
-              .style('opacity', 0)
-              .on('end', function() {
-                d3.select(this)
-                    .select('image.node-image')
-                    .each((d, i, g) => drawOutput(d, i, g, range));
-                d3.select(this).transition('appear')
-                    .duration(700)
-                    .ease(d3.easeCubicIn)
-                    .style('opacity', 1);
-              });
-        } else {
-          nodeGroups.each(
-              (d, i, g) => drawOutputScore(d, i, g, outputRectScale)
-          );
-        }
-      }
-
-      // Update the color scale legend
-      // Local legends
-      for (let i = 0; i < 2; i++){
-        let start = 1 + i * 5;
-        let range1 = cnnLayerRanges.local[start];
-        let range2 = cnnLayerRanges.local[start + 2];
-
-        let localLegendScale1 = d3.scaleLinear()
-            .range([0, 2 * nodeLength$2 + hSpaceAroundGap])
-            .domain([-range1 / 2, range1 / 2]);
-
-        let localLegendScale2 = d3.scaleLinear()
-            .range([0, 3 * nodeLength$2 + 2 * hSpaceAroundGap])
-            .domain([-range2 / 2, range2 / 2]);
-
-        let localLegendAxis1 = d3.axisBottom()
-            .scale(localLegendScale1)
-            .tickFormat(d3.format('.2f'))
-            .tickValues([-range1 / 2, 0, range1 / 2]);
-
-        let localLegendAxis2 = d3.axisBottom()
-            .scale(localLegendScale2)
-            .tickFormat(d3.format('.2f'))
-            .tickValues([-range2 / 2, 0, range2 / 2]);
-
-        svg$1.select(`g#local-legend-${i}-1`).select('g').call(localLegendAxis1);
-        svg$1.select(`g#local-legend-${i}-2`).select('g').call(localLegendAxis2);
-      }
-
-      // Module legend
-      for (let i = 0; i < 2; i++){
-        let start = 1 + i * 5;
-        let range = cnnLayerRanges.local[start];
-
-        let moduleLegendScale = d3.scaleLinear()
-            .range([0, 5 * nodeLength$2 + 3 * hSpaceAroundGap +
-            1 * hSpaceAroundGap * gapRatio - 1.2])
-            .domain([-range, range]);
-
-        let moduleLegendAxis = d3.axisBottom()
-            .scale(moduleLegendScale)
-            .tickFormat(d3.format('.2f'))
-            .tickValues([-range, -(range / 2), 0, range/2, range]);
-
-        svg$1.select(`g#module-legend-${i}`).select('g').call(moduleLegendAxis);
-      }
-
-      // Global legend
-      let start = 1;
-      let range = cnnLayerRanges.global[start];
-
-      let globalLegendScale = d3.scaleLinear()
-          .range([0, 10 * nodeLength$2 + 6 * hSpaceAroundGap +
-          3 * hSpaceAroundGap * gapRatio - 1.2])
-          .domain([-range, range]);
-
-      let globalLegendAxis = d3.axisBottom()
-          .scale(globalLegendScale)
-          .tickFormat(d3.format('.2f'))
-          .tickValues([-range, -(range / 2), 0, range/2, range]);
-
-      svg$1.select(`g#global-legend`).select('g').call(globalLegendAxis);
-
-      // Output legend
-      let outputLegendAxis = d3.axisBottom()
-          .scale(outputRectScale)
-          .tickFormat(d3.format('.1f'))
-          .tickValues([0, cnnLayerRanges.output[1]]);
-
-      svg$1.select('g#output-legend').select('g').call(outputLegendAxis);
-    };
-
-    /**
-     * Update the ranges for current CNN layers
-     */
-    const updateCNNLayerRanges = () => {
-      // Iterate through all nodes to find a output ranges for each layer
-      let cnnLayerRangesLocal = [1];
-      let curRange = undefined;
-
-      // Also track the min/max of each layer (avoid computing during intermediate
-      // layer)
-      cnnLayerMinMax = [];
-
-      for (let l = 0; l < cnn.length - 1; l++) {
-        let curLayer = cnn[l];
-
-        // Compute the min max
-        let outputExtents = curLayer.map(l => getExtent(l.output));
-        let aggregatedExtent = outputExtents.reduce((acc, cur) => {
-          return [Math.min(acc[0], cur[0]), Math.max(acc[1], cur[1])];
-        });
-        cnnLayerMinMax.push({min: aggregatedExtent[0], max: aggregatedExtent[1]});
-
-        // conv layer refreshes curRange counting
-        if (curLayer[0].type === 'conv' || curLayer[0].type === 'fc') {
-          aggregatedExtent = aggregatedExtent.map(Math.abs);
-          // Plus 0.1 to offset the rounding error (avoid black color)
-          curRange = 2 * (0.1 +
-              Math.round(Math.max(...aggregatedExtent) * 1000) / 1000);
-        }
-
-        if (curRange !== undefined){
-          cnnLayerRangesLocal.push(curRange);
-        }
-      }
-
-      // Finally, add the output layer range
-      cnnLayerRangesLocal.push(1);
-      cnnLayerMinMax.push({min: 0, max: 1});
-
-      // Support different levels of scales (1) lcoal, (2) component, (3) global
-      let cnnLayerRangesComponent = [1];
-      let numOfComponent = (numLayers - 2) / 5;
-      for (let i = 0; i < numOfComponent; i++) {
-        let curArray = cnnLayerRangesLocal.slice(1 + 5 * i, 1 + 5 * i + 5);
-        let maxRange = Math.max(...curArray);
-        for (let j = 0; j < 5; j++) {
-          cnnLayerRangesComponent.push(maxRange);
-        }
-      }
-      cnnLayerRangesComponent.push(1);
-
-      let cnnLayerRangesGlobal = [1];
-      let maxRange = Math.max(...cnnLayerRangesLocal.slice(1,
-          cnnLayerRangesLocal.length - 1));
-      for (let i = 0; i < numLayers - 2; i++) {
-        cnnLayerRangesGlobal.push(maxRange);
-      }
-      cnnLayerRangesGlobal.push(1);
-
-      // Update the ranges dictionary
-      cnnLayerRanges.local = cnnLayerRangesLocal;
-      cnnLayerRanges.module = cnnLayerRangesComponent;
-      cnnLayerRanges.global = cnnLayerRangesGlobal;
-      cnnLayerRanges.output = [0, d3.max(cnn[cnn.length - 1].map(d => d.output))];
-
-      cnnLayerRangesStore.set(cnnLayerRanges);
-      cnnLayerMinMaxStore.set(cnnLayerMinMax);
-    };
-
-    /* global d3 */
-
-    // Configs
-    const layerColorScales$3 = overviewConfig.layerColorScales;
-    const nodeLength$3 = overviewConfig.nodeLength;
-    const intermediateColor = overviewConfig.intermediateColor;
-    const svgPaddings$1 = overviewConfig.svgPaddings;
-
-    // Shared variables
-    let svg$2 = undefined;
-    svgStore.subscribe( value => {svg$2 = value;} );
-
-    let vSpaceAroundGap$1 = undefined;
-    vSpaceAroundGapStore.subscribe( value => {vSpaceAroundGap$1 = value;} );
-
-    /**
-     * Move one layer horizontally
-     * @param {object} arg Multiple arguments {
-     *   layerIndex: current layer index
-     *   targetX: destination x
-     *   disable: make this layer unresponsible
-     *   delay: animation delay
-     *   opacity: change the current layer's opacity
-     *   specialIndex: avoid manipulating `specialIndex`th node
-     *   onEndFunc: call this function when animation finishes
-     *   transitionName: animation ID
-     * }
-     */
-    const moveLayerX = (arg) => {
-      let layerIndex = arg.layerIndex;
-      let targetX = arg.targetX;
-      let disable = arg.disable;
-      let delay = arg.delay;
-      let opacity = arg.opacity;
-      let specialIndex = arg.specialIndex;
-      let onEndFunc = arg.onEndFunc;
-      let transitionName = arg.transitionName === undefined ? 'move' : arg.transitionName;
-      let duration = arg.duration === undefined ? 500 : arg.duration;
-
-      // Move the selected layer
-      let curLayer = svg$2.select(`g#cnn-layer-group-${layerIndex}`);
-      curLayer.selectAll('g.node-group').each((d, i, g) => {
-        d3.select(g[i])
-          .style('cursor', disable && i !== specialIndex ? 'default' : 'pointer')
-          .style('pointer-events', disable && i !== specialIndex ? 'none' : 'all')
-          .select('image')
-          .transition(transitionName)
-          .ease(d3.easeCubicInOut)
-          .delay(delay)
-          .duration(duration)
-          .attr('x', targetX);
-        
-        d3.select(g[i])
-          .select('rect.bounding')
-          .transition(transitionName)
-          .ease(d3.easeCubicInOut)
-          .delay(delay)
-          .duration(duration)
-          .attr('x', targetX);
-        
-        if (opacity !== undefined && i !== specialIndex) {
-          d3.select(g[i])
-            .select('image')
-            .style('opacity', opacity);
-        }
-      });
-      
-      // Also move the layer labels
-      svg$2.selectAll(`g#layer-label-${layerIndex}`)
-        .transition(transitionName)
-        .ease(d3.easeCubicInOut)
-        .delay(delay)
-        .duration(duration)
-        .attr('transform', () => {
-          let x = targetX + nodeLength$3 / 2;
-          let y = (svgPaddings$1.top + vSpaceAroundGap$1) / 2 + 5;
-          return `translate(${x}, ${y})`;
-        })
-        .on('end', onEndFunc);
-
-      svg$2.selectAll(`g#layer-detailed-label-${layerIndex}`)
-        .transition(transitionName)
-        .ease(d3.easeCubicInOut)
-        .delay(delay)
-        .duration(duration)
-        .attr('transform', () => {
-          let x = targetX + nodeLength$3 / 2;
-          let y = (svgPaddings$1.top + vSpaceAroundGap$1) / 2 - 6;
-          return `translate(${x}, ${y})`;
-        })
-        .on('end', onEndFunc);
-    };
-
-    /**
-     * Append a gradient definition to `group`
-     * @param {string} gradientID CSS ID for the gradient def
-     * @param {[{offset: number, color: string, opacity: number}]} stops Gradient stops
-     * @param {element} group Element to append def to
-     */
-    const addOverlayGradient = (gradientID, stops, group) => {
-      if (group === undefined) {
-        group = svg$2;
-      }
-
-      // Create a gradient
-      let defs = group.append("defs")
-        .attr('class', 'overlay-gradient');
-
-      let gradient = defs.append("linearGradient")
-        .attr("id", gradientID)
-        .attr("x1", "0%")
-        .attr("x2", "100%")
-        .attr("y1", "100%")
-        .attr("y2", "100%");
-      
-      stops.forEach(s => {
-        gradient.append('stop')
-          .attr('offset', s.offset)
-          .attr('stop-color', s.color)
-          .attr('stop-opacity', s.opacity);
-      });
-    };
-
-    /**
-     * Draw the legend for intermediate layer
-     * @param {object} arg 
-     * {
-     *   legendHeight: height of the legend rectangle
-     *   curLayerIndex: the index of selected layer
-     *   range: colormap range
-     *   group: group to append the legend
-     *   minMax: {min: min value, max: max value}
-     *   width: width of the legend
-     *   x: x position of the legend
-     *   y: y position of the legend
-     *   isInput: if the legend is for the input layer (special handle black to
-     *      white color scale)
-     *   colorScale: d3 color scale
-     *   gradientAppendingName: name of the appending gradient
-     *   gradientGap: gap to make the color lighter
-     * }
-     */
-    const drawIntermediateLayerLegend = (arg) => {
-      let legendHeight = arg.legendHeight,
-        curLayerIndex = arg.curLayerIndex,
-        range = arg.range,
-        group = arg.group,
-        minMax = arg.minMax,
-        width = arg.width,
-        x = arg.x,
-        y = arg.y,
-        isInput = arg.isInput,
-        colorScale = arg.colorScale,
-        gradientAppendingName = arg.gradientAppendingName,
-        gradientGap = arg.gradientGap;
-      
-      if (colorScale === undefined) { colorScale = layerColorScales$3.conv; }
-      if (gradientGap === undefined) { gradientGap = 0; }
-      
-      // Add a legend color gradient
-      let gradientName = 'url(#inputGradient)';
-      let normalizedColor = v => colorScale(v * (1 - 2 * gradientGap) + gradientGap);
-
-      if (!isInput) {
-        let leftValue = (minMax.min + range / 2) / range,
-          zeroValue = (0 + range / 2) / range,
-          rightValue = (minMax.max + range / 2) / range,
-          totalRange = minMax.max - minMax.min,
-          zeroLocation = (0 - minMax.min) / totalRange,
-          leftMidValue = leftValue + (zeroValue - leftValue)/2,
-          rightMidValue = zeroValue + (rightValue - zeroValue)/2;
-
-        let stops = [
-          {offset: 0, color: normalizedColor(leftValue), opacity: 1},
-          {offset: zeroLocation / 2,
-            color: normalizedColor(leftMidValue),
-            opacity: 1},
-          {offset: zeroLocation,
-            color: normalizedColor(zeroValue),
-            opacity: 1},
-          {offset: zeroLocation + (1 - zeroValue) / 2,
-            color: normalizedColor(rightMidValue),
-            opacity: 1},
-          {offset: 1, color: normalizedColor(rightValue), opacity: 1}
-        ];
-
-        if (gradientAppendingName === undefined) {
-          addOverlayGradient('intermediate-legend-gradient', stops, group);
-          gradientName = 'url(#intermediate-legend-gradient)';
-        } else {
-          addOverlayGradient(`${gradientAppendingName}`, stops, group);
-          gradientName = `url(#${gradientAppendingName})`;
-        }
-      }
-
-      let legendScale = d3.scaleLinear()
-        .range([0, width - 1.2])
-        .domain(isInput ? [0, range] : [minMax.min, minMax.max]);
-
-      let legendAxis = d3.axisBottom()
-        .scale(legendScale)
-        .tickFormat(d3.format(isInput ? 'd' : '.2f'))
-        .tickValues(isInput ? [0, range] : [minMax.min, 0, minMax.max]);
-      
-      let intermediateLegend = group.append('g')
-        .attr('class', `intermediate-legend-${curLayerIndex - 1}`)
-        .attr('transform', `translate(${x}, ${y})`);
-      
-      let legendGroup = intermediateLegend.append('g')
-        .attr('transform', `translate(0, ${legendHeight - 3})`)
-        .call(legendAxis);
-      
-      legendGroup.selectAll('text')
-        .style('font-size', '9px')
-        .style('fill', intermediateColor);
-      
-      legendGroup.selectAll('path, line')
-        .style('stroke', intermediateColor);
-
-      intermediateLegend.append('rect')
-        .attr('width', width)
-        .attr('height', legendHeight)
-        .attr('transform', `rotate(${isInput ? 180 : 0},
-      ${width / 2}, ${legendHeight / 2})`)
-        .style('fill', gradientName);
-    };
-
-    /**
-     * Draw an very neat arrow!
-     * @param {object} arg 
-     * {
-     *   group: element to append this arrow to
-     *   sx: source x
-     *   sy: source y
-     *   tx: target x
-     *   ty: target y
-     *   dr: radius of curve (I'm using a circle)
-     *   hFlip: the direction to choose the circle (there are always two ways)
-     * }
-     */
-    const drawArrow = (arg) => {
-      let group = arg.group,
-        sx = arg.sx,
-        sy = arg.sy,
-        tx = arg.tx,
-        ty = arg.ty,
-        dr = arg.dr,
-        hFlip = arg.hFlip,
-        marker = arg.marker === undefined ? 'marker' : arg.marker;
-
-      /* Cool graphics trick -> merge translate and scale together
-      translateX = (1 - scaleX) * tx,
-      translateY = (1 - scaleY) * ty;
-      */
-      
-      let arrow = group.append('g')
-        .attr('class', 'arrow-group');
-
-      arrow.append('path')
-        .attr("d", `M${sx},${sy}A${dr},${dr} 0 0,${hFlip ? 0 : 1} ${tx},${ty}`)
-        .attr('marker-end', `url(#${marker})`)
-        .style('stroke', 'gray')
-        .style('fill', 'none');
-    };
-
-    /* global d3 */
-
-    // Configs
-    const layerColorScales$4 = overviewConfig.layerColorScales;
-    const nodeLength$4 = overviewConfig.nodeLength;
-    const plusSymbolRadius = overviewConfig.plusSymbolRadius;
-    const numLayers$1 = overviewConfig.numLayers;
-    const intermediateColor$1 = overviewConfig.intermediateColor;
-    const kernelRectLength = overviewConfig.kernelRectLength;
-    const svgPaddings$2 = overviewConfig.svgPaddings;
-    const gapRatio$1 = overviewConfig.gapRatio;
-    const overlayRectOffset = overviewConfig.overlayRectOffset;
-    const formater$1 = d3.format('.4f');
-    let isEndOfAnimation = false;
-
-    // Shared variables
-    let svg$3 = undefined;
-    svgStore.subscribe( value => {svg$3 = value;} );
-
-    let vSpaceAroundGap$2 = undefined;
-    vSpaceAroundGapStore.subscribe( value => {vSpaceAroundGap$2 = value;} );
-
-    let hSpaceAroundGap$1 = undefined;
-    hSpaceAroundGapStore.subscribe( value => {hSpaceAroundGap$1 = value;} );
-
-    let cnn$1 = undefined;
-    cnnStore.subscribe( value => {cnn$1 = value;} );
-
-    let nodeCoordinate$1 = undefined;
-    nodeCoordinateStore.subscribe( value => {nodeCoordinate$1 = value;} );
-
-    let selectedScaleLevel$1 = undefined;
-    selectedScaleLevelStore.subscribe( value => {selectedScaleLevel$1 = value;} );
-
-    let cnnLayerRanges$1 = undefined;
-    cnnLayerRangesStore.subscribe( value => {cnnLayerRanges$1 = value;} );
-
-    let cnnLayerMinMax$1 = undefined;
-    cnnLayerMinMaxStore.subscribe( value => {cnnLayerMinMax$1 = value;} );
-
-    let needRedraw = [undefined, undefined];
-    needRedrawStore.subscribe( value => {needRedraw = value;} );
-
-    let shouldIntermediateAnimate = undefined;
-    shouldIntermediateAnimateStore.subscribe(value => {
-      shouldIntermediateAnimate = value;
-    });
-
-    let detailedMode$1 = undefined;
-    detailedModeStore.subscribe( value => {detailedMode$1 = value;} );
-
-    let intermediateLayerPosition = undefined;
-    intermediateLayerPositionStore.subscribe ( value => {intermediateLayerPosition = value;} );
-
-    // let curRightX = 0;
-
-    /**
-     * Draw the intermediate layer activation heatmaps
-     * @param {element} image Neuron heatmap image
-     * @param {number} range Colormap range
-     * @param {function} colorScale Colormap
-     * @param {number} length Image length
-     * @param {[[number]]} dataMatrix Heatmap matrix
-     */
-    const drawIntermidiateImage = (image, range, colorScale, length,
-      dataMatrix) => {
-      // Set up a buffer convas in order to resize image
-      let imageLength = length;
-      let bufferCanvas = document.createElement("canvas");
-      let bufferContext = bufferCanvas.getContext("2d");
-      bufferCanvas.width = imageLength;
-      bufferCanvas.height = imageLength;
-
-      // Fill image pixel array
-      let imageSingle = bufferContext.getImageData(0, 0, imageLength, imageLength);
-      let imageSingleArray = imageSingle.data;
-
-      for (let i = 0; i < imageSingleArray.length; i+=4) {
-        let pixeIndex = Math.floor(i / 4);
-        let row = Math.floor(pixeIndex / imageLength);
-        let column = pixeIndex % imageLength;
-
-        imageSingleArray[i] = 255;
-        if(overviewConfig.modeImg > 1){
-          let color = d3.rgb(colorScale((dataMatrix[row][column] + range / 2) / range));
-          imageSingleArray[i] = color.r;
-          imageSingleArray[i + 1] = color.g;
-          imageSingleArray[i + 2] = color.b;
-          imageSingleArray[i + 3] = 255;
-        }
-      }
-
-      // canvas.toDataURL() only exports image in 96 DPI, so we can hack it to have
-      // higher DPI by rescaling the image using canvas magic
-      let largeCanvas = document.createElement('canvas');
-      largeCanvas.width = nodeLength$4 * 3;
-      largeCanvas.height = nodeLength$4 * 3;
-      let largeCanvasContext = largeCanvas.getContext('2d');
-
-      // Use drawImage to resize the original pixel array, and put the new image
-      // (canvas) into corresponding canvas
-      bufferContext.putImageData(imageSingle, 0, 0);
-      largeCanvasContext.drawImage(bufferCanvas, 0, 0, imageLength, imageLength,
-        0, 0, nodeLength$4 * 3, nodeLength$4 * 3);
-      
-      let imageDataURL = largeCanvas.toDataURL();
-      image.attr('xlink:href', imageDataURL);
-
-      // Destory the buffer canvas
-      bufferCanvas.remove();
-      largeCanvas.remove();
-    };
-
-    /**
-     * Create a node group for the intermediate layer
-     * @param {number} curLayerIndex Intermediate layer index
-     * @param {number} selectedI Clicked node index
-     * @param {element} groupLayer Group element
-     * @param {number} x Node's x
-     * @param {number} y Node's y
-     * @param {number} nodeIndex Node's index
-     * @param {function} intermediateNodeMouseOverHandler Mouse over handler
-     * @param {function} intermediateNodeMouseLeaveHandler Mouse leave handler
-     * @param {function} intermediateNodeClicked Mouse click handler
-     * @param {bool} interaction Whether support interaction
-     */
-    const createIntermediateNode = (curLayerIndex, selectedI, groupLayer, x, y,
-      nodeIndex, stride, intermediateNodeMouseOverHandler,
-      intermediateNodeMouseLeaveHandler, intermediateNodeClicked, interaction) => {
-      let newNode = groupLayer.append('g')
-        .datum(cnn$1[curLayerIndex - 1][nodeIndex])
-        .attr('class', 'intermediate-node')
-        .attr('cursor', interaction ? 'pointer': 'default')
-        .attr('pointer-events', interaction ? 'all': 'none')
-        .attr('node-index', nodeIndex)
-        .on('mouseover', intermediateNodeMouseOverHandler)
-        .on('mouseleave', intermediateNodeMouseLeaveHandler)
-        .on('click', (d, g, i) => intermediateNodeClicked(d, g, i, selectedI,
-          curLayerIndex));
-      
-      newNode.append('image')
-        .attr('width', nodeLength$4)
-        .attr('height', nodeLength$4)
-        .attr('x', x)
-        .attr('y', y);
-
-      // Overlay the image with a mask of many small rectangles
-      let strideTime = Math.floor(nodeLength$4 / stride);
-      let overlayGroup = newNode.append('g')
-        .attr('class', 'overlay-group')
-        .attr('transform', `translate(${x}, ${y})`);
-      
-      for (let i = 0; i < strideTime; i++) {
-        for (let j = 0; j < strideTime; j++) {
-          overlayGroup.append('rect')
-            .attr('class', `mask-overlay mask-${i}-${j}`)
-            .attr('width', stride)
-            .attr('height', stride)
-            .attr('x', i * stride)
-            .attr('y', j * stride)
-            .style('fill', 'var(--light-gray)')
-            .style('stroke', 'var(--light-gray)')
-            .style('opacity', 1);
-        }
-      }
-
-      // Add a rectangle to show the border
-      newNode.append('rect')
-        .attr('class', 'bounding')
-        .attr('width', nodeLength$4)
-        .attr('height', nodeLength$4)
-        .attr('x', x)
-        .attr('y', y)
-        .style('fill', 'none')
-        .style('stroke', intermediateColor$1)
-        .style('stroke-width', 1);
-      
-      return newNode;
-    };
-
-    const startOutputAnimation = (kernelGroup, tickTime1D, stride, delay,
-      curLayerIndex) => {
-      const slidingAnimation = () => {
-        let originX = +kernelGroup.attr('data-origin-x');
-        let originY = +kernelGroup.attr('data-origin-y');
-        let oldTick = +kernelGroup.attr('data-tick');
-        let i = (oldTick) % tickTime1D;
-        let j = Math.floor((oldTick) / tickTime1D);
-        let x = originX + i * stride;
-        let y = originY + j * stride;
-        let newTick = (oldTick + 1) % (tickTime1D * tickTime1D);
-
-        // Remove one mask rect at each tick
-        svg$3.selectAll(`rect.mask-${i}-${j}`)
-          .transition('window-sliding-mask')
-          .delay(delay + 100)
-          .duration(300)
-          .style('opacity', 0);
-
-          kernelGroup.attr('data-tick', newTick)
-          .transition('window-sliding-input')
-          .delay(delay)
-          .duration(200)
-          .attr('transform', `translate(${x}, ${y})`)
-          .on('end', () => {
-            if (newTick === 0) {
-              /* Uncomment to wrap the sliding
-              svg.selectAll(`rect.mask-overlay`)
-                .transition('window-sliding-mask')
-                .delay(delay - 200)
-                .duration(300)
-                .style('opacity', 1);
-              */
-
-              // Stop the animation
-              // Be careful with animation racing so call this function here instead
-              // of under selectALL
-              if (!isEndOfAnimation) {
-                animationButtonClicked(curLayerIndex);
-              }
-            }
-            if (shouldIntermediateAnimate) {
-              slidingAnimation();
-            }
-          });
-      };
-      slidingAnimation();
-    };
-
-    const startIntermediateAnimation = (kernelGroupInput, kernelGroupResult,
-      tickTime1D, stride) => {
-      let delay = 200;
-      const slidingAnimation = () => {
-        let originX = +kernelGroupInput.attr('data-origin-x');
-        let originY = +kernelGroupInput.attr('data-origin-y');
-        let originXResult = +kernelGroupResult.attr('data-origin-x');
-        let oldTick = +kernelGroupInput.attr('data-tick');
-        let i = (oldTick) % tickTime1D;
-        let j = Math.floor((oldTick) / tickTime1D);
-        let x = originX + i * stride;
-        let y = originY + j * stride;
-        let xResult = originXResult + (oldTick % tickTime1D) * stride;
-        let newTick = (oldTick + 1) % (tickTime1D * tickTime1D);
-
-        // Remove one mask rect at each tick
-        svg$3.selectAll(`rect.mask-${i}-${j}`)
-          .transition('window-sliding-mask')
-          .delay(delay + 100)
-          .duration(300)
-          .style('opacity', 0);
-
-        kernelGroupInput.attr('data-tick', newTick)
-          .transition('window-sliding-input')
-          .delay(delay)
-          .duration(200)
-          .attr('transform', `translate(${x}, ${y})`);
-
-        kernelGroupResult.attr('data-tick', newTick)
-          .transition('window-sliding-result')
-          .delay(delay)
-          .duration(200)
-          .attr('transform', `translate(${xResult}, ${y})`)
-          .on('end', () => {
-            /* Uncomment to wrap the sliding
-            if (newTick === 0) {
-              svg.selectAll(`rect.mask-overlay`)
-                .transition('window-sliding-mask')
-                .delay(delay - 200)
-                .duration(300)
-                .style('opacity', 1);
-            }
-            */
-            if (shouldIntermediateAnimate) {
-              slidingAnimation();
-            }
-          });
-      };
-      slidingAnimation();
-    };
-
-    const animationButtonClicked = (curLayerIndex) => {
-      if (d3.event !== null) {
-        d3.event.stopPropagation();
-      }
-      
-      let delay = 200;
-      let tickTime1D = nodeLength$4 / (kernelRectLength * 3);
-      let stride = kernelRectLength * 3; 
-
-      if (isEndOfAnimation) {
-        // Start the animation
-        shouldIntermediateAnimateStore.set(true);
-
-        // Show kernel
-        svg$3.selectAll('.kernel-clone')
-          .transition()
-          .duration(300)
-          .style('opacity', 1);
-
-        // Restore the mask
-        svg$3.selectAll(`rect.mask-overlay`)
-          .transition()
-          .duration(300)
-          .style('opacity', 1);
-
-        // Start the intermediate animation
-        for (let i  = 0; i < nodeCoordinate$1[curLayerIndex - 1].length; i++) {
-          startIntermediateAnimation(d3.select(`.kernel-input-${i}`),
-            d3.select(`.kernel-result-${i}`), tickTime1D, stride);
-        }
-
-        // Start the output animation
-        startOutputAnimation(d3.select('.kernel-output'),
-          tickTime1D, stride, delay, curLayerIndex);
-        
-        // Change the flow edge style
-        svg$3.selectAll('path.flow-edge')
-          .attr('stroke-dasharray', '4 2')
-          .attr('stroke-dashoffset', 0)
-          .each((d, i, g) => animateEdge(d, i, g, 0 - 1000));
-
-        // Change button icon
-        svg$3.select('.animation-control-button')
-          .attr('xlink:href', '/assets/img/fast_forward.svg');
-        
-        isEndOfAnimation = false;
-
-      } else {
-        // End the animation
-        shouldIntermediateAnimateStore.set(false);
-        
-        // Show all intermediate and output results
-        svg$3.selectAll(`rect.mask-overlay`)
-          .transition('skip')
-          .duration(600)
-          .style('opacity', 0);
-        
-        // Move kernel to the beginning to prepare for the next animation
-        let kernelClones = svg$3.selectAll('.kernel-clone');
-        kernelClones.attr('data-tick', 0)
-          .transition('skip')
-          .duration(300)
-          .style('opacity', 0)
-          .on('end', (d, i, g) => {
-            let element = d3.select(g[i]);
-            let originX = +element.attr('data-origin-x');
-            let originY = +element.attr('data-origin-y');
-            element.attr('transform', `translate(${originX}, ${originY})`);
-          });
-        
-        // Change flow edge style
-        svg$3.selectAll('path.flow-edge')
-          .interrupt()
-          .attr('stroke-dasharray', '0 0');
-        
-        // Change button icon
-        svg$3.select('.animation-control-button')
-          .attr('xlink:href', '/assets/img/redo.svg');
-        
-        isEndOfAnimation = true;
-      }
-    };
-
-    const animateEdge = (d, i, g, dashoffset) => {
-      let curPath = d3.select(g[i]);
-      curPath.transition()
-        .duration(60000)
-        .ease(d3.easeLinear)
-        .attr('stroke-dashoffset', dashoffset)
-        .on('end', (d, i, g) => {
-          if (shouldIntermediateAnimate) {
-            animateEdge(d, i, g, dashoffset - 2000);
-          }
-        });
-    };
-
-    /**
-     * Draw one intermediate layer
-     * @param {number} curLayerIndex 
-     * @param {number} leftX X value of intermediate layer left border
-     * @param {number} rightX X value of intermediate layer right border
-     * @param {number} rightStart X value of right component starting anchor
-     * @param {number} intermediateGap The inner gap
-     * @param {number} d Clicked node bounded data
-     * @param {number} i Clicked node index
-     * @param {function} intermediateNodeMouseOverHandler Mouse over handler
-     * @param {function} intermediateNodeMouseLeaveHandler Mouse leave handler
-     * @param {function} intermediateNodeClicked Mouse click handler
-     */
-    const drawIntermediateLayer = (curLayerIndex, leftX, rightX, rightStart,
-      intermediateGap, d, i, intermediateNodeMouseOverHandler,
-      intermediateNodeMouseLeaveHandler, intermediateNodeClicked) => {
-      
-      // curRightX = rightStart;
-
-      // Add the intermediate layer
-      let intermediateLayer = svg$3.append('g')
-        .attr('class', 'intermediate-layer')
-        .style('opacity', 0);
-      
-      // Recovert the animation counter
-      isEndOfAnimation = false;
-      
-      // Tried to add a rectangle to block the intermediate because of webkit's
-      // horrible support (decade old bug) for foreignObject. It doesnt work either.
-      // https://bugs.webkit.org/show_bug.cgi?id=23113
-      // (1). ForeignObject's inside position is wrong on webkit
-      // (2). 'opacity' of ForeignObject doesn't work on webkit
-      // (3). ForeignObject always show up at the front regardless the svg
-      //      stacking order on webkit
-
-      let intermediateX1 = leftX + nodeLength$4 + intermediateGap;
-      let intermediateX2 = intermediateX1 + nodeLength$4 + intermediateGap * 1.5;
-
-      let range = cnnLayerRanges$1[selectedScaleLevel$1][curLayerIndex];
-      let colorScale = layerColorScales$4[d.type];
-      let intermediateMinMax = [];
-      
-      // Copy the previsious layer to construct foreignObject placeholder
-      // Also add edges from/to the intermediate layer in this loop
-      let linkData = [];
-
-      // Accumulate the intermediate sum
-      // let itnermediateSumMatrix = init2DArray(d.output.length,
-      //  d.output.length, 0);
-
-      // Compute the min max of all kernel weights in the intermediate layer
-      let kernelExtents = d.inputLinks.map(link => getExtent(link.weight));
-      let kernelExtent = kernelExtents.reduce((acc, cur) => {
-        return [Math.min(acc[0], cur[0]), Math.max(acc[1], cur[1])];
-      });
-      let kernelRange = 2 * (Math.round(
-        Math.max(...kernelExtent.map(Math.abs)) * 1000) / 1000);
-      let kernelColorGap = 0.2;
-
-      // Compute stride for the kernel animation
-      let stride = kernelRectLength * 3; 
-
-      // Also add the overlay mask on the output node
-      let outputY = nodeCoordinate$1[curLayerIndex][i].y;
-      let curNode = svg$3.select(`#layer-${curLayerIndex}-node-${i}`);
-      let outputOverlayGroup = curNode.append('g')
-        .attr('class', 'overlay-group')
-        .attr('transform', `translate(${rightX}, ${outputY})`);
-
-      let strideTime = Math.floor(nodeLength$4 / stride);
-      
-      for (let i = 0; i < strideTime; i++) {
-        for (let j = 0; j < strideTime; j++) {
-          outputOverlayGroup.append('rect')
-            .attr('class', `mask-overlay mask-${i}-${j}`)
-            .attr('width', stride)
-            .attr('height', stride)
-            .attr('x', i * stride)
-            .attr('y', j * stride)
-            .style('fill', 'var(--light-gray)')
-            .style('stroke', 'var(--light-gray)')
-            .style('opacity', 1);
-        }
-      }
-
-      // Make sure the bounding box is on top of other things
-      curNode.select('rect.bounding').raise();
-
-      // Add sliding kernel for the output node
-      let kernelGroup = intermediateLayer.append('g')
-        .attr('class', `kernel kernel-output kernel-clone`)
-        .attr('transform', `translate(${rightX}, ${outputY})`);
-
-      kernelGroup.append('rect')
-        .attr('x', 0)
-        .attr('y', 0)
-        .attr('width', kernelRectLength * 3)
-        .attr('height', kernelRectLength * 3)
-        .attr('fill', 'none')
-        .attr('stroke', intermediateColor$1);
-      
-      kernelGroup.attr('data-tick', 0)
-        .attr('data-origin-x', rightX)
-        .attr('data-origin-y', outputY);
-
-      let delay = 200;
-      let tickTime1D = nodeLength$4 / (kernelRectLength * 3);
-
-      startOutputAnimation(kernelGroup, tickTime1D, stride, delay, curLayerIndex);
-
-      // First intermediate layer
-      nodeCoordinate$1[curLayerIndex - 1].forEach((n, ni) => {
-
-        // Compute the intermediate value
-        let inputMatrix = cnn$1[curLayerIndex - 1][ni].output;
-        let kernelMatrix = cnn$1[curLayerIndex][i].inputLinks[ni].weight;
-        let interMatrix = singleConv(inputMatrix, kernelMatrix);
-
-        // Compute the intermediate layer min max
-        intermediateMinMax.push(getExtent(interMatrix));
-
-        // Update the intermediate sum
-        // itnermediateSumMatrix = matrixAdd(itnermediateSumMatrix, interMatrix);
-
-        // Layout the canvas and rect
-        let newNode = createIntermediateNode(curLayerIndex, i, intermediateLayer,
-          intermediateX1, n.y, ni, stride, intermediateNodeMouseOverHandler,
-          intermediateNodeMouseLeaveHandler, intermediateNodeClicked, true);
-        
-        // Draw the image
-        let image = newNode.select('image');
-        drawIntermidiateImage(image, range, colorScale, d.output.length,
-          interMatrix);      
-
-        // Edge: input -> intermediate1
-        linkData.push({
-          source: getOutputKnot({x: leftX, y: n.y}),
-          target: getInputKnot({x: intermediateX1, y: n.y}),
-          name: `input-${ni}-inter1-${ni}`
-        });
-
-        // Edge: intermediate1 -> intermediate2-1
-        linkData.push({
-          source: getOutputKnot({x: intermediateX1, y: n.y}),
-          target: getInputKnot({x: intermediateX2,
-            y: nodeCoordinate$1[curLayerIndex][i].y}),
-          name: `inter1-${ni}-inter2-1`
-        });
-
-        // Create a small kernel illustration
-        // Here we minus 2 because of no padding
-        // let tickTime1D = nodeLength / (kernelRectLength) - 2;
-        let kernelRectX = leftX - kernelRectLength * 3 * 2;
-        let kernelGroup = intermediateLayer.append('g')
-          .attr('class', `kernel kernel-${ni}`)
-          .attr('transform', `translate(${kernelRectX}, ${n.y})`);
-
-        let weightText = 'Kernel weights: [';
-        let f2 = d3.format('.2f');
-        for (let r = 0; r < kernelMatrix.length; r++) {
-          for (let c = 0; c < kernelMatrix[0].length; c++) {
-            kernelGroup.append('rect')
-              .attr('class', 'kernel')
-              .attr('x', kernelRectLength * c)
-              .attr('y', kernelRectLength * r)
-              .attr('width', kernelRectLength)
-              .attr('height', kernelRectLength)
-              .attr('fill', gappedColorScale(layerColorScales$4.weight, kernelRange,
-                kernelMatrix[r][c], kernelColorGap));
-
-            let sep = '';
-            if (c === 0 && r == 0) { sep = ''; }
-            else if (c === 0) { sep = '; '; }
-            else { sep = ', '; }
-            weightText = weightText.concat(sep, `${f2(kernelMatrix[r][c])}`);
-          }
-        }
-        weightText = weightText.concat(']');
-
-        kernelGroup.append('rect')
-          .attr('x', 0)
-          .attr('y', 0)
-          .attr('width', kernelRectLength * 3)
-          .attr('height', kernelRectLength * 3)
-          .attr('fill', 'none')
-          .attr('stroke', intermediateColor$1);
-        
-        kernelGroup.style('pointer-events', 'all')
-          .style('cursor', 'crosshair')
-          .on('mouseover', () => {
-            hoverInfoStore.set( {show: true, text: weightText} );
-          })
-          .on('mouseleave', () => {
-            hoverInfoStore.set( {show: false, text: weightText} );
-          })
-          .on('click', () => {d3.event.stopPropagation();});
-
-        // Sliding the kernel on the input channel and result channel at the same
-        // time
-        let kernelGroupInput = kernelGroup.clone(true)
-          .style('pointer-events', 'none')
-          .style('cursor', 'pointer')
-          .classed('kernel-clone', true)
-          .classed(`kernel-input-${ni}`, true);
-
-        kernelGroupInput.style('opacity', 0.9)
-          .selectAll('rect.kernel')
-          .style('opacity', 0.7);
-
-        kernelGroupInput.attr('transform', `translate(${leftX}, ${n.y})`)
-          .attr('data-tick', 0)
-          .attr('data-origin-x', leftX)
-          .attr('data-origin-y', n.y);
-
-        let kernelGroupResult = kernelGroup.clone(true)
-          .style('pointer-events', 'none')
-          .style('cursor', 'pointer')
-          .classed('kernel-clone', true)
-          .classed(`kernel-result-${ni}`, true);
-
-        kernelGroupResult.style('opacity', 0.9)
-          .selectAll('rect.kernel')
-          .style('fill', 'none');
-
-        kernelGroupResult.attr('transform',
-          `translate(${intermediateX1}, ${n.y})`)
-          .attr('data-origin-x', intermediateX1)
-          .attr('data-origin-y', n.y);
-        
-        startIntermediateAnimation(kernelGroupInput, kernelGroupResult, tickTime1D,
-          stride);
-      });
-
-      // Aggregate the intermediate min max
-      let aggregatedExtent = intermediateMinMax.reduce((acc, cur) => {
-        return [Math.min(acc[0], cur[0]), Math.max(acc[1], cur[1])];
-      });
-      let aggregatedMinMax = {min: aggregatedExtent[0], max: aggregatedExtent[1]};
-
-      // Draw the plus operation symbol
-      let symbolY = nodeCoordinate$1[curLayerIndex][i].y + nodeLength$4 / 2;
-      let symbolRectHeight = 1;
-      let symbolGroup = intermediateLayer.append('g')
-        .attr('class', 'plus-symbol')
-        .attr('transform', `translate(${intermediateX2 + plusSymbolRadius}, ${symbolY})`);
-      
-      symbolGroup.append('rect')
-        .attr('x', -plusSymbolRadius)
-        .attr('y', -plusSymbolRadius)
-        .attr('width', 2 * plusSymbolRadius)
-        .attr('height', 2 * plusSymbolRadius)
-        .attr('rx', 3)
-        .attr('ry', 3)
-        .style('fill', 'none')
-        .style('stroke', intermediateColor$1);
-      
-      symbolGroup.append('rect')
-        .attr('x', -(plusSymbolRadius - 3))
-        .attr('y', -symbolRectHeight / 2)
-        .attr('width', 2 * (plusSymbolRadius - 3))
-        .attr('height', symbolRectHeight)
-        .style('fill', intermediateColor$1);
-
-      symbolGroup.append('rect')
-        .attr('x', -symbolRectHeight / 2)
-        .attr('y', -(plusSymbolRadius - 3))
-        .attr('width', symbolRectHeight)
-        .attr('height', 2 * (plusSymbolRadius - 3))
-        .style('fill', intermediateColor$1);
-
-      // Place the bias rectangle below the plus sign if user clicks the firrst
-      // conv node
-      if (i == 0) {
-        // Add bias symbol to the plus symbol
-        symbolGroup.append('circle')
-            .attr('cx', 0)
-            .attr('cy', nodeLength$4 / 2 + kernelRectLength)
-            .attr('r', 4)
-            .style('stroke', intermediateColor$1)
-            .style('cursor', 'crosshair')
-            .style('fill', gappedColorScale(layerColorScales$4.weight, kernelRange,
-              d.bias, kernelColorGap))
-            .on('mouseover', () => {
-              hoverInfoStore.set( {show: true, text: `Bias: ${formater$1(d.bias)}`} );
-            })
-            .on('mouseleave', () => {
-              hoverInfoStore.set( {show: false, text: `Bias: ${formater$1(d.bias)}`} );
-            });
-
-        // Link from bias to the plus symbol
-        linkData.push({
-          source: {x: intermediateX2 + plusSymbolRadius,
-            y: nodeCoordinate$1[curLayerIndex][i].y + nodeLength$4},
-          target: {x: intermediateX2 + plusSymbolRadius,
-            y: nodeCoordinate$1[curLayerIndex][i].y + nodeLength$4 / 2 + plusSymbolRadius},
-          name: `bias-plus`
-        });
-      } else {
-        // Add bias symbol to the plus symbol
-        symbolGroup.append('circle')
-          .attr('cx', 0)
-          .attr('cy', -nodeLength$4 / 2 - kernelRectLength)
-          .attr('r', 4)
-          .style('stroke', intermediateColor$1)
-          .style('cursor', 'crosshair')
-          .style('fill', gappedColorScale(layerColorScales$4.weight, kernelRange,
-            d.bias, kernelColorGap))
-          .on('mouseover', () => {
-            hoverInfoStore.set( {show: true, text: `Bias: ${formater$1(d.bias)}`} );
-          })
-          .on('mouseleave', () => {
-            hoverInfoStore.set( {show: false, text: `Bias: ${formater$1(d.bias)}`} );
-          });
-        
-        // Link from bias to the plus symbol
-        linkData.push({
-          source: {x: intermediateX2 + plusSymbolRadius,
-            y: nodeCoordinate$1[curLayerIndex][i].y},
-          target: {x: intermediateX2 + plusSymbolRadius,
-            y: nodeCoordinate$1[curLayerIndex][i].y + nodeLength$4 / 2 - plusSymbolRadius},
-          name: `bias-plus`
-        });
-      }
-
-      // Link from the plus symbol to the output
-      linkData.push({
-        source: getOutputKnot({x: intermediateX2 + 2 * plusSymbolRadius - nodeLength$4,
-          y: nodeCoordinate$1[curLayerIndex][i].y}),
-        target: getInputKnot({x: rightX,
-          y: nodeCoordinate$1[curLayerIndex][i].y}),
-        name: `symbol-output`
-      });
-      
-      // Output -> next layer
-      linkData.push({
-        source: getOutputKnot({x: rightX,
-          y: nodeCoordinate$1[curLayerIndex][i].y}),
-        target: getInputKnot({x: rightStart,
-          y: nodeCoordinate$1[curLayerIndex][i].y}),
-        name: `output-next`
-      });
-
-      // Draw the layer label
-      intermediateLayer.append('g')
-        .attr('class', 'layer-intermediate-label layer-label')
-        .attr('transform', () => {
-          let x = intermediateX1 + nodeLength$4 / 2;
-          let y = (svgPaddings$2.top + vSpaceAroundGap$2) / 2 + 5;
-          return `translate(${x}, ${y})`;
-        })
-        .classed('hidden', detailedMode$1)
-        .append('text')
-        .style('text-anchor', 'middle')
-        .style('dominant-baseline', 'middle')
-        .style('font-weight', 800)
-        .style('opacity', '0.8')
-        .text('intermediate');
-      
-      intermediateLayer.append('g')
-        .attr('class', 'animation-control')
-        .attr('transform', () => {
-          let x = intermediateX1 + nodeLength$4 / 2;
-          let y = (svgPaddings$2.top + vSpaceAroundGap$2) / 2 - 4;
-          return `translate(${x}, ${y})`;
-        })
-        .on('click', () => animationButtonClicked(curLayerIndex))
-        .append('image')
-        .attr('class', 'animation-control-button')
-        .attr('xlink:href', '/assets/img/fast_forward.svg')
-        .attr('x', 50)
-        .attr('y', 0)
-        .attr('height', 13)
-        .attr('width', 13);
-
-      // Draw the detailed model layer label
-      intermediateLayer.append('g')
-        .attr('class', 'layer-intermediate-label layer-detailed-label')
-        .attr('transform', () => {
-          let x = intermediateX1 + nodeLength$4 / 2;
-          let y = (svgPaddings$2.top + vSpaceAroundGap$2) / 2 - 5;
-          return `translate(${x}, ${y})`;
-        })
-        .classed('hidden', !detailedMode$1)
-        .append('text')
-        .style('text-anchor', 'middle')
-        .style('dominant-baseline', 'middle')
-        .style('opacity', '0.7')
-        .style('font-weight', 800)
-        .append('tspan')
-        .text('intermediate')
-        .append('tspan')
-        .style('font-size', '8px')
-        .style('font-weight', 'normal')
-        .attr('x', 0)
-        .attr('dy', '1.5em')
-        .text(`(${cnn$1[curLayerIndex][0].output.length},
-      ${cnn$1[curLayerIndex][0].output[0].length},
-      ${cnn$1[curLayerIndex].length})`);
-
-      // Draw the edges
-      let linkGen = d3.linkHorizontal()
-        .x(d => d.x)
-        .y(d => d.y);
-      
-      let edgeGroup = intermediateLayer.append('g')
-        .attr('class', 'edge-group')
-        .lower();
-      
-      let dashoffset = 0;
-
-      edgeGroup.selectAll('path')
-        .data(linkData)
-        .enter()
-        .append('path')
-        .classed('flow-edge', d => d.name !== 'output-next')
-        .attr('id', d => `edge-${d.name}`)
-        .attr('d', d => linkGen({source: d.source, target: d.target}))
-        .style('fill', 'none')
-        .style('stroke-width', 1)
-        .style('stroke', intermediateColor$1);
-
-      edgeGroup.select('#edge-output-next')
-        .style('opacity', 0.1);
-      
-      edgeGroup.selectAll('path.flow-edge')
-        .attr('stroke-dasharray', '4 2')
-        .attr('stroke-dashoffset', 0)
-        .each((d, i, g) => animateEdge(d, i, g, dashoffset - 1000));
-      
-      return {intermediateLayer: intermediateLayer,
-        intermediateMinMax: aggregatedMinMax,
-        kernelRange: kernelRange,
-        kernelMinMax: {min: kernelExtent[0], max: kernelExtent[1]}};
-    };
-
-    /**
-     * Add an annotation for the kernel and the sliding
-     * @param {object} arg 
-     * {
-     *  leftX: X value of the left border of intermedaite layer
-     *  group: element group
-     *  intermediateGap: the inner gap of intermediate layer
-     *  isFirstConv: if this intermediate layer is after the first layer
-     *  i: index of the selected node
-     * }
-     */
-    const drawIntermediateLayerAnnotation = (arg) => {
-      let leftX = arg.leftX,
-        curLayerIndex = arg.curLayerIndex,
-        group = arg.group,
-        intermediateGap = arg.intermediateGap,
-        isFirstConv = arg.isFirstConv,
-        i = arg.i;
-
-      let kernelAnnotation = group.append('g')
-        .attr('class', 'kernel-annotation');
-      
-      kernelAnnotation.append('text')
-        .text('Kernel')
-        .attr('class', 'annotation-text')
-        .attr('x', leftX - 2.5 * kernelRectLength * 3)
-        .attr('y', nodeCoordinate$1[curLayerIndex - 1][0].y + kernelRectLength * 3)
-        .style('dominant-baseline', 'baseline')
-        .style('text-anchor', 'end');
-
-      let sliderX, sliderY, arrowSX, arrowSY, dr;
-      let sliderX2, sliderY2, arrowSX2, arrowSY2, dr2, arrowTX2, arrowTY2;
-      
-      if (isFirstConv) {
-        sliderX = leftX;
-        sliderY = nodeCoordinate$1[curLayerIndex - 1][0].y + nodeLength$4 +
-          kernelRectLength * 3;
-        arrowSX = leftX - 5;
-        arrowSY = nodeCoordinate$1[curLayerIndex - 1][0].y + nodeLength$4 +
-          kernelRectLength * 3 + 5;
-        dr = 20;
-        if(overviewConfig.modeImg > 1) {
-          sliderX2 = leftX;
-          sliderY2 = nodeCoordinate$1[curLayerIndex - 1][1].y + nodeLength$4 +
-              kernelRectLength * 3;
-          arrowSX2 = leftX - kernelRectLength * 3;
-          arrowSY2 = nodeCoordinate$1[curLayerIndex - 1][1].y + nodeLength$4 + 15;
-          arrowTX2 = leftX - 13;
-          arrowTY2 = nodeCoordinate$1[curLayerIndex - 1][1].y + 15;
-          dr2 = 35;
-        }
-      } else {
-        sliderX = leftX - 3 * kernelRectLength * 3;
-        sliderY = nodeCoordinate$1[curLayerIndex - 1][0].y + nodeLength$4 / 3;
-        arrowSX = leftX - 2 * kernelRectLength * 3 - 5;
-        arrowSY = nodeCoordinate$1[curLayerIndex - 1][0].y + nodeLength$4 - 10;
-        dr = 50;
-
-        sliderX2 = leftX - 3 * kernelRectLength * 3;
-        sliderY2 = nodeCoordinate$1[curLayerIndex - 1][2].y - 3;
-        arrowTX2 = leftX - kernelRectLength * 3 - 4;
-        arrowTY2 = nodeCoordinate$1[curLayerIndex - 1][2].y + kernelRectLength * 3 + 6;
-        arrowSX2 = leftX - kernelRectLength * 3 - 13;
-        arrowSY2 = nodeCoordinate$1[curLayerIndex - 1][2].y + 26;
-        dr2 = 20;
-      }
-
-      let slideText = kernelAnnotation.append('text')
-        .attr('x', sliderX)
-        .attr('y', sliderY)
-        .attr('class', 'annotation-text')
-        .style('dominant-baseline', 'hanging')
-        .style('text-anchor', isFirstConv ? 'start' : 'end');
-      
-      slideText.append('tspan')
-        .style('dominant-baseline', 'hanging')
-        .text('Slide kernel over input channel');
-
-      slideText.append('tspan')
-        .attr('x', sliderX)
-        .attr('dy', '1em')
-        .style('dominant-baseline', 'hanging')
-        .text('to get intermediate result');
-
-      // slideText.append('tspan')
-      //   .attr('x', sliderX)
-      //   .attr('dy', '1em')
-      //   .style('dominant-baseline', 'hanging')
-      //   .text('');
-
-      slideText.append('tspan')
-        .attr('x', sliderX)
-        .attr('dy', '1.2em')
-        .style('dominant-baseline', 'hanging')
-        .style('font-weight', 700)
-        .text('Click ');
-      
-      slideText.append('tspan')
-        .style('dominant-baseline', 'hanging')
-        .style('font-weight', 400)
-        .text('to learn more');
-
-      drawArrow({
-        group: group,
-        tx: leftX - 7,
-        ty: nodeCoordinate$1[curLayerIndex - 1][0].y + nodeLength$4 / 2,
-        sx: arrowSX,
-        sy: arrowSY,
-        hFlip: !isFirstConv,
-        dr: dr,
-        marker: 'marker'
-      });
-
-      // Add kernel annotation
-      let slideText2 = kernelAnnotation.append('text')
-        .attr('x', sliderX2)
-        .attr('y', sliderY2)
-        .attr('class', 'annotation-text')
-        .style('dominant-baseline', 'hanging')
-        .style('text-anchor', isFirstConv ? 'start' : 'end');
-
-      slideText2.append('tspan')
-        .style('dominant-baseline', 'hanging')
-        .text('Each input chanel');
-
-      slideText2.append('tspan')
-        .attr('x', sliderX)
-        .attr('dy', '1em')
-        .style('dominant-baseline', 'hanging')
-        .text('gets a different kernel');
-
-      slideText2.append('tspan')
-        .attr('x', sliderX)
-        .attr('dy', '1.3em')
-        .style('font-weight', 700)
-        .style('dominant-baseline', 'hanging')
-        .text('Hover over ');
-
-      slideText2.append('tspan')
-        .style('font-weight', 400)
-        .style('dominant-baseline', 'hanging')
-        .text('to see value!');
-
-      drawArrow({
-        group: group,
-        tx: arrowTX2,
-        ty: arrowTY2,
-        sx: arrowSX2,
-        sy: arrowSY2,
-        dr: dr2,
-        hFlip: !isFirstConv,
-        marker: 'marker'
-      });
-
-
-      // Add annotation for the sum operation
-      let plusAnnotation = group.append('g')
-        .attr('class', 'plus-annotation');
-      
-      let intermediateX2 = leftX + 2 * nodeLength$4 + 2.5 * intermediateGap;
-      let textX = intermediateX2;
-      let textY = nodeCoordinate$1[curLayerIndex][i].y + nodeLength$4 +
-          kernelRectLength * 3;
-      
-      // Special case 1: first node
-      if (i === 0) { textX += 30; }
-
-      // Special case 2: last node 
-      if (i === 9) {
-        textX = intermediateX2 + plusSymbolRadius - 10;
-        textY -= 2.5 * nodeLength$4;
-      }
-
-      let plusText = plusAnnotation.append('text')
-        .attr('x', textX)
-        .attr('y', textY)
-        .attr('class', 'annotation-text')
-        .style('dominant-baseline', 'hanging')
-        .style('text-anchor', 'start');
-      
-      plusText.append('tspan')
-        .style('dominant-baseline', 'hanging')
-        .text('Add up all intermediate');
-      
-      plusText.append('tspan')
-        .attr('x', textX)
-        .attr('dy', '1em')
-        .style('dominant-baseline', 'hanging')
-        .text('results and then add bias');
-
-      if (i === 9) {
-        drawArrow({
-          group: group,
-          sx: intermediateX2 + 50,
-          sy: nodeCoordinate$1[curLayerIndex][i].y - (nodeLength$4 / 2 + kernelRectLength * 2),
-          tx: intermediateX2 + 2 * plusSymbolRadius + 5,
-          ty: nodeCoordinate$1[curLayerIndex][i].y + nodeLength$4 / 2 - plusSymbolRadius,
-          dr: 50,
-          hFlip: false,
-          marker: 'marker-alt'
-        });
-      } else {
-        drawArrow({
-          group: group,
-          sx: intermediateX2 + 35,
-          sy: nodeCoordinate$1[curLayerIndex][i].y + nodeLength$4 + kernelRectLength * 2,
-          tx: intermediateX2 + 2 * plusSymbolRadius + 5,
-          ty: nodeCoordinate$1[curLayerIndex][i].y + nodeLength$4 / 2 + plusSymbolRadius,
-          dr: 30,
-          hFlip: true,
-          marker: 'marker-alt'
-        });
-      }
-
-      // Add annotation for the bias
-      let biasTextY = nodeCoordinate$1[curLayerIndex][i].y;
-      if (i === 0) {
-        biasTextY += nodeLength$4 + 3 * kernelRectLength;
-      } else {
-        biasTextY -= 2 * kernelRectLength + 5;
-      }
-      plusAnnotation.append('text')
-        .attr('class', 'annotation-text')
-        .attr('x', intermediateX2 + plusSymbolRadius)
-        .attr('y', biasTextY)
-        .style('text-anchor', 'middle')
-        .style('dominant-baseline', i === 0 ? 'hanging' : 'baseline')
-        .text('Bias');
-    };
-
-    /**
-     * Append a filled rectangle under a pair of nodes.
-     * @param {number} curLayerIndex Index of the selected layer
-     * @param {number} i Index of the selected node
-     * @param {number} leftX X value of the left border of intermediate layer
-     * @param {number} intermediateGap Inner gap of this intermediate layer
-     * @param {number} padding Padding around the rect
-     * @param {function} intermediateNodeMouseOverHandler Mouse over handler
-     * @param {function} intermediateNodeMouseLeaveHandler Mouse leave handler
-     * @param {function} intermediateNodeClicked Mouse click handler
-     */
-    const addUnderneathRect = (curLayerIndex, i, leftX,
-      intermediateGap, padding, intermediateNodeMouseOverHandler,
-      intermediateNodeMouseLeaveHandler, intermediateNodeClicked) => {
-      // Add underneath rects
-      let underGroup = svg$3.select('g.underneath');
-
-      for (let n = 0; n < cnn$1[curLayerIndex - 1].length; n++) {
-        underGroup.append('rect')
-          .attr('class', 'underneath-gateway')
-          .attr('id', `underneath-gateway-${n}`)
-          .attr('x', leftX - padding)
-          .attr('y', nodeCoordinate$1[curLayerIndex - 1][n].y - padding)
-          .attr('width', (2 * nodeLength$4 + intermediateGap) + 2 * padding)
-          .attr('height', nodeLength$4 + 2 * padding)
-          .attr('rx', 10)
-          .style('fill', 'rgba(160, 160, 160, 0.2)')
-          .style('opacity', 0);
-        
-        // Register new events for input layer nodes
-        svg$3.select(`g#layer-${curLayerIndex - 1}-node-${n}`)
-          .style('pointer-events', 'all')
-          .style('cursor', 'pointer')
-          .on('mouseover', intermediateNodeMouseOverHandler)
-          .on('mouseleave', intermediateNodeMouseLeaveHandler)
-          .on('click', (d, ni, g) => intermediateNodeClicked(d, ni, g,
-            i, curLayerIndex));
-          // .on('click', (d, i) => {console.log(i)});
-      }
-      underGroup.lower();
-    };
-
-    /**
-     * Add an overlaying rect
-     * @param {string} gradientName Gradient name of overlay rect
-     * @param {number} x X value of the overlaying rect
-     * @param {number} y Y value of the overlaying rect
-     * @param {number} width Rect width
-     * @param {number} height Rect height
-     */
-    const addOverlayRect = (gradientName, x, y, width, height) => {
-      if (svg$3.select('.intermediate-layer-overlay').empty()) {
-        svg$3.append('g').attr('class', 'intermediate-layer-overlay');
-      }
-
-      let intermediateLayerOverlay = svg$3.select('.intermediate-layer-overlay');
-
-      let overlayRect = intermediateLayerOverlay.append('rect')
-        .attr('class', 'overlay')
-        .style('fill', `url(#${gradientName})`)
-        .style('stroke', 'none')
-        .attr('width', width)
-        .attr('height', height)
-        .attr('x', x)
-        .attr('y', y)
-        .style('opacity', 0);
-      
-      overlayRect.transition('move')
-        .duration(800)
-        .ease(d3.easeCubicInOut)
-        .style('opacity', 1);
-    };
-
-    /**
-     * Redraw the layer if needed (entering the intermediate view to make sure
-     * all layers have the same color scale)
-     * @param {number} curLayerIndex Index of the selected layer
-     * @param {number} i Index of the selected node
-     */
-    const redrawLayerIfNeeded = (curLayerIndex, i) => {
-      // Determine the range for this layerview, and redraw the layer with
-      // smaller range so all layers have the same range
-      let rangePre = cnnLayerRanges$1[selectedScaleLevel$1][curLayerIndex - 1];
-      let rangeCur = cnnLayerRanges$1[selectedScaleLevel$1][curLayerIndex];
-      let range = Math.max(rangePre, rangeCur);
-
-      if (rangePre > rangeCur) {
-        // Redraw the current layer (selected node)
-        svg$3.select(`g#layer-${curLayerIndex}-node-${i}`)
-          .select('image.node-image')
-          .each((d, g, i) => drawOutput(d, g, i, range));
-        
-        // Record the change so we will re-redraw the layer when user quits
-        // the intermediate view
-        needRedraw = [curLayerIndex, i];
-        needRedrawStore.set(needRedraw);
-        
-      } else if (rangePre < rangeCur) {
-        // Redraw the previous layer (whole layer)
-        svg$3.select(`g#cnn-layer-group-${curLayerIndex - 1}`)
-          .selectAll('image.node-image')
-          .each((d, g, i) => drawOutput(d, g, i, range));
-
-        // Record the change so we will re-redraw the layer when user quits
-        // the intermediate view
-        needRedraw = [curLayerIndex - 1, undefined];
-        needRedrawStore.set(needRedraw);
-      }
-
-      // Compute the min, max value of all nodes in pre-layer and the selected
-      // node of cur-layer
-      let min = cnnLayerMinMax$1[curLayerIndex - 1].min,
-        max = cnnLayerMinMax$1[curLayerIndex - 1].max;
-
-      // Selected node
-      let n = cnn$1[curLayerIndex][i];
-      for (let r = 0; r < n.output.length; r++) {
-        for (let c = 0; c < n.output[0].length; c++) {
-          if (n.output[r][c] < min) { min = n.output[r][c]; }
-          if (n.output[r][c] > max) { max = n.output[r][c]; }
-        }
-      }
-
-      return {range: range, minMax: {min: min, max: max}};
-    };
-
-    /**
-     * Draw the intermediate layer before conv_1_1
-     * @param {number} curLayerIndex Index of the selected layer
-     * @param {object} d Bounded d3 data
-     * @param {number} i Index of the selected node
-     * @param {number} width CNN group width
-     * @param {number} height CNN group height
-     * @param {function} intermediateNodeMouseOverHandler mouse over handler
-     * @param {function} intermediateNodeMouseLeaveHandler mouse leave handler
-     * @param {function} intermediateNodeClicked node clicking handler
-     */
-    const drawConv1 = (curLayerIndex, d, i, width, height,
-      intermediateNodeMouseOverHandler, intermediateNodeMouseLeaveHandler,
-      intermediateNodeClicked) => {
-      // Compute the target location
-      let targetX = nodeCoordinate$1[curLayerIndex - 1][0].x + 2 * nodeLength$4 +
-        2 * hSpaceAroundGap$1 * gapRatio$1 + plusSymbolRadius * 2;
-      let intermediateGap = (hSpaceAroundGap$1 * gapRatio$1 * 2) / 3;
-      let leftX = nodeCoordinate$1[curLayerIndex - 1][0].x;
-
-      // Record the left x position for dynamic detial view positioning
-      intermediateLayerPosition['conv_1_1'] = targetX + nodeLength$4;
-      intermediateLayerPositionStore.set(intermediateLayerPosition);
-
-      // Hide the edges
-      svg$3.select('g.edge-group')
-        .style('visibility', 'hidden');
-
-      // Move the selected layer
-      moveLayerX({layerIndex: curLayerIndex, targetX: targetX, disable: true,
-        delay: 0, opacity: 0.15, specialIndex: i});
-
-      // Compute the gap in the right shrink region
-      let rightStart = targetX + nodeLength$4 + hSpaceAroundGap$1 * gapRatio$1;
-      let rightGap = (width - rightStart - 10 * nodeLength$4) / 10;
-
-      // Move the right layers
-      for (let i = curLayerIndex + 1; i < numLayers$1; i++) {
-        let curX = rightStart + (i - (curLayerIndex + 1)) * (nodeLength$4 + rightGap);
-        moveLayerX({layerIndex: i, targetX: curX, disable: true, delay: 0});
-      }
-
-      // Add an overlay gradient and rect
-      let stops = [{offset: '0%', color: 'rgb(250, 250, 250)', opacity: 0.85},
-      {offset: '50%', color: 'rgb(250, 250, 250)', opacity: 0.95},
-      {offset: '100%', color: 'rgb(250, 250, 250)', opacity: 1}];
-      addOverlayGradient('overlay-gradient', stops);
-
-      addOverlayRect('overlay-gradient', rightStart - overlayRectOffset / 2,
-      0, width - rightStart + overlayRectOffset,
-      height + svgPaddings$2.top + svgPaddings$2.bottom);
-
-      // Draw the intermediate layer
-      let {intermediateLayer, intermediateMinMax, kernelRange, kernelMinMax} =
-      drawIntermediateLayer(curLayerIndex, leftX, targetX, rightStart,
-        intermediateGap, d, i, intermediateNodeMouseOverHandler,
-        intermediateNodeMouseLeaveHandler, intermediateNodeClicked);
-      addUnderneathRect(curLayerIndex, i, leftX, intermediateGap, 8,
-        intermediateNodeMouseOverHandler, intermediateNodeMouseLeaveHandler,
-        intermediateNodeClicked);
-
-      // Compute the selected node's min max
-      // Selected node
-      let min = Infinity, max = -Infinity;
-      let n = cnn$1[curLayerIndex][i];
-      for (let r = 0; r < n.output.length; r++) {
-      for (let c = 0; c < n.output[0].length; c++) {
-        if (n.output[r][c] < min) { min = n.output[r][c]; }
-        if (n.output[r][c] > max) { max = n.output[r][c]; }
-      }
-      }
-
-      let finalMinMax = {
-      min: Math.min(min, intermediateMinMax.min),
-      max: Math.max(max, intermediateMinMax.max)
-      };
-
-      // Add annotation to the intermediate layer
-      let intermediateLayerAnnotation = svg$3.append('g')
-      .attr('class', 'intermediate-layer-annotation')
-      .style('opacity', 0);
-
-      drawIntermediateLayerAnnotation({
-        leftX: leftX,
-        curLayerIndex: curLayerIndex,
-        group: intermediateLayerAnnotation,
-        intermediateGap: intermediateGap,
-        isFirstConv: true,
-        i: i
-      });
-
-      let range = cnnLayerRanges$1.local[curLayerIndex];
-
-      drawIntermediateLayerLegend({
-        legendHeight: 5,
-        curLayerIndex: curLayerIndex,
-        range: 1,
-        group: intermediateLayer,
-        width: 2 * nodeLength$4 + intermediateGap,
-        isInput: true,
-        x: leftX,
-        y: svgPaddings$2.top + vSpaceAroundGap$2 * (10) + vSpaceAroundGap$2 + 
-          nodeLength$4 * 10 - 25
-      });
-      if(overviewConfig.modeImg > 1) {
-        drawIntermediateLayerLegend({
-          legendHeight: 5,
-          curLayerIndex: curLayerIndex,
-          range: range,
-          minMax: finalMinMax,
-          group: intermediateLayer,
-          width: 2 * nodeLength$4 + intermediateGap,
-          x: nodeCoordinate$1[curLayerIndex - 1][2].x,
-          y: svgPaddings$2.top + vSpaceAroundGap$2 * (10) + vSpaceAroundGap$2 +
-              nodeLength$4 * 10
-        });
-
-        drawIntermediateLayerLegend({
-          legendHeight: 5,
-          curLayerIndex: curLayerIndex,
-          range: kernelRange,
-          minMax: kernelMinMax,
-          group: intermediateLayer,
-          width: 2 * nodeLength$4 + intermediateGap,
-          x: targetX + nodeLength$4 - (2 * nodeLength$4 + intermediateGap),
-          y: svgPaddings$2.top + vSpaceAroundGap$2 * (10) + vSpaceAroundGap$2 +
-              nodeLength$4 * 10,
-          gradientAppendingName: 'kernelColorGradient',
-          colorScale: layerColorScales$4.weight,
-          gradientGap: 0.2
-        });
-      }
-      // Show everything
-      svg$3.selectAll('g.intermediate-layer, g.intermediate-layer-annotation')
-        .transition()
-        .delay(500)
-        .duration(500)
-        .ease(d3.easeCubicInOut)
-        .style('opacity', 1);
-    };
-
-    /**
-     * Draw the intermediate layer before conv_1_2
-     * @param {number} curLayerIndex Index of the selected layer
-     * @param {object} d Bounded d3 data
-     * @param {number} i Index of the selected node
-     * @param {number} width CNN group width
-     * @param {number} height CNN group height
-     * @param {function} intermediateNodeMouseOverHandler mouse over handler
-     * @param {function} intermediateNodeMouseLeaveHandler mouse leave handler
-     * @param {function} intermediateNodeClicked node clicking handler
-     */
-    const drawConv2 = (curLayerIndex, d, i, width, height,
-      intermediateNodeMouseOverHandler, intermediateNodeMouseLeaveHandler,
-      intermediateNodeClicked) => {
-      let targetX = nodeCoordinate$1[curLayerIndex - 1][0].x + 2 * nodeLength$4 +
-        2 * hSpaceAroundGap$1 * gapRatio$1 + plusSymbolRadius * 2;
-      let intermediateGap = (hSpaceAroundGap$1 * gapRatio$1 * 2) / 3;
-
-      // Record the left x position for dynamic detial view positioning
-      intermediateLayerPosition['conv_1_2'] = targetX + nodeLength$4;
-      intermediateLayerPositionStore.set(intermediateLayerPosition);
-
-      // Make sure two layers have the same range
-      let {range, minMax} = redrawLayerIfNeeded(curLayerIndex, i);
-
-      // Hide the edges
-      svg$3.select('g.edge-group')
-        .style('visibility', 'hidden');
-
-      // Move the selected layer
-      moveLayerX({layerIndex: curLayerIndex, targetX: targetX, disable: true,
-        delay: 0, opacity: 0.15, specialIndex: i});
-
-      // Compute the gap in the right shrink region
-      let rightStart = targetX + nodeLength$4 + hSpaceAroundGap$1 * gapRatio$1;
-      let rightGap = (width - rightStart - 8 * nodeLength$4) / 8;
-
-      // Move the right layers
-      for (let i = curLayerIndex + 1; i < numLayers$1; i++) {
-        let curX = rightStart + (i - (curLayerIndex + 1)) * (nodeLength$4 + rightGap);
-        moveLayerX({layerIndex: i, targetX: curX, disable: true, delay: 0});
-      }
-
-      // Add an overlay
-      let stops = [{offset: '0%', color: 'rgb(250, 250, 250)', opacity: 0.85},
-        {offset: '50%', color: 'rgb(250, 250, 250)', opacity: 0.95},
-        {offset: '100%', color: 'rgb(250, 250, 250)', opacity: 1}];
-      addOverlayGradient('overlay-gradient-right', stops);
-
-      let leftRightRatio = (2 * nodeLength$4 + hSpaceAroundGap$1 * gapRatio$1) /
-        (8 * nodeLength$4 + intermediateGap * 7);
-      let endingGradient = 0.85 + (0.95 - 0.85) * leftRightRatio;
-      stops = [{offset: '0%', color: 'rgb(250, 250, 250)', opacity: endingGradient},
-        {offset: '100%', color: 'rgb(250, 250, 250)', opacity: 0.85}];
-      addOverlayGradient('overlay-gradient-left', stops);
-
-      addOverlayRect('overlay-gradient-right', rightStart - overlayRectOffset / 2,
-        0, width - rightStart + overlayRectOffset,
-        height + svgPaddings$2.top + svgPaddings$2.bottom);
-
-      addOverlayRect('overlay-gradient-left', nodeCoordinate$1[0][0].x - overlayRectOffset / 2,
-        0, nodeLength$4 * 2 + hSpaceAroundGap$1 * gapRatio$1 + overlayRectOffset,
-        height + svgPaddings$2.top + svgPaddings$2.bottom);
-
-      // Draw the intermediate layer
-      let leftX = nodeCoordinate$1[curLayerIndex - 1][0].x;
-      let {intermediateLayer, intermediateMinMax, kernelRange, kernelMinMax} =
-        drawIntermediateLayer(curLayerIndex, leftX, targetX, rightStart,
-          intermediateGap, d, i, intermediateNodeMouseOverHandler,
-          intermediateNodeMouseLeaveHandler, intermediateNodeClicked);
-      addUnderneathRect(curLayerIndex, i, leftX, intermediateGap, 5,
-        intermediateNodeMouseOverHandler, intermediateNodeMouseLeaveHandler,
-        intermediateNodeClicked);
-
-      // After getting the intermediateMinMax, we can finally aggregate it with
-      // the preLayer minmax, curLayer minmax
-      let finalMinMax = {
-        min: Math.min(minMax.min, intermediateMinMax.min),
-        max: Math.max(minMax.max, intermediateMinMax.max)
-      };
-
-      // Add annotation to the intermediate layer
-      let intermediateLayerAnnotation = svg$3.append('g')
-        .attr('class', 'intermediate-layer-annotation')
-        .style('opacity', 0);
-
-      drawIntermediateLayerAnnotation({
-        leftX: leftX,
-        curLayerIndex: curLayerIndex,
-        group: intermediateLayerAnnotation,
-        intermediateGap: intermediateGap,
-        i: i
-      });
-
-      drawIntermediateLayerLegend({
-        legendHeight: 5,
-        curLayerIndex: curLayerIndex,
-        range: range,
-        minMax: finalMinMax,
-        group: intermediateLayer,
-        width: 2 * nodeLength$4 + intermediateGap,
-        x: leftX,
-        y: svgPaddings$2.top + vSpaceAroundGap$2 * (10) + vSpaceAroundGap$2 + 
-          nodeLength$4 * 10
-      });
-
-      drawIntermediateLayerLegend({
-        legendHeight: 5,
-        curLayerIndex: curLayerIndex,
-        range: kernelRange,
-        minMax: kernelMinMax,
-        group: intermediateLayer,
-        width: 2 * nodeLength$4 + intermediateGap,
-        x: targetX + nodeLength$4 - (2 * nodeLength$4 + intermediateGap),
-        y: svgPaddings$2.top + vSpaceAroundGap$2 * (10) + vSpaceAroundGap$2 + 
-          nodeLength$4 * 10,
-        gradientAppendingName: 'kernelColorGradient',
-        colorScale: layerColorScales$4.weight,
-        gradientGap: 0.2
-      });
-
-      // Show everything
-      svg$3.selectAll('g.intermediate-layer, g.intermediate-layer-annotation')
-        .transition()
-        .delay(500)
-        .duration(500)
-        .ease(d3.easeCubicInOut)
-        .style('opacity', 1);
-    };
-
-    /**
-     * Draw the intermediate layer before conv_2_1
-     * @param {number} curLayerIndex Index of the selected layer
-     * @param {object} d Bounded d3 data
-     * @param {number} i Index of the selected node
-     * @param {number} width CNN group width
-     * @param {number} height CNN group height
-     * @param {function} intermediateNodeMouseOverHandler mouse over handler
-     * @param {function} intermediateNodeMouseLeaveHandler mouse leave handler
-     * @param {function} intermediateNodeClicked node clicking handler
-     */
-    const drawConv3 = (curLayerIndex, d, i, width, height,
-      intermediateNodeMouseOverHandler, intermediateNodeMouseLeaveHandler,
-      intermediateNodeClicked) => {
-
-      let targetX = nodeCoordinate$1[curLayerIndex][0].x;
-      let leftX = targetX - (2 * nodeLength$4 +
-        2 * hSpaceAroundGap$1 * gapRatio$1 + plusSymbolRadius * 2);
-      let intermediateGap = (hSpaceAroundGap$1 * gapRatio$1 * 2) / 3;
-
-      // Record the left x position for dynamic detial view positioning
-      intermediateLayerPosition['conv_2_1'] = targetX + nodeLength$4;
-      intermediateLayerPositionStore.set(intermediateLayerPosition);
-
-      // Hide the edges
-      svg$3.select('g.edge-group')
-        .style('visibility', 'hidden');
-
-      // Make sure two layers have the same range
-      let {range, minMax} = redrawLayerIfNeeded(curLayerIndex, i);
-
-      // Move the previous layer
-      moveLayerX({layerIndex: curLayerIndex - 1, targetX: leftX,
-        disable: true, delay: 0});
-
-      moveLayerX({layerIndex: curLayerIndex,
-        targetX: targetX, disable: true,
-        delay: 0, opacity: 0.15, specialIndex: i});
-
-      // Compute the gap in the left shrink region
-      let leftEnd = leftX - hSpaceAroundGap$1;
-      let leftGap = (leftEnd - nodeCoordinate$1[0][0].x - 5 * nodeLength$4) / 5;
-      let rightStart = nodeCoordinate$1[curLayerIndex][0].x +
-        nodeLength$4 + hSpaceAroundGap$1;
-
-      // Move the left layers
-      for (let i = 0; i < curLayerIndex - 1; i++) {
-        let curX = nodeCoordinate$1[0][0].x + i * (nodeLength$4 + leftGap);
-        moveLayerX({layerIndex: i, targetX: curX, disable: true, delay: 0});
-      }
-
-      // Add an overlay
-      let stops = [{offset: '0%', color: 'rgb(250, 250, 250)', opacity: 1},
-        {offset: '50%', color: 'rgb(250, 250, 250)', opacity: 0.9},
-        {offset: '100%', color: 'rgb(250, 250, 250)', opacity: 0.85}];
-      addOverlayGradient('overlay-gradient-left', stops);
-
-      stops = [{offset: '0%', color: 'rgb(250, 250, 250)', opacity: 0.85},
-        {offset: '50%', color: 'rgb(250, 250, 250)', opacity: 0.95},
-        {offset: '100%', color: 'rgb(250, 250, 250)', opacity: 1}];
-      addOverlayGradient('overlay-gradient-right', stops);
-
-      addOverlayRect('overlay-gradient-left', nodeCoordinate$1[0][0].x - overlayRectOffset / 2,
-        0, leftEnd - nodeCoordinate$1[0][0].x + overlayRectOffset,
-        height + svgPaddings$2.top + svgPaddings$2.bottom);
-      
-      addOverlayRect('overlay-gradient-right', rightStart - overlayRectOffset / 2,
-        0, width - rightStart + overlayRectOffset,
-        height + svgPaddings$2.top + svgPaddings$2.bottom);
-      
-      // Draw the intermediate layer
-      let {intermediateLayer, intermediateMinMax, kernelRange, kernelMinMax} =
-        drawIntermediateLayer(curLayerIndex, leftX,
-          nodeCoordinate$1[curLayerIndex][0].x, rightStart, intermediateGap,
-          d, i, intermediateNodeMouseOverHandler,
-          intermediateNodeMouseLeaveHandler, intermediateNodeClicked);
-      addUnderneathRect(curLayerIndex, i, leftX, intermediateGap, 5,
-        intermediateNodeMouseOverHandler, intermediateNodeMouseLeaveHandler,
-        intermediateNodeClicked);
-              
-      // After getting the intermediateMinMax, we can finally aggregate it with
-      // the preLayer minmax, curLayer minmax
-      let finalMinMax = {
-        min: Math.min(minMax.min, intermediateMinMax.min),
-        max: Math.max(minMax.max, intermediateMinMax.max)
-      };
-
-      // Add annotation to the intermediate layer
-      let intermediateLayerAnnotation = svg$3.append('g')
-        .attr('class', 'intermediate-layer-annotation')
-        .style('opacity', 0);
-
-      drawIntermediateLayerAnnotation({
-        leftX: leftX,
-        curLayerIndex: curLayerIndex,
-        group: intermediateLayerAnnotation,
-        intermediateGap: intermediateGap,
-        i: i
-      });
-
-      drawIntermediateLayerLegend({
-        legendHeight: 5,
-        curLayerIndex: curLayerIndex,
-        range: range,
-        group: intermediateLayer,
-        width: 2 * nodeLength$4 + intermediateGap,
-        minMax: finalMinMax,
-        x: leftX,
-        y: svgPaddings$2.top + vSpaceAroundGap$2 * (10) + vSpaceAroundGap$2 + 
-          nodeLength$4 * 10
-      });
-
-      drawIntermediateLayerLegend({
-        legendHeight: 5,
-        curLayerIndex: curLayerIndex,
-        range: kernelRange,
-        minMax: kernelMinMax,
-        group: intermediateLayer,
-        width: 2 * nodeLength$4 + intermediateGap,
-        x: targetX + nodeLength$4 - (2 * nodeLength$4 + intermediateGap),
-        y: svgPaddings$2.top + vSpaceAroundGap$2 * (10) + vSpaceAroundGap$2 + 
-          nodeLength$4 * 10,
-        gradientAppendingName: 'kernelColorGradient',
-        colorScale: layerColorScales$4.weight,
-        gradientGap: 0.2
-      });
-
-      // Show everything
-      svg$3.selectAll('g.intermediate-layer, g.intermediate-layer-annotation')
-        .transition()
-        .delay(500)
-        .duration(500)
-        .ease(d3.easeCubicInOut)
-        .style('opacity', 1);
-    };
-
-    /**
-     * Draw the intermediate layer before conv_2_2
-     * @param {number} curLayerIndex Index of the selected layer
-     * @param {object} d Bounded d3 data
-     * @param {number} i Index of the selected node
-     * @param {number} width CNN group width
-     * @param {number} height CNN group height
-     * @param {function} intermediateNodeMouseOverHandler mouse over handler
-     * @param {function} intermediateNodeMouseLeaveHandler mouse leave handler
-     * @param {function} intermediateNodeClicked node clicking handler
-     */
-    const drawConv4 = (curLayerIndex, d, i, width, height,
-      intermediateNodeMouseOverHandler, intermediateNodeMouseLeaveHandler,
-      intermediateNodeClicked) => {
-      let targetX = nodeCoordinate$1[curLayerIndex][0].x;
-      let leftX = targetX - (2 * nodeLength$4 +
-        2 * hSpaceAroundGap$1 * gapRatio$1 + plusSymbolRadius * 2);
-      let intermediateGap = (hSpaceAroundGap$1 * gapRatio$1 * 2) / 3;
-
-      // Record the left x position for dynamic detial view positioning
-      intermediateLayerPosition['conv_2_2'] = leftX;
-      intermediateLayerPositionStore.set(intermediateLayerPosition);
-
-      // Hide the edges
-      svg$3.select('g.edge-group')
-        .style('visibility', 'hidden');
-
-      // Make sure two layers have the same range
-      let {range, minMax} = redrawLayerIfNeeded(curLayerIndex, i);
-
-      // Move the previous layer
-      moveLayerX({layerIndex: curLayerIndex - 1, targetX: leftX,
-        disable: true, delay: 0});
-
-      moveLayerX({layerIndex: curLayerIndex,
-        targetX: targetX, disable: true,
-        delay: 0, opacity: 0.15, specialIndex: i});
-
-      // Compute the gap in the left shrink region
-      let leftEnd = leftX - hSpaceAroundGap$1;
-      let leftGap = (leftEnd - nodeCoordinate$1[0][0].x - 7 * nodeLength$4) / 7;
-      let rightStart = targetX + nodeLength$4 + hSpaceAroundGap$1;
-
-      // Move the left layers
-      for (let i = 0; i < curLayerIndex - 1; i++) {
-        let curX = nodeCoordinate$1[0][0].x + i * (nodeLength$4 + leftGap);
-        moveLayerX({layerIndex: i, targetX: curX, disable: true, delay: 0});
-      }
-
-      // Add an overlay
-      let stops = [{offset: '0%', color: 'rgb(250, 250, 250)', opacity: 1},
-        {offset: '50%', color: 'rgb(250, 250, 250)', opacity: 0.95},
-        {offset: '100%', color: 'rgb(250, 250, 250)', opacity: 0.85}];
-      addOverlayGradient('overlay-gradient-left', stops);
-
-      stops = [{offset: '0%', color: 'rgb(250, 250, 250)', opacity: 0.85},
-        {offset: '50%', color: 'rgb(250, 250, 250)', opacity: 0.95},
-        {offset: '100%', color: 'rgb(250, 250, 250)', opacity: 1}];
-      addOverlayGradient('overlay-gradient-right', stops);
-
-      addOverlayRect('overlay-gradient-left', nodeCoordinate$1[0][0].x - overlayRectOffset / 2,
-        0, leftEnd - nodeCoordinate$1[0][0].x + overlayRectOffset,
-        height + svgPaddings$2.top + svgPaddings$2.bottom);
-      
-      addOverlayRect('overlay-gradient-right', rightStart - overlayRectOffset / 2,
-        0, width - rightStart + overlayRectOffset,
-        height + svgPaddings$2.top + svgPaddings$2.bottom);
-      
-      // Draw the intermediate layer
-      let {intermediateLayer, intermediateMinMax, kernelRange, kernelMinMax} =
-        drawIntermediateLayer(curLayerIndex, leftX,
-          nodeCoordinate$1[curLayerIndex][0].x, rightStart, intermediateGap,
-          d, i, intermediateNodeMouseOverHandler,
-          intermediateNodeMouseLeaveHandler, intermediateNodeClicked);
-      addUnderneathRect(curLayerIndex, i, leftX, intermediateGap, 5,
-        intermediateNodeMouseOverHandler, intermediateNodeMouseLeaveHandler,
-        intermediateNodeClicked);
-              
-      // After getting the intermediateMinMax, we can finally aggregate it with
-      // the preLayer minmax, curLayer minmax
-      let finalMinMax = {
-        min: Math.min(minMax.min, intermediateMinMax.min),
-        max: Math.max(minMax.max, intermediateMinMax.max)
-      };
-
-      // Add annotation to the intermediate layer
-      let intermediateLayerAnnotation = svg$3.append('g')
-        .attr('class', 'intermediate-layer-annotation')
-        .style('opacity', 0);
-
-      drawIntermediateLayerAnnotation({
-        leftX: leftX,
-        curLayerIndex: curLayerIndex,
-        group: intermediateLayerAnnotation,
-        intermediateGap: intermediateGap,
-        i: i
-      });
-
-      drawIntermediateLayerLegend({
-        legendHeight: 5,
-        curLayerIndex: curLayerIndex,
-        range: range,
-        group: intermediateLayer,
-        minMax: finalMinMax,
-        width: 2 * nodeLength$4 + intermediateGap,
-        x: leftX,
-        y: svgPaddings$2.top + vSpaceAroundGap$2 * (10) + vSpaceAroundGap$2 + 
-          nodeLength$4 * 10
-      });
-
-      drawIntermediateLayerLegend({
-        legendHeight: 5,
-        curLayerIndex: curLayerIndex,
-        range: kernelRange,
-        minMax: kernelMinMax,
-        group: intermediateLayer,
-        width: 2 * nodeLength$4 + intermediateGap,
-        x: targetX + nodeLength$4 - (2 * nodeLength$4 + intermediateGap),
-        y: svgPaddings$2.top + vSpaceAroundGap$2 * (10) + vSpaceAroundGap$2 + 
-          nodeLength$4 * 10,
-        gradientAppendingName: 'kernelColorGradient',
-        colorScale: layerColorScales$4.weight,
-        gradientGap: 0.2
-      });
-
-      // Show everything
-      svg$3.selectAll('g.intermediate-layer, g.intermediate-layer-annotation')
-        .transition()
-        .delay(500)
-        .duration(500)
-        .ease(d3.easeCubicInOut)
-        .style('opacity', 1);
-    };
-
-    /* global d3, SmoothScroll */
-
-    // Configs
-    const layerColorScales$5 = overviewConfig.layerColorScales;
-    const nodeLength$5 = overviewConfig.nodeLength;
-    const plusSymbolRadius$1 = overviewConfig.plusSymbolRadius;
-    const intermediateColor$2 = overviewConfig.intermediateColor;
-    const kernelRectLength$1 = overviewConfig.kernelRectLength;
-    const svgPaddings$3 = overviewConfig.svgPaddings;
-    const gapRatio$2 = overviewConfig.gapRatio;
-    const classList = overviewConfig.classLists;
-    const formater$2 = d3.format('.4f');
-
-    // Shared variables
-    let svg$4 = undefined;
-    svgStore.subscribe( value => {svg$4 = value;} );
-
-    let vSpaceAroundGap$3 = undefined;
-    vSpaceAroundGapStore.subscribe( value => {vSpaceAroundGap$3 = value;} );
-
-    let hSpaceAroundGap$2 = undefined;
-    hSpaceAroundGapStore.subscribe( value => {hSpaceAroundGap$2 = value;} );
-
-    let cnn$2 = undefined;
-    cnnStore.subscribe( value => {cnn$2 = value;} );
-
-    let nodeCoordinate$2 = undefined;
-    nodeCoordinateStore.subscribe( value => {nodeCoordinate$2 = value;} );
-
-    let selectedScaleLevel$2 = undefined;
-    selectedScaleLevelStore.subscribe( value => {selectedScaleLevel$2 = value;} );
-
-    let cnnLayerRanges$2 = undefined;
-    cnnLayerRangesStore.subscribe( value => {cnnLayerRanges$2 = value;} );
-
-    let cnnLayerMinMax$2 = undefined;
-    cnnLayerMinMaxStore.subscribe( value => {cnnLayerMinMax$2 = value;} );
-
-    let isInSoftmax = undefined;
-    isInSoftmaxStore.subscribe( value => {isInSoftmax = value;} );
-
-    let allowsSoftmaxAnimation = undefined;
-    allowsSoftmaxAnimationStore.subscribe( value => {allowsSoftmaxAnimation = value;} );
-
-    let softmaxDetailViewInfo = undefined;
-    softmaxDetailViewStore.subscribe( value => {softmaxDetailViewInfo = value;} );
-
-    let hoverInfo = undefined;
-    hoverInfoStore.subscribe( value => {hoverInfo = value;} );
-
-    let detailedMode$2 = undefined;
-    detailedModeStore.subscribe( value => {detailedMode$2 = value;} );
-
-    let layerIndexDict = {
-      'input': 0,
-      'conv_1_1': 1,
-      'relu_1_1': 2,
-      'conv_1_2': 3,
-      'relu_1_2': 4,
-      'max_pool_1': 5,
-      'conv_2_1': 6,
-      'relu_2_1': 7,
-      'conv_2_2': 8,
-      'relu_2_2': 9,
-      'max_pool_2': 10,
-      'output': 11
-    };
-
-    let hasInitialized = false;
-    let logits = [];
-    let flattenFactoredFDict = {};
-
-    const moveLegend = (d, i, g, moveX, duration, restore) => {
-      let legend = d3.select(g[i]);
-
-      if (!restore) {
-        let previousTransform = legend.attr('transform');
-        let previousLegendX = +previousTransform.replace(/.*\(([\d\.]+),.*/, '$1');
-        let previousLegendY = +previousTransform.replace(/.*,\s([\d\.]+)\)/, '$1');
-      
-        legend.transition('softmax')
-          .duration(duration)
-          .ease(d3.easeCubicInOut)
-          .attr('transform', `translate(${previousLegendX - moveX}, ${previousLegendY})`);
-        
-        // If not in restore mode, we register the previous location to the DOM element
-        legend.attr('data-preX', previousLegendX);
-        legend.attr('data-preY', previousLegendY);
-      } else {
-        // Restore the recorded location
-        let previousLegendX = +legend.attr('data-preX');
-        let previousLegendY = +legend.attr('data-preY');
-
-        legend.transition('softmax')
-          .duration(duration)
-          .ease(d3.easeCubicInOut)
-          .attr('transform', `translate(${previousLegendX}, ${previousLegendY})`);
-      }
-    };
-
-    const logitCircleMouseOverHandler = (i) => {
-      // Update the hover info UI
-      hoverInfoStore.set({
-        show: true,
-        text: `Logit: ${formater$2(logits[i])}`
-      });
-
-      // Highlight the text in the detail view
-      softmaxDetailViewInfo.highlightI = i;
-      softmaxDetailViewStore.set(softmaxDetailViewInfo);
-
-      let logitLayer = svg$4.select('.logit-layer');
-      let logitLayerLower = svg$4.select('.underneath');
-      let intermediateLayer = svg$4.select('.intermediate-layer');
-
-      // Highlight the circle
-      logitLayer.select(`#logit-circle-${i}`)
-        .style('stroke-width', 2);
-
-      // Highlight the associated plus symbol
-      intermediateLayer.select(`#plus-symbol-clone-${i}`)
-        .style('opacity', 1)
-        .select('circle')
-        .style('fill', d => d.fill);
-      
-      // Raise the associated edge group
-      logitLayerLower.select(`#logit-lower-${i}`).raise();
-
-      // Highlight the associated edges
-      logitLayerLower.selectAll(`.softmax-abstract-edge-${i}`)
-        .style('stroke-width', 0.8)
-        .style('stroke', '#E0E0E0');
-
-      logitLayerLower.selectAll(`.softmax-edge-${i}`)
-        .style('stroke-width', 1)
-        .style('stroke', '#E0E0E0');
-      
-      logitLayerLower.selectAll(`.logit-output-edge-${i}`)
-        .style('stroke-width', 3)
-        .style('stroke', '#E0E0E0');
-
-      logitLayer.selectAll(`.logit-output-edge-${i}`)
-        .style('stroke-width', 3)
-        .style('stroke', '#E0E0E0');
-    };
-
-    const logitCircleMouseLeaveHandler = (i) => {
-      // screenshot
-      // return;
-
-      // Update the hover info UI
-      hoverInfoStore.set({
-        show: false,
-        text: `Logit: ${formater$2(logits[i])}`
-      });
-
-      // Dehighlight the text in the detail view
-      softmaxDetailViewInfo.highlightI = -1;
-      softmaxDetailViewStore.set(softmaxDetailViewInfo);
-
-      let logitLayer = svg$4.select('.logit-layer');
-      let logitLayerLower = svg$4.select('.underneath');
-      let intermediateLayer = svg$4.select('.intermediate-layer');
-
-      // Restore the circle
-      logitLayer.select(`#logit-circle-${i}`)
-        .style('stroke-width', 1);
-
-      // Restore the associated plus symbol
-      intermediateLayer.select(`#plus-symbol-clone-${i}`)
-        .style('opacity', 0.2);
-
-      // Restore the associated edges
-      logitLayerLower.selectAll(`.softmax-abstract-edge-${i}`)
-        .style('stroke-width', 0.2)
-        .style('stroke', '#EDEDED');
-
-      logitLayerLower.selectAll(`.softmax-edge-${i}`)
-        .style('stroke-width', 0.2)
-        .style('stroke', '#F1F1F1');
-
-      logitLayerLower.selectAll(`.logit-output-edge-${i}`)
-        .style('stroke-width', 1.2)
-        .style('stroke', '#E5E5E5');
-      
-      logitLayer.selectAll(`.logit-output-edge-${i}`)
-        .style('stroke-width', 1.2)
-        .style('stroke', '#E5E5E5');
-    };
-
-    // This function is binded to the detail view in Cnn.svelte
-    const softmaxDetailViewMouseOverHandler = (event) => {
-      logitCircleMouseOverHandler(event.detail.curI);
-    };
-
-    // This function is binded to the detail view in Cnn.svelte
-    const softmaxDetailViewMouseLeaveHandler = (event) => {
-      logitCircleMouseLeaveHandler(event.detail.curI);
-    };
-
-    const drawLogitLayer = (arg) => {
-      let curLayerIndex = arg.curLayerIndex,
-        moveX = arg.moveX,
-        softmaxLeftMid = arg.softmaxLeftMid,
-        selectedI = arg.selectedI,
-        intermediateX1 = arg.intermediateX1,
-        intermediateX2 = arg.intermediateX2,
-        pixelWidth = arg.pixelWidth,
-        pixelHeight = arg.pixelHeight,
-        topY = arg.topY,
-        bottomY = arg.bottomY,
-        softmaxX = arg.softmaxX,
-        middleGap = arg.middleGap,
-        middleRectHeight = arg.middleRectHeight,
-        symbolGroup = arg.symbolGroup,
-        symbolX = arg.symbolX,
-        flattenRange = arg.flattenRange;
-
-      let logitLayer = svg$4.select('.intermediate-layer')
-        .append('g')
-        .attr('class', 'logit-layer')
-        .raise();
-      
-      // Minotr layer ordering change
-      let tempClone = svg$4.select('.intermediate-layer')
-        .select('.flatten-layer')
-        .select('.plus-symbol')
-        .clone(true)
-        .attr('class', 'temp-clone-plus-symbol')
-        .attr('transform', `translate(${symbolX - moveX},
-      ${nodeCoordinate$2[curLayerIndex][selectedI].y + nodeLength$5 / 2})`)
-        // Cool hack -> d3 clone doesnt clone events, make the front object pointer
-        // event transparent so users can trigger the underlying object's event!
-        .style('pointer-events', 'none')
-        .remove();
-
-      let tempPlusSymbol = logitLayer.append(() => tempClone.node());
-      
-      svg$4.select('.softmax-symbol').raise();
-
-      let logitLayerLower = svg$4.select('.underneath')
-        .append('g')
-        .attr('class', 'logit-layer-lower')
-        .lower();
-      
-      // Use circles to encode logit values
-      let centerX = softmaxLeftMid - moveX * 4 / 5;
-
-      // Get all logits
-      logits = [];
-      for (let i = 0; i < cnn$2[layerIndexDict['output']].length; i++) {
-        logits.push(cnn$2[layerIndexDict['output']][i].logit);
-      }
-
-      // Construct a color scale for the logit values
-      let logitColorScale = d3.scaleLinear()
-        .domain(d3.extent(logits))
-        .range([0.2, 1]);
-      
-      // Draw the current logit circle before animation
-      let logitRadius = 8;
-      logitLayer.append('circle')
-        .attr('class', 'logit-circle')
-        .attr('id', `logit-circle-${selectedI}`)
-        .attr('cx', centerX)
-        .attr('cy', nodeCoordinate$2[curLayerIndex - 1][selectedI].y + nodeLength$5 / 2)
-        .attr('r', logitRadius)
-        .style('fill', layerColorScales$5.logit(logitColorScale(logits[selectedI])))
-        .style('cursor', 'crosshair')
-        .style('pointer-events', 'all')
-        .style('stroke', intermediateColor$2)
-        .on('mouseover', () => logitCircleMouseOverHandler(selectedI))
-        .on('mouseleave', () => logitCircleMouseLeaveHandler(selectedI))
-        .on('click', () => { d3.event.stopPropagation(); });
-      
-      // Show the logit circle corresponding label
-      let softmaxDetailAnnotation = svg$4.select('.intermediate-layer-annotation')
-        .select('.softmax-detail-annoataion');
-
-      softmaxDetailAnnotation.select(`#logit-text-${selectedI}`)
-        .style('opacity', 1);
-
-      tempPlusSymbol.raise();
-
-      // Draw another line from plus symbol to softmax symbol
-      logitLayer.append('line')
-        .attr('class', `logit-output-edge-${selectedI}`)
-        .attr('x1', intermediateX2 - moveX + plusSymbolRadius$1 * 2)
-        .attr('x2', softmaxX)
-        .attr('y1', nodeCoordinate$2[curLayerIndex - 1][selectedI].y + nodeLength$5 / 2)
-        .attr('y2', nodeCoordinate$2[curLayerIndex - 1][selectedI].y + nodeLength$5 / 2)
-        .style('fill', 'none')
-        .style('stroke', '#EAEAEA')
-        .style('stroke-width', '1.2')
-        .lower();
-
-      // Add the flatten to logit links
-      let linkData = [];
-      let flattenLength = cnn$2.flatten.length / cnn$2[1].length;
-      let underneathIs = [...Array(cnn$2[layerIndexDict['output']].length).keys()]
-        .filter(d => d != selectedI);
-      let curIIndex = 0;
-      let linkGen = d3.linkHorizontal()
-        .x(d => d.x)
-        .y(d => d.y);
-
-      const drawOneEdgeGroup = () => {
-        // Only draw the new group if it is in the softmax mode
-        if (!allowsSoftmaxAnimation) {
-          svg$4.select('.underneath')
-            .selectAll(`.logit-lower`)
-            .remove();
-          return;
-        }
-
-        let curI = underneathIs[curIIndex];
-
-        let curEdgeGroup = svg$4.select('.underneath')
-          .select(`#logit-lower-${curI}`);
-        
-        if (curEdgeGroup.empty()) {
-          curEdgeGroup = svg$4.select('.underneath')
-            .append('g')
-            .attr('class', 'logit-lower')
-            .attr('id', `logit-lower-${curI}`)
-            .style('opacity', 0);
-
-
-          // Hack: now show all edges, only draw 1/3 of the actual edges
-          for (let f = 0; f < flattenLength; f += 3) {
-            let loopFactors = [0, nodeCoordinate$2[curLayerIndex - 1].length - 1];
-            loopFactors.forEach(l => {
-              let factoredF = f + l * flattenLength;
-        
-              // Flatten -> output
-              linkData.push({
-                source: {x: intermediateX1 + pixelWidth + 3 - moveX,
-                  y:  l === 0 ? topY + f * pixelHeight : bottomY + f * pixelHeight},
-                target: {x: intermediateX2 - moveX,
-                  y: nodeCoordinate$2[curLayerIndex][curI].y + nodeLength$5 / 2},
-                index: factoredF,
-                weight: cnn$2.flatten[factoredF].outputLinks[curI].weight,
-                color: '#F1F1F1',
-                width: 0.5,
-                opacity: 1,
-                class: `softmax-edge-${curI}`
-              });
-            });
-          }
-
-          // Draw middle rect to logits
-          for (let vi = 0; vi < cnn$2[layerIndexDict['output']].length - 2; vi++) {
-            linkData.push({
-              source: {x: intermediateX1 + pixelWidth + 3 - moveX,
-                y: topY + flattenLength * pixelHeight + middleGap * (vi + 1) +
-                middleRectHeight * (vi + 0.5)},
-              target: {x: intermediateX2 - moveX,
-                y: nodeCoordinate$2[curLayerIndex][curI].y + nodeLength$5 / 2},
-              index: -1,
-              color: '#EDEDED',
-              width: 0.5,
-              opacity: 1,
-              class: `softmax-abstract-edge-${curI}`
-            });
-          }
-
-          // Render the edges on the underneath layer
-          curEdgeGroup.selectAll(`path.softmax-edge-${curI}`)
-            .data(linkData)
-            .enter()
-            .append('path')
-            .attr('class', d => d.class)
-            .attr('id', d => `edge-${d.name}`)
-            .attr('d', d => linkGen({source: d.source, target: d.target}))
-            .style('fill', 'none')
-            .style('stroke-width', d => d.width)
-            .style('stroke', d => d.color === undefined ? intermediateColor$2 : d.color)
-            .style('opacity', d => d.opacity)
-            .style('pointer-events', 'none');
-        }
-        
-        let curNodeGroup = logitLayer.append('g')
-          .attr('class', `logit-layer-${curI}`)
-          .style('opacity', 0);
-        
-        // Draw the plus symbol
-        let symbolClone = symbolGroup.clone(true)
-          .style('opacity', 0);
-
-        // Change the style of the clone
-        symbolClone.attr('class', 'plus-symbol-clone')
-          .attr('id', `plus-symbol-clone-${curI}`)
-          .select('circle')
-          .datum({fill: gappedColorScale(layerColorScales$5.weight,
-            flattenRange, cnn$2[layerIndexDict['output']][curI].bias, 0.35)})
-          .style('pointer-events', 'none')
-          .style('fill', '#E5E5E5');
-
-        symbolClone.attr('transform', `translate(${symbolX},
-      ${nodeCoordinate$2[curLayerIndex][curI].y + nodeLength$5 / 2})`);
-        
-        // Draw the outter link using only merged path
-        let outputEdgeD1 = linkGen({
-          source: {
-            x: intermediateX2 - moveX + plusSymbolRadius$1 * 2,
-            y: nodeCoordinate$2[curLayerIndex][curI].y + nodeLength$5 / 2
-          },
-          target: {
-            x: centerX + logitRadius,
-            y: nodeCoordinate$2[curLayerIndex][curI].y + nodeLength$5 / 2
-          }
-        });
-
-        let outputEdgeD2 = linkGen({
-          source: {
-            x: centerX + logitRadius,
-            y: nodeCoordinate$2[curLayerIndex][curI].y + nodeLength$5 / 2
-          },
-          target: {
-            x: softmaxX,
-            y: nodeCoordinate$2[curLayerIndex][selectedI].y + nodeLength$5 / 2
-          }
-        });
-
-        // There are ways to combine these two paths into one. However, the animation
-        // for merged path is not continuous, so we use two saperate paths here.
-
-        let outputEdge1 = logitLayerLower.append('path')
-          .attr('class', `logit-output-edge-${curI}`)
-          .attr('d', outputEdgeD1)
-          .style('fill', 'none')
-          .style('stroke', '#EAEAEA')
-          .style('stroke-width', '1.2');
-
-        let outputEdge2 = logitLayerLower.append('path')
-          .attr('class', `logit-output-edge-${curI}`)
-          .attr('d', outputEdgeD2)
-          .style('fill', 'none')
-          .style('stroke', '#EAEAEA')
-          .style('stroke-width', '1.2');
-        
-        let outputEdgeLength1 = outputEdge1.node().getTotalLength();
-        let outputEdgeLength2 = outputEdge2.node().getTotalLength();
-        let totalLength = outputEdgeLength1 + outputEdgeLength2;
-        let totalDuration = hasInitialized ? 500 : 800;
-        let opacityDuration = hasInitialized ? 400 : 600;
-
-        outputEdge1.attr('stroke-dasharray', outputEdgeLength1 + ' ' + outputEdgeLength1)
-          .attr('stroke-dashoffset', outputEdgeLength1);
-        
-        outputEdge2.attr('stroke-dasharray', outputEdgeLength2 + ' ' + outputEdgeLength2)
-          .attr('stroke-dashoffset', outputEdgeLength2);
-
-        outputEdge1.transition('softmax-output-edge')
-          .duration(outputEdgeLength1 / totalLength * totalDuration)
-          .attr('stroke-dashoffset', 0);
-
-        outputEdge2.transition('softmax-output-edge')
-          .delay(outputEdgeLength1 / totalLength * totalDuration)
-          .duration(outputEdgeLength2 / totalLength * totalDuration)
-          .attr('stroke-dashoffset', 0);
-        
-        // Draw the logit circle
-        curNodeGroup.append('circle')
-          .attr('class', 'logit-circle')
-          .attr('id', `logit-circle-${curI}`)
-          .attr('cx', centerX)
-          .attr('cy', nodeCoordinate$2[curLayerIndex - 1][curI].y + nodeLength$5 / 2)
-          .attr('r', 7)
-          .style('fill', layerColorScales$5.logit(logitColorScale(logits[curI])))
-          .style('stroke', intermediateColor$2)
-          .style('cursor', 'crosshair')
-          .on('mouseover', () => logitCircleMouseOverHandler(curI))
-          .on('mouseleave', () => logitCircleMouseLeaveHandler(curI))
-          .on('click', () => { d3.event.stopPropagation(); });
-        
-        // Show the element in the detailed view
-        softmaxDetailViewInfo.startAnimation = {
-          i: curI,
-          duration: opacityDuration,
-          // Always show the animation
-          hasInitialized: false
-        };
-        softmaxDetailViewStore.set(softmaxDetailViewInfo);
-
-        // Show the elements with animation    
-        curNodeGroup.transition('softmax-edge')
-          .duration(opacityDuration)
-          .style('opacity', 1);
-
-        if ((selectedI < 3 && curI == 9) || (selectedI >= 3 && curI == 0)) {
-          // Show the hover text
-          softmaxDetailAnnotation.select('.softmax-detail-hover-annotation')
-            .transition('softmax-edge')
-            .duration(opacityDuration)
-            .style('opacity', 1);
-        }
-
-        softmaxDetailAnnotation.select(`#logit-text-${curI}`)
-          .transition('softmax-edge')
-          .duration(opacityDuration)
-          .style('opacity', 1);
-        
-        curEdgeGroup.transition('softmax-edge')
-          .duration(opacityDuration)
-          .style('opacity', 1)
-          .on('end', () => {
-            // Recursive animaiton
-            curIIndex ++;
-            if (curIIndex < underneathIs.length) {
-              linkData = [];
-              drawOneEdgeGroup();
-            } else {
-              hasInitialized = true;
-              softmaxDetailViewInfo.hasInitialized = true;
-              softmaxDetailViewStore.set(softmaxDetailViewInfo);
-            }
-          });
-        
-        symbolClone.transition('softmax-edge')
-          .duration(opacityDuration)
-          .style('opacity', 0.2);
-      };
-
-      // Show the softmax detail view
-      let anchorElement = svg$4.select('.intermediate-layer')
-        .select('.layer-label').node();
-      let pos = getMidCoords(svg$4, anchorElement);
-      let wholeSvg = d3.select('#cnn-svg');
-      let svgYMid = +wholeSvg.style('height').replace('px', '') / 2;
-      let detailViewTop = 100 + svgYMid - 192 / 2;
-
-      const detailview = document.getElementById('detailview');
-      detailview.style.top = `${detailViewTop}px`;
-      detailview.style.left = `${pos.left - 490 - 50}px`;
-      detailview.style.position = 'absolute';
-
-      softmaxDetailViewStore.set({
-        show: true,
-        logits: logits,
-        logitColors: logits.map(d => layerColorScales$5.logit(logitColorScale(d))),
-        selectedI: selectedI,
-        highlightI: -1,
-        outputName: classList[selectedI],
-        outputValue: cnn$2[layerIndexDict['output']][selectedI].output,
-        startAnimation: {i: -1, duration: 0, hasInitialized: hasInitialized}
-      });
-
-      drawOneEdgeGroup();
-
-      // Draw logit circle color scale
-      drawIntermediateLayerLegend({
-        legendHeight: 5,
-        curLayerIndex: curLayerIndex,
-        range: d3.extent(logits)[1] - d3.extent(logits)[0],
-        minMax: {min: d3.extent(logits)[0], max: d3.extent(logits)[1]},
-        group: logitLayer,
-        width: softmaxX - (intermediateX2 + plusSymbolRadius$1 * 2 - moveX + 5),
-        gradientAppendingName: 'flatten-logit-gradient',
-        gradientGap: 0.1,
-        colorScale: layerColorScales$5.logit,
-        x: intermediateX2 + plusSymbolRadius$1 * 2 - moveX + 5,
-        y: svgPaddings$3.top + vSpaceAroundGap$3 * (10) + vSpaceAroundGap$3 + 
-          nodeLength$5 * 10
-      });
-
-      // Draw logit layer label
-      let logitLabel = logitLayer.append('g')
-        .attr('class', 'layer-label')
-        .classed('hidden', detailedMode$2)
-        .attr('transform', () => {
-          let x = centerX;
-          let y = (svgPaddings$3.top + vSpaceAroundGap$3) / 2 + 5;
-          return `translate(${x}, ${y})`;
-        });
-
-      logitLabel.append('text')
-        .style('text-anchor', 'middle')
-        .style('dominant-baseline', 'middle')
-        .style('opacity', 0.8)
-        .style('font-weight', 800)
-        .text('logit');
-    };
-
-    const removeLogitLayer = () => {
-      svg$4.select('.logit-layer').remove();
-      svg$4.select('.logit-layer-lower').remove();
-      svg$4.selectAll('.plus-symbol-clone').remove();
-
-      // Instead of removing the paths, we hide them, so it is faster to load in
-      // the future
-      svg$4.select('.underneath')
-        .selectAll('.logit-lower')
-        .style('opacity', 0);
-
-      softmaxDetailViewStore.set({
-          show: false,
-          logits: []
-      });
-    };
-
-    const softmaxClicked = (arg) => {
-      let curLayerIndex = arg.curLayerIndex,
-        moveX = arg.moveX,
-        symbolX = arg.symbolX,
-        symbolY = arg.symbolY,
-        outputX = arg.outputX,
-        outputY = arg.outputY,
-        softmaxLeftMid = arg.softmaxLeftMid,
-        selectedI = arg.selectedI,
-        intermediateX1 = arg.intermediateX1,
-        intermediateX2 = arg.intermediateX2,
-        pixelWidth = arg.pixelWidth,
-        pixelHeight = arg.pixelHeight,
-        topY = arg.topY,
-        bottomY = arg.bottomY,
-        middleGap = arg.middleGap,
-        middleRectHeight = arg.middleRectHeight,
-        softmaxX = arg.softmaxX,
-        softmaxTextY = arg.softmaxTextY,
-        softmaxWidth = arg.softmaxWidth,
-        symbolGroup = arg.symbolGroup,
-        flattenRange = arg.flattenRange;
-
-      let duration = 600;
-      let centerX = softmaxLeftMid - moveX * 4 / 5;
-      d3.event.stopPropagation();
-
-      // Clean up the logit elemends before moving anything
-      if (isInSoftmax) {
-        allowsSoftmaxAnimationStore.set(false);
-        removeLogitLayer();
-      } else {
-        allowsSoftmaxAnimationStore.set(true);
-      }
-
-      // Move the overlay gradient
-      svg$4.select('.intermediate-layer-overlay')
-        .select('rect.overlay')
-        .transition('softmax')
-        .ease(d3.easeCubicInOut)
-        .duration(duration)
-        .attr('transform', `translate(${isInSoftmax ? 0 : -moveX}, ${0})`);
-
-      // Move the legends
-      svg$4.selectAll(`.intermediate-legend-${curLayerIndex - 1}`)
-        .each((d, i, g) => moveLegend(d, i, g, moveX, duration, isInSoftmax));
-
-      svg$4.select('.intermediate-layer')
-        .select(`.layer-label`)
-        .each((d, i, g) => moveLegend(d, i, g, moveX, duration, isInSoftmax));
-
-      svg$4.select('.intermediate-layer')
-        .select(`.layer-detailed-label`)
-        .each((d, i, g) => moveLegend(d, i, g, moveX, duration, isInSoftmax));
-
-      // Also move all layers on the left
-      for (let i = curLayerIndex - 1; i >= 0; i--) {
-        let curLayer = svg$4.select(`g#cnn-layer-group-${i}`);
-        let previousX = +curLayer.select('image').attr('x');
-        let newX = isInSoftmax ? previousX + moveX : previousX - moveX;
-        moveLayerX({
-          layerIndex: i,
-          targetX: newX,
-          disable: true,
-          delay: 0,
-          transitionName: 'softmax',
-          duration: duration
-        });
-      }
-
-      // Hide the sum up annotation
-      svg$4.select('.plus-annotation')
-        .transition('softmax')
-        .duration(duration)
-        .style('opacity', isInSoftmax ? 1 : 0)
-        .style('pointer-events', isInSoftmax ? 'all' : 'none');
-
-      // Hide the softmax annotation
-      let softmaxAnnotation = svg$4.select('.softmax-annotation')
-        .style('pointer-events', isInSoftmax ? 'all' : 'none');
-      
-      let softmaxDetailAnnotation = softmaxAnnotation.selectAll('.softmax-detail-annoataion')
-        .data([0])
-        .enter()
-        .append('g')
-        .attr('class', 'softmax-detail-annoataion');
-
-      // Remove the detailed annoatioan when quitting the detail view
-      if (isInSoftmax) {
-        softmaxAnnotation.selectAll('.softmax-detail-annoataion').remove();
-      }
-
-      softmaxAnnotation.select('.arrow-group')
-        .transition('softmax')
-        .duration(duration)
-        .style('opacity', isInSoftmax ? 1 : 0);
-
-      softmaxAnnotation.select('.annotation-text')
-        .style('cursor', 'help')
-        .style('pointer-events', 'all')
-        .on('click', () => {
-          d3.event.stopPropagation();
-          // Scroll to the article element
-          document.querySelector(`#article-softmax`).scrollIntoView({ 
-            behavior: 'smooth' 
-          });
-        })
-        .transition('softmax')
-        .duration(duration)
-        .style('opacity', isInSoftmax ? 1 : 0)
-        .on('end', () => {
-          if (!isInSoftmax) {
-            // Add new annotation for the softmax button
-            let textX = softmaxX + softmaxWidth / 2;
-            let textY = softmaxTextY - 10;
-
-            if (selectedI === 0) {
-              textY = softmaxTextY + 70;
-            }
-
-            let text = softmaxDetailAnnotation.append('text')
-              .attr('x', textX)
-              .attr('y', textY)
-              .attr('class', 'annotation-text softmax-detail-text')
-              .style('dominant-baseline', 'baseline')
-              .style('text-anchor', 'middle')
-              .text('Normalize ');
-            
-            text.append('tspan') 
-              .attr('dx', 1)
-              .style('fill', '#E56014')
-              .text('logits');
-            
-            text.append('tspan')
-              .attr('dx', 1)
-              .text(' into');
-
-            text.append('tspan')
-              .attr('x', textX)
-              .attr('dy', '1.1em')
-              .text('class probabilities');
-
-            if (selectedI === 0) {
-              drawArrow({
-                group: softmaxDetailAnnotation,
-                sx: softmaxX + softmaxWidth / 2 - 5,
-                sy: softmaxTextY + 44,
-                tx: softmaxX + softmaxWidth / 2,
-                ty: textY - 12,
-                dr: 50,
-                hFlip: true,
-                marker: 'marker-alt'
-              });
-            } else {
-              drawArrow({
-                group: softmaxDetailAnnotation,
-                sx: softmaxX + softmaxWidth / 2 - 5,
-                sy: softmaxTextY + 4,
-                tx: softmaxX + softmaxWidth / 2,
-                ty: symbolY - plusSymbolRadius$1 - 4,
-                dr: 50,
-                hFlip: true,
-                marker: 'marker-alt'
-              });
-            }
-
-            // Add annotation for the logit layer label
-            textX = centerX + 45;
-            textY = (svgPaddings$3.top + vSpaceAroundGap$3) / 2 + 5;
-            let arrowTX = centerX + 20;
-            let arrowTY = (svgPaddings$3.top + vSpaceAroundGap$3) / 2 + 5;
-
-            softmaxDetailAnnotation.append('g')
-              .attr('class', 'layer-detailed-label')
-              .attr('transform', () => {
-                let x = centerX;
-                let y = (svgPaddings$3.top + vSpaceAroundGap$3) / 2 - 5;
-                return `translate(${x}, ${y})`;
-              })
-              .classed('hidden', !detailedMode$2)
-              .append('text')
-              // .attr('x', centerX)
-              // .attr('y',  (svgPaddings.top + vSpaceAroundGap) / 2 - 6)
-              .style('opacity', 0.7)
-              .style('dominant-baseline', 'middle')
-              .style('font-size', '12px')
-              .style('font-weight', '800')
-              .append('tspan')
-              .attr('x', 0)
-              .text('logit')
-              .append('tspan')
-              .attr('x', 0)
-              .style('font-size', '8px')
-              .style('font-weight', 'normal')
-              .attr('dy', '1.5em')
-              .text('(10)');
-
-            softmaxDetailAnnotation.append('text')
-              .attr('class', 'annotation-text')
-              .attr('x', textX)
-              .attr('y', (svgPaddings$3.top + vSpaceAroundGap$3) / 2 + 3)
-              .style('text-anchor', 'start')
-              .text('Before')
-              .append('tspan')
-              .attr('x', textX)
-              .attr('dy', '1em')
-              .text('normalization');
-
-
-            drawArrow({
-              group: softmaxDetailAnnotation,
-              tx: arrowTX,
-              ty: arrowTY,
-              sx: textX - 6,
-              sy: textY + 2,
-              dr: 60,
-              hFlip: false,
-              marker: 'marker-alt'
-            });
-
-            softmaxDetailAnnotation.append('text')
-              .attr('class', 'annotation-text')
-              .attr('x', nodeCoordinate$2[layerIndexDict['output']][0].x - 35)
-              .attr('y', (svgPaddings$3.top + vSpaceAroundGap$3) / 2 + 3)
-              .style('text-anchor', 'end')
-              .text('After')
-              .append('tspan')
-              .attr('x', nodeCoordinate$2[layerIndexDict['output']][0].x - 35)
-              .attr('dy', '1em')
-              .text('normalization');
-
-            drawArrow({
-              group: softmaxDetailAnnotation,
-              tx: nodeCoordinate$2[layerIndexDict['output']][0].x - 8,
-              ty: arrowTY,
-              sx: nodeCoordinate$2[layerIndexDict['output']][0].x - 27,
-              sy: textY + 2,
-              dr: 60,
-              hFlip: true,
-              marker: 'marker-alt'
-            });
-
-            console.log(nodeCoordinate$2[curLayerIndex - 1].length);
-            // Add annotation for the logit circle
-            for (let i = 0; i < nodeCoordinate$2[curLayerIndex - 1].length; i++) {
-              softmaxDetailAnnotation.append('text')
-                .attr('x', centerX)
-                .attr('y', nodeCoordinate$2[curLayerIndex - 1][i].y + nodeLength$5 / 2 + 8)
-                .attr('class', 'annotation-text softmax-detail-text')
-                .attr('id', `logit-text-${i}`)
-                .style('text-anchor', 'middle')
-                .style('dominant-baseline', 'hanging')
-                .style('opacity', 0)
-                .text(`${classList[i]}`);
-            }
-
-            let hoverTextGroup = softmaxDetailAnnotation.append('g')
-              .attr('class', 'softmax-detail-hover-annotation')
-              .style('opacity', 0);
-
-            textX = centerX + 50;
-            textY = nodeCoordinate$2[curLayerIndex - 1][0].y + nodeLength$5 / 2;
-
-            if (selectedI < 3) {
-              textY = nodeCoordinate$2[curLayerIndex - 1][nodeCoordinate$2[curLayerIndex - 1].length - 1].y + nodeLength$5 / 2;
-            }
-
-            // Add annotation to prompt user to check the logit value
-            let hoverText = hoverTextGroup.append('text')
-              .attr('x', textX)
-              .attr('y', textY)
-              .attr('class', 'annotation-text softmax-detail-text softmax-hover-text')
-              .style('text-anchor', 'start')
-              .style('dominant-baseline', 'baseline')
-              .append('tspan')
-              .style('font-weight', 700)
-              .style('dominant-baseline', 'baseline')
-              .text(`Hover over `)
-              .append('tspan')
-              .style('font-weight', 400)
-              .style('dominant-baseline', 'baseline')
-              .text('to see');
-            
-            hoverText.append('tspan')
-              .style('dominant-baseline', 'baseline')
-              .attr('x', textX)
-              .attr('dy', '1em')
-              .text('its ');
-
-            hoverText.append('tspan')
-              .style('dominant-baseline', 'baseline')
-              .attr('dx', 1)
-              .style('fill', '#E56014')
-              .text('logit');
-            
-            hoverText.append('tspan')
-              .style('dominant-baseline', 'baseline')
-              .attr('dx', 1)
-              .text(' value');
-            
-            drawArrow({
-              group: hoverTextGroup,
-              tx: centerX + 15,
-              ty: textY,
-              sx: textX - 8,
-              sy: textY + 2,
-              dr: 60,
-              hFlip: false
-            });
-          }
-        });
-
-      // Hide the annotation
-      svg$4.select('.flatten-annotation')
-        .transition('softmax')
-        .duration(duration)
-        .style('opacity', isInSoftmax ? 1 : 0)
-        .style('pointer-events', isInSoftmax ? 'all' : 'none');
-
-      // Move the left part of faltten layer elements
-      let flattenLeftPart = svg$4.select('.flatten-layer-left');
-      flattenLeftPart.transition('softmax')
-        .duration(duration)
-        .ease(d3.easeCubicInOut)
-        .attr('transform', `translate(${isInSoftmax ? 0 : -moveX}, ${0})`)
-        .on('end', () => {
-          // Add the logit layer
-          if (!isInSoftmax) {
-            let logitArg = {
-              curLayerIndex: curLayerIndex,
-              moveX: moveX,
-              softmaxLeftMid: softmaxLeftMid,
-              selectedI: selectedI,
-              intermediateX1: intermediateX1,
-              intermediateX2: intermediateX2,
-              pixelWidth: pixelWidth,
-              pixelHeight: pixelHeight,
-              topY: topY,
-              bottomY: bottomY,
-              middleGap: middleGap,
-              middleRectHeight: middleRectHeight,
-              softmaxX: softmaxX,
-              symbolGroup: symbolGroup,
-              symbolX: symbolX,
-              flattenRange: flattenRange
-            };
-            drawLogitLayer(logitArg);
-          }
-
-          // Redraw the line from the plus symbol to the output node
-          if (!isInSoftmax) {
-            let newLine = flattenLeftPart.select('.edge-group')
-              .append('line')
-              .attr('class', 'symbol-output-line')
-              .attr('x1', symbolX)
-              .attr('y1', symbolY)
-              .attr('x2', outputX + moveX)
-              .attr('y2', outputY)
-              .style('stroke-width', 1.2)
-              .style('stroke', '#E5E5E5')
-              .style('opacity', 0);
-            
-            newLine.transition('softmax')
-              .delay(duration / 3)
-              .duration(duration * 2 / 3)
-              .style('opacity', 1);
-          } else {
-            flattenLeftPart.select('.symbol-output-line').remove();
-          }
-          
-          isInSoftmax = !isInSoftmax;
-          isInSoftmaxStore.set(isInSoftmax);
-        });
-    };
-
-    /**
-     * Draw the flatten layer before output layer
-     * @param {number} curLayerIndex Index of the selected layer
-     * @param {object} d Bounded d3 data
-     * @param {number} i Index of the selected node
-     * @param {number} width CNN group width
-     * @param {number} height CNN group height
-     */
-     
-    const drawFlatten = (curLayerIndex, d, i, width, height) => {
-      // Show the output legend
-      svg$4.selectAll('.output-legend')
-        .classed('hidden', false);
-
-      let maxLayer = nodeCoordinate$2[curLayerIndex - 1].length - 1;
-      let pixelWidth = nodeLength$5 / 2;
-      let pixelHeight = 1.1;
-      let totalLength = (2 * nodeLength$5 +
-        5.5 * hSpaceAroundGap$2 * gapRatio$2 + pixelWidth);
-      let leftX = nodeCoordinate$2[curLayerIndex][0].x - totalLength;
-      let intermediateGap = (hSpaceAroundGap$2 * gapRatio$2 * 4) / 2;
-      const minimumGap = 20;
-      let linkGen = d3.linkHorizontal()
-        .x(d => d.x)
-        .y(d => d.y);
-
-      // Hide the edges
-      svg$4.select('g.edge-group')
-        .style('visibility', 'hidden');
-
-      // Move the previous layer
-      moveLayerX({layerIndex: curLayerIndex - 1, targetX: leftX,
-        disable: true, delay: 0});
-
-      // Disable the current layer (output layer)
-      moveLayerX({layerIndex: curLayerIndex,
-        targetX: nodeCoordinate$2[curLayerIndex][0].x, disable: true,
-        delay: 0, opacity: 0.15, specialIndex: i});
-      
-      // Compute the gap in the left shrink region
-      let leftEnd = leftX - hSpaceAroundGap$2;
-      let leftGap = (leftEnd - nodeCoordinate$2[0][0].x - 10 * nodeLength$5) / 10;
-
-      // Different from other intermediate view, we push the left part dynamically
-      // 1. If there is enough space, we fix the first layer position and move all
-      // other layers;
-      // 2. If there is not enough space, we maintain the minimum gap and push all
-      // left layers to the left (could be out-of-screen)
-      if (leftGap > minimumGap) {
-        // Move the left layers
-        for (let i = 0; i < curLayerIndex - 1; i++) {
-          let curX = nodeCoordinate$2[0][0].x + i * (nodeLength$5 + leftGap);
-          moveLayerX({layerIndex: i, targetX: curX, disable: true, delay: 0});
-        }
-      } else {
-        leftGap = minimumGap;
-        let curLeftBound = leftX - leftGap * 2 - nodeLength$5;
-        // Move the left layers
-        for (let i = curLayerIndex - 2; i >= 0; i--) {
-          moveLayerX({layerIndex: i, targetX: curLeftBound, disable: true, delay: 0});
-          curLeftBound = curLeftBound - leftGap - nodeLength$5;
-        }
-      }
-
-      // Add an overlay
-      let stops = [{offset: '0%', color: 'rgb(250, 250, 250)', opacity: 1},
-        {offset: '50%', color: 'rgb(250, 250, 250)', opacity: 0.95},
-        {offset: '100%', color: 'rgb(250, 250, 250)', opacity: 0.85}];
-      addOverlayGradient('overlay-gradient-left', stops);
-
-      let intermediateLayerOverlay = svg$4.append('g')
-        .attr('class', 'intermediate-layer-overlay');
-
-      intermediateLayerOverlay.append('rect')
-        .attr('class', 'overlay')
-        .style('fill', 'url(#overlay-gradient-left)')
-        .style('stroke', 'none')
-        .attr('width', leftX + svgPaddings$3.left - (leftGap * 2) + 3)
-        .attr('height', height + svgPaddings$3.top + svgPaddings$3.bottom)
-        .attr('x', -svgPaddings$3.left)
-        .attr('y', 0)
-        .style('opacity', 0);
-      
-      intermediateLayerOverlay.selectAll('rect.overlay')
-        .transition('move')
-        .duration(800)
-        .ease(d3.easeCubicInOut)
-        .style('opacity', 1);
-
-      // Add the intermediate layer
-      let intermediateLayer = svg$4.append('g')
-        .attr('class', 'intermediate-layer')
-        .style('opacity', 0);
-      
-      let intermediateX1 = leftX + nodeLength$5 + intermediateGap;
-      let intermediateX2 = intermediateX1 + intermediateGap + pixelWidth;
-      let range = cnnLayerRanges$2[selectedScaleLevel$2][curLayerIndex - 1];
-      let colorScale = layerColorScales$5.conv;
-      let flattenLength = cnn$2.flatten.length / cnn$2[1].length;
-      let linkData = [];
-
-      let flattenLayer = intermediateLayer.append('g')
-        .attr('class', 'flatten-layer');
-      
-      let flattenLayerLeftPart = flattenLayer.append('g')
-        .attr('class', 'flatten-layer-left');
-
-      let topY = nodeCoordinate$2[curLayerIndex - 1][0].y;
-      let bottomY = nodeCoordinate$2[curLayerIndex - 1][maxLayer].y + nodeLength$5 -
-            flattenLength * pixelHeight;
-      
-      // Compute the pre-layer gap
-      let preLayerDimension = cnn$2[curLayerIndex - 1][0].output.length;
-      let preLayerGap = nodeLength$5 / (2 * preLayerDimension);
-
-      // Compute bounding box length
-      let boundingBoxLength = nodeLength$5 / preLayerDimension;
-
-      // Compute the weight color scale
-      let flattenExtent = d3.extent(cnn$2.flatten.slice(flattenLength)
-        .map(d => d.outputLinks[i].weight)
-        .concat(cnn$2.flatten.slice(9 * flattenLength, 10 * flattenLength)
-          .map(d => d.outputLinks[i].weight)));
-
-      let flattenRange = 2 * (Math.round(
-        Math.max(...flattenExtent.map(Math.abs)) * 1000) / 1000);
-
-      let flattenMouseOverHandler = (d) => {
-        let index = d.index;
-        // Screenshot
-        // console.log(index);
-
-        // Update the hover info UI
-        if (d.weight === undefined) {
-          hoverInfo = {
-            show: true,
-            text: `Pixel value: ${formater$2(flattenFactoredFDict[index])}`
-          };
-        } else {
-          hoverInfo = {
-            show: true,
-            text: `Weight: ${formater$2(d.weight)}`
-          };
-        }
-        hoverInfoStore.set(hoverInfo);
-
-        flattenLayerLeftPart.select(`#edge-flatten-${index}`)
-          .raise()
-          .style('stroke', intermediateColor$2)
-          .style('stroke-width', 1);
-
-        flattenLayerLeftPart.select(`#edge-flatten-${index}-output`)
-          .raise()
-          .style('stroke-width', 1)
-          .style('stroke', da => gappedColorScale(layerColorScales$5.weight,
-            flattenRange, da.weight, 0.1));
-
-        flattenLayerLeftPart.select(`#bounding-${index}`)
-          .raise()
-          .style('opacity', 1);
-      };
-
-      let flattenMouseLeaveHandler = (d) => {
-        let index = d.index;
-
-        // screenshot
-        // if (index === 32) {return;}
-
-        // Update the hover info UI
-        if (d.weight === undefined) {
-          hoverInfo = {
-            show: false,
-            text: `Pixel value: ${formater$2(flattenFactoredFDict[index])}`
-          };
-        } else {
-          hoverInfo = {
-            show: false,
-            text: `Weight: ${formater$2(d.weight)}`
-          };
-        }
-        hoverInfoStore.set(hoverInfo);
-
-        flattenLayerLeftPart.select(`#edge-flatten-${index}`)
-          .style('stroke-width', 0.6)
-          .style('stroke', '#E5E5E5');
-
-        flattenLayerLeftPart.select(`#edge-flatten-${index}-output`)
-          .style('stroke-width', 0.6)
-          .style('stroke', da => gappedColorScale(layerColorScales$5.weight,
-            flattenRange, da.weight, 0.35));
-
-        flattenLayerLeftPart.select(`#bounding-${index}`)
-          .raise()
-          .style('opacity', 0);
-      };
-    console.log(flattenLength);
-      flattenFactoredFDict = {};
-      for (let f = 0; f < flattenLength; f++) {
-        let loopFactors = [0, maxLayer];
-        loopFactors.forEach(l => {
-          let factoredF = f + l * flattenLength;
-          flattenFactoredFDict[factoredF] = cnn$2.flatten[factoredF].output;
-          flattenLayerLeftPart.append('rect')
-            .attr('x', intermediateX1)
-            .attr('y', l === 0 ? topY + f * pixelHeight : bottomY + f * pixelHeight)
-            .attr('width', pixelWidth)
-            .attr('height', pixelHeight)
-            .style('cursor', 'crosshair')
-            .style('fill', colorScale((cnn$2.flatten[factoredF].output + range / 2) / range))
-            .on('mouseover', () => flattenMouseOverHandler({index: factoredF}))
-            .on('mouseleave', () => flattenMouseLeaveHandler({index: factoredF}))
-            .on('click', () => { d3.event.stopPropagation(); });
-
-          // Flatten -> output
-          linkData.push({
-            source: {x: intermediateX1 + pixelWidth + 3,
-              y:  l === 0 ? topY + f * pixelHeight : bottomY + f * pixelHeight},
-            target: {x: intermediateX2,
-              //nodeCoordinate[curLayerIndex][i].x - nodeLength,
-              y: nodeCoordinate$2[curLayerIndex][i].y + nodeLength$5 / 2},
-            index: factoredF,
-            weight: cnn$2.flatten[factoredF].outputLinks[i].weight,
-            name: `flatten-${factoredF}-output`,
-            color: gappedColorScale(layerColorScales$5.weight,
-              flattenRange, cnn$2.flatten[factoredF].outputLinks[i].weight, 0.35),
-            width: 0.6,
-            opacity: 1,
-            class: `flatten-output`
-          });
-
-          // Pre-layer -> flatten
-          let row = Math.floor(f / preLayerDimension);
-          linkData.push({
-            target: {x: intermediateX1 - 3,
-              y:  l === 0 ? topY + f * pixelHeight : bottomY + f * pixelHeight},
-            source: {x: leftX + nodeLength$5 + 3,
-              y: nodeCoordinate$2[curLayerIndex - 1][l].y + (2 * row + 1) * preLayerGap},
-            index: factoredF,
-            name: `flatten-${factoredF}`,
-            color: '#E5E5E5',
-            // color: gappedColorScale(layerColorScales.conv,
-            //   2 * Math.max(Math.abs(cnnLayerMinMax[10].max), Math.abs(cnnLayerMinMax[10].min)),
-            //   cnn.flatten[factoredF].output, 0.2),
-            width: 0.6,
-            opacity: 1,
-            class: `flatten`
-          });
-
-          // Add original pixel bounding box
-          let loc = cnn$2.flatten[factoredF].inputLinks[0].weight;
-          flattenLayerLeftPart.append('rect')
-            .attr('id', `bounding-${factoredF}`)
-            .attr('class', 'flatten-bounding')
-            .attr('x', leftX + loc[1] * boundingBoxLength)
-            .attr('y', nodeCoordinate$2[curLayerIndex - 1][l].y + loc[0] * boundingBoxLength)
-            .attr('width', boundingBoxLength)
-            .attr('height', boundingBoxLength)
-            .style('fill', 'none')
-            .style('stroke', intermediateColor$2)
-            .style('stroke-length', '0.5')
-            .style('pointer-events', 'all')
-            .style('cursor', 'crosshair')
-            .style('opacity', 0)
-            .on('mouseover', () => flattenMouseOverHandler({index: factoredF}))
-            .on('mouseleave', () => flattenMouseLeaveHandler({index: factoredF}))
-            .on('click', () => {d3.event.stopPropagation();});
-        }); 
-      }
-      
-      // Use abstract symbol to represent the flatten nodes in between (between
-      // the first and the last nodes)
-      // Compute the average value of input node and weights
-      let meanValues = [];
-      for (let n = 1; n < cnn$2[curLayerIndex - 1].length - 1; n++) {
-        /*
-        let meanOutput = d3.mean(cnn.flatten.slice(flattenLength * n,
-          flattenLength * (n + 1)).map(d => d.output));
-        let meanWeight= d3.mean(cnn.flatten.slice(flattenLength * n,
-          flattenLength * (n + 1)).map(d => d.outputLinks[i].weight));
-        meanValues.push({index: n, output: meanOutput, weight: meanWeight});
-        */
-        meanValues.push({index: n});
-      }
-
-      // Compute the middle gap
-      let middleGap = 5;
-      let middleRectHeight = (10 * nodeLength$5 + (10 - 1) * vSpaceAroundGap$3 -
-        pixelHeight * flattenLength * 2 - 5 * (8 + 1)) / 8;
-
-      // Add middle nodes
-      meanValues.forEach((v, vi) => {
-        // Add a small rectangle
-        flattenLayerLeftPart.append('rect')
-          .attr('x', intermediateX1 + pixelWidth / 4)
-          .attr('y', topY + flattenLength * pixelHeight + middleGap * (vi + 1) +
-            middleRectHeight * vi)
-          .attr('width', pixelWidth / 2)
-          .attr('height', middleRectHeight)
-          // .style('fill', colorScale((v.output + range / 2) / range));
-          .style('fill', '#E5E5E5');
-        
-        // Add a triangle next to the input node
-        flattenLayerLeftPart.append('polyline')
-          .attr('points',
-            `${leftX + nodeLength$5 + 3}
-        ${nodeCoordinate$2[curLayerIndex - 1][v.index].y},
-        ${leftX + nodeLength$5 + 10}
-        ${nodeCoordinate$2[curLayerIndex - 1][v.index].y + nodeLength$5 / 2},
-        ${leftX + nodeLength$5 + 3}
-        ${nodeCoordinate$2[curLayerIndex - 1][v.index].y + nodeLength$5}`)
-          .style('fill', '#E5E5E5')
-          .style('opacity', 1);
-        
-        // Input -> flatten
-        linkData.push({
-          source: {x: leftX + nodeLength$5 + 10,
-            y: nodeCoordinate$2[curLayerIndex - 1][v.index].y + nodeLength$5 / 2},
-          target: {x: intermediateX1 - 3,
-            y: topY + flattenLength * pixelHeight + middleGap * (vi + 1) +
-              middleRectHeight * (vi + 0.5)},
-          index: -1,
-          width: 1,
-          opacity: 1,
-          name: `flatten-abstract-${v.index}`,
-          color: '#E5E5E5',
-          class: `flatten-abstract`
-        });
-
-        // Flatten -> output
-        linkData.push({
-          source: {x: intermediateX1 + pixelWidth + 3,
-          y: topY + flattenLength * pixelHeight + middleGap * (vi + 1) +
-            middleRectHeight * (vi + 0.5)},
-          target: {x: intermediateX2,
-          y: nodeCoordinate$2[curLayerIndex][i].y + nodeLength$5 / 2},
-          index: -1,
-          name: `flatten-abstract-${v.index}-output`,
-          // color: gappedColorScale(layerColorScales.weight, flattenRange,
-          //   v.weight, 0.35),
-          color: '#E5E5E5',
-          weight: v.weight,
-          width: 1,
-          opacity: 1,
-          class: `flatten-abstract-output`
-        });
-      });
-
-      // Draw the plus operation symbol
-      let symbolX = intermediateX2 + plusSymbolRadius$1;
-      let symbolY = nodeCoordinate$2[curLayerIndex][i].y + nodeLength$5 / 2;
-      let symbolRectHeight = 1;
-      let symbolGroup = flattenLayerLeftPart.append('g')
-        .attr('class', 'plus-symbol')
-        .attr('transform', `translate(${symbolX}, ${symbolY})`);
-      
-      symbolGroup.append('rect')
-        .attr('x', -plusSymbolRadius$1)
-        .attr('y', -plusSymbolRadius$1)
-        .attr('width', plusSymbolRadius$1 * 2)
-        .attr('height', plusSymbolRadius$1 * 2)
-        .attr('rx', 3)
-        .attr('ry', 3)
-        .style('fill', 'none')
-        .style('stroke', intermediateColor$2);
-      
-      symbolGroup.append('rect')
-        .attr('x', -(plusSymbolRadius$1 - 3))
-        .attr('y', -symbolRectHeight / 2)
-        .attr('width', 2 * (plusSymbolRadius$1 - 3))
-        .attr('height', symbolRectHeight)
-        .style('fill', intermediateColor$2);
-
-      symbolGroup.append('rect')
-        .attr('x', -symbolRectHeight / 2)
-        .attr('y', -(plusSymbolRadius$1 - 3))
-        .attr('width', symbolRectHeight)
-        .attr('height', 2 * (plusSymbolRadius$1 - 3))
-        .style('fill', intermediateColor$2);
-
-      // Place the bias rectangle below the plus sign if user clicks the first
-      // conv node (no need now, since we added annotaiton for softmax to make it
-      // look better aligned)
-      // Add bias symbol to the plus symbol
-      symbolGroup.append('circle')
-        .attr('cx', 0)
-        .attr('cy', -nodeLength$5 / 2 - 0.5 * kernelRectLength$1)
-        .attr('r', kernelRectLength$1 * 1.5)
-        .style('stroke', intermediateColor$2)
-        .style('cursor', 'crosshair')
-        .style('fill', gappedColorScale(layerColorScales$5.weight,
-            flattenRange, d.bias, 0.35))
-        .on('mouseover', () => {
-          hoverInfoStore.set( {show: true, text: `Bias: ${formater$2(d.bias)}`} );
-        })
-        .on('mouseleave', () => {
-          hoverInfoStore.set( {show: false, text: `Bias: ${formater$2(d.bias)}`} );
-        })
-        .on('click', () => { d3.event.stopPropagation(); });
-      
-      // Link from bias to the plus symbol
-      symbolGroup.append('path')
-        .attr('d', linkGen({
-          source: { x: 0, y: 0 },
-          target: { x: 0, y: -nodeLength$5 / 2 - 0.5 * kernelRectLength$1 }
-        }))
-        .attr('id', 'bias-plus')
-        .attr('stroke-width', 1.2)
-        .attr('stroke', '#E5E5E5')
-        .lower();
-
-      // Link from the plus symbol to the output
-      linkData.push({
-        source: getOutputKnot({x: intermediateX2 + 2 * plusSymbolRadius$1 - nodeLength$5,
-          y: nodeCoordinate$2[curLayerIndex][i].y}),
-        target: getInputKnot({x: nodeCoordinate$2[curLayerIndex][i].x - 3,
-          y: nodeCoordinate$2[curLayerIndex][i].y}),
-        name: `symbol-output`,
-        width: 1.2,
-        color: '#E5E5E5'
-      });
-
-      // Draw softmax operation symbol
-      let softmaxWidth = 55;
-      let emptySpace = ((totalLength - 2 * nodeLength$5 - 2 * intermediateGap)
-        - softmaxWidth) / 2;
-      let symbolEndX = intermediateX2 + plusSymbolRadius$1 * 2;
-      let softmaxX = emptySpace + symbolEndX;
-      let softmaxLeftMid = emptySpace / 2 + symbolEndX;
-      let softmaxTextY = nodeCoordinate$2[curLayerIndex][i].y - 2 * kernelRectLength$1 - 6;
-      let moveX = (intermediateX2 - (intermediateX1 + pixelWidth + 3)) * 2 / 3;
-
-      let softmaxArg = {
-        curLayerIndex: curLayerIndex,
-        moveX: moveX,
-        symbolX: symbolX,
-        symbolY: symbolY,
-        outputX: nodeCoordinate$2[curLayerIndex][i].x,
-        outputY: symbolY,
-        softmaxLeftMid: softmaxLeftMid,
-        selectedI: i,
-        intermediateX1: intermediateX1,
-        intermediateX2: intermediateX2,
-        pixelWidth: pixelWidth,
-        pixelHeight: pixelHeight,
-        topY: topY,
-        bottomY: bottomY,
-        middleGap: middleGap,
-        middleRectHeight: middleRectHeight,
-        softmaxX: softmaxX,
-        softmaxWidth: softmaxWidth,
-        softmaxTextY: softmaxTextY,
-        symbolGroup: symbolGroup,
-        flattenRange: flattenRange
-      };
-
-      let softmaxSymbol = intermediateLayer.append('g')
-        .attr('class', 'softmax-symbol')
-        .attr('transform', `translate(${softmaxX}, ${symbolY})`)
-        .style('pointer-event', 'all')
-        .style('cursor', 'pointer')
-        .on('click', () => softmaxClicked(softmaxArg));
-      
-      softmaxSymbol.append('rect')
-        .attr('x', 0)
-        .attr('y', -plusSymbolRadius$1)
-        .attr('width', softmaxWidth)
-        .attr('height', plusSymbolRadius$1 * 2)
-        .attr('stroke', intermediateColor$2)
-        .attr('rx', 2)
-        .attr('ry', 2)
-        .attr('fill', '#FAFAFA');
-      
-      softmaxSymbol.append('text')
-        .attr('x', 5)
-        .attr('y', 1)
-        .style('dominant-baseline', 'middle')
-        .style('font-size', '12px')
-        .style('opacity', 0.5)
-        .text('softmax');
-
-      // Draw the layer label
-      let layerLabel = intermediateLayer.append('g')
-        .attr('class', 'layer-label')
-        .classed('hidden', detailedMode$2)
-        .attr('transform', () => {
-          let x = leftX + nodeLength$5 + (4 * hSpaceAroundGap$2 * gapRatio$2 +
-            pixelWidth) / 2;
-          let y = (svgPaddings$3.top + vSpaceAroundGap$3) / 2 + 5;
-          return `translate(${x}, ${y})`;
-        })
-        .style('cursor', 'help')
-        .on('click', () => {
-          d3.event.stopPropagation();
-          // Scroll to the article element
-          document.querySelector(`#article-flatten`).scrollIntoView({ 
-            behavior: 'smooth' 
-          });
-        });
-      
-      layerLabel.append('text')
-        .style('dominant-baseline', 'middle')
-        .style('opacity', 0.8)
-        .style('font-weight', 800)
-        .text('flatten');
-
-      let svgHeight = Number(d3.select('#cnn-svg').style('height').replace('px', '')) + 150;
-      let scroll = new SmoothScroll('a[href*="#"]', {offset: -svgHeight});
-        
-      let detailedLabelGroup = intermediateLayer.append('g')
-        .attr('transform', () => {
-          let x = leftX + nodeLength$5 + (4 * hSpaceAroundGap$2 * gapRatio$2 + pixelWidth) / 2;
-          let y = (svgPaddings$3.top + vSpaceAroundGap$3) / 2 - 5;
-          return `translate(${x}, ${y})`;
-        })
-        .attr('class', 'layer-detailed-label')
-        .classed('hidden', !detailedMode$2)
-        .style('cursor', 'help')
-        .on('click', () => {
-          d3.event.stopPropagation();
-          // Scroll to the article element
-          let anchor = document.querySelector(`#article-flatten`);
-          scroll.animateScroll(anchor);
-        });
-      
-      detailedLabelGroup.append('title')
-        .text('Move to article section');
-
-      let detailedLabelText = detailedLabelGroup.append('text')
-        .style('text-anchor', 'middle')
-        .style('dominant-baseline', 'middle')
-        .style('opacity', '0.7')
-        .style('font-weight', 800)
-        .append('tspan')
-        .text('flatten');
-      
-      let dimension = cnn$2[layerIndexDict['max_pool_2']].length * 
-        cnn$2[layerIndexDict['max_pool_2']][0].output.length *
-        cnn$2[layerIndexDict['max_pool_2']][0].output[0].length;
-
-      detailedLabelText.append('tspan')
-        .attr('x', 0)
-        .attr('dy', '1.5em')
-        .style('font-size', '8px')
-        .style('font-weight', 'normal')
-        .text(`(${dimension})`);
-
-      // Add edges between nodes
-      let edgeGroup = flattenLayerLeftPart.append('g')
-        .attr('class', 'edge-group')
-        .lower();
-      
-      edgeGroup.selectAll('path')
-        .data(linkData)
-        .enter()
-        .append('path')
-        .attr('class', d => d.class)
-        .attr('id', d => `edge-${d.name}`)
-        .attr('d', d => linkGen({source: d.source, target: d.target}))
-        .style('fill', 'none')
-        .style('stroke-width', d => d.width)
-        .style('stroke', d => d.color === undefined ? intermediateColor$2 : d.color)
-        .style('opacity', d => d.opacity);
-      
-      edgeGroup.selectAll('path.flatten-abstract-output')
-        .lower();
-
-      edgeGroup.selectAll('path.flatten,path.flatten-output')
-        .style('cursor', 'crosshair')
-        .style('pointer-events', 'all')
-        .on('mouseover', flattenMouseOverHandler)
-        .on('mouseleave', flattenMouseLeaveHandler)
-        .on('click', () => { d3.event.stopPropagation(); });
-      
-      // Add legend
-      drawIntermediateLayerLegend({
-        legendHeight: 5,
-        curLayerIndex: curLayerIndex,
-        range: range,
-        minMax: cnnLayerMinMax$2[10],
-        group: intermediateLayer,
-        width: intermediateGap + nodeLength$5 - 3,
-        x: leftX,
-        y: svgPaddings$3.top + vSpaceAroundGap$3 * (10) + vSpaceAroundGap$3 +
-          nodeLength$5 * 10
-      });
-
-      drawIntermediateLayerLegend({
-        legendHeight: 5,
-        curLayerIndex: curLayerIndex,
-        range: flattenRange,
-        minMax: {min: flattenExtent[0], max: flattenExtent[1]},
-        group: intermediateLayer,
-        width: intermediateGap - 3 - 5,
-        gradientAppendingName: 'flatten-weight-gradient',
-        gradientGap: 0.1,
-        colorScale: layerColorScales$5.weight,
-        x: leftX + intermediateGap + nodeLength$5 + pixelWidth + 3,
-        y: svgPaddings$3.top + vSpaceAroundGap$3 * (10) + vSpaceAroundGap$3 +
-          nodeLength$5 * 10
-      });
-
-      // Add annotation to the intermediate layer
-      let intermediateLayerAnnotation = svg$4.append('g')
-        .attr('class', 'intermediate-layer-annotation')
-        .style('opacity', 0);
-
-      // Add annotation for the sum operation
-      let plusAnnotation = intermediateLayerAnnotation.append('g')
-        .attr('class', 'plus-annotation');
-      
-      // let textX = nodeCoordinate[curLayerIndex][i].x - 50;
-      let textX = intermediateX2;
-      let textY = nodeCoordinate$2[curLayerIndex][i].y + nodeLength$5 +
-        kernelRectLength$1 * 3;
-      let arrowSY = nodeCoordinate$2[curLayerIndex][i].y + nodeLength$5 +
-        kernelRectLength$1 * 2;
-      let arrowTY = nodeCoordinate$2[curLayerIndex][i].y + nodeLength$5 / 2 +
-        plusSymbolRadius$1;
-
-      if (i == 9) {
-        textY -= 110;
-        arrowSY -= 70;
-        arrowTY -= 18;
-      }
-
-      let plusText = plusAnnotation.append('text')
-        .attr('x', textX)
-        .attr('y', textY)
-        .attr('class', 'annotation-text')
-        .style('dominant-baseline', 'hanging')
-        .style('text-anchor', 'middle');
-      
-      plusText.append('tspan')
-        .style('dominant-baseline', 'hanging')
-        .text('Add up all products');
-      
-      plusText.append('tspan')
-        .attr('x', textX)
-        .attr('dy', '1em')
-        .style('dominant-baseline', 'hanging')
-        .text('(');
-
-      plusText.append('tspan')
-        .style('fill', '#66a3c8')
-        .style('dominant-baseline', 'hanging')
-        .text('element');
-
-      plusText.append('tspan')
-        .style('dominant-baseline', 'hanging')
-        .text(' × ');
-
-      plusText.append('tspan')
-        .style('dominant-baseline', 'hanging')
-        .style('fill', '#b58946')
-        .text('weight');
-
-      plusText.append('tspan')
-        .style('dominant-baseline', 'hanging')
-        .text(')');
-
-      plusText.append('tspan')
-        .attr('x', textX)
-        .attr('dy', '1em')
-        .style('dominant-baseline', 'hanging')
-        .text('and then ');
-
-      plusText.append('tspan')
-        .style('dominant-baseline', 'hanging')
-        .style('fill', '#479d94')
-        .text('bias');
-      
-      drawArrow({
-        group: plusAnnotation,
-        sx: intermediateX2 - 2 * plusSymbolRadius$1 - 3,
-        sy: arrowSY,
-        tx: intermediateX2 - 5,
-        ty: arrowTY,
-        dr: 30,
-        hFlip: i === 9,
-        marker: 'marker-alt'
-      });
-
-      // Add annotation for the bias
-      let biasTextY = nodeCoordinate$2[curLayerIndex][i].y;
-      biasTextY -= 2 * kernelRectLength$1 + 4;
-      
-      flattenLayerLeftPart.append('text')
-        .attr('class', 'annotation-text')
-        .attr('x', intermediateX2 + plusSymbolRadius$1)
-        .attr('y', biasTextY)
-        .style('text-anchor', 'middle')
-        .style('dominant-baseline', 'baseline')
-        .text('Bias');
-      
-      // Add annotation for the softmax symbol
-      let softmaxAnnotation = intermediateLayerAnnotation.append('g')
-        .attr('class', 'softmax-annotation');
-      
-      softmaxAnnotation.append('text')
-        .attr('x', softmaxX + softmaxWidth / 2)
-        .attr('y', softmaxTextY)
-        .attr('class', 'annotation-text')
-        .style('dominant-baseline', 'baseline')
-        .style('text-anchor', 'middle')
-        .style('font-weight', 700)
-        .text('Click ')
-        .append('tspan')
-        .attr('dx', 1)
-        .style('font-weight', 400)
-        .text('to learn more');
-
-      drawArrow({
-        group: softmaxAnnotation,
-        sx: softmaxX + softmaxWidth / 2 - 5,
-        sy: softmaxTextY + 4,
-        tx: softmaxX + softmaxWidth / 2,
-        ty: symbolY - plusSymbolRadius$1 - 4,
-        dr: 50,
-        hFlip: true
-      });
-
-      // Add annotation for the flatten layer
-      let flattenAnnotation = intermediateLayerAnnotation.append('g')
-        .attr('class', 'flatten-annotation');
-      
-      textX = leftX - 80;
-      textY = nodeCoordinate$2[curLayerIndex - 1][0].y;
-
-      let flattenText = flattenAnnotation.append('text')
-        .attr('x', textX)
-        .attr('y', textY)
-        .attr('class', 'annotation-text')
-        .style('dominant-baseline', 'hanging')
-        .style('text-anchor', 'middle');
-
-      let tempTspan = flattenText.append('tspan')
-        .style('dominant-baseline', 'hanging')
-        .style('font-weight', 700)
-        .text('Hover over ');
-      
-      tempTspan.append('tspan')
-        .attr('dx', 1)
-        .style('font-weight', 400)
-        .style('dominant-baseline', 'hanging')
-        .text('matrix to');
-      
-      flattenText.append('tspan')
-        .style('dominant-baseline', 'hanging')
-        .attr('x', textX)
-        .attr('dy', '1em')
-        .text('see how it is flattened');
-      
-      flattenText.append('tspan')
-        .style('dominant-baseline', 'hanging')
-        .attr('x', textX)
-        .attr('dy', '1em')
-        .text('into a 1D array!');
-
-      drawArrow({
-        group: flattenAnnotation,
-        sx: textX + 45,
-        sy: textY + nodeLength$5 * 0.4 + 12,
-        tx: leftX - 10,
-        ty: textY + nodeLength$5 / 2,
-        dr: 80,
-        hFlip: true
-      });
-
-      // Add annotation to explain the middle images
-      textY = nodeCoordinate$2[curLayerIndex - 1][1].y;
-
-      let middleText = flattenAnnotation.append('text')
-        .attr('x', textX)
-        .attr('y', textY)
-        .attr('class', 'annotation-text')
-        .style('dominant-baseline', 'hanging')
-        .style('text-anchor', 'middle');
-
-      middleText.append('tspan')
-        .style('dominant-baseline', 'hanging')
-        .text('Same flattening');
-      
-      middleText.append('tspan')
-        .style('dominant-baseline', 'hanging')
-        .attr('x', textX)
-        .attr('dy', '1em')
-        .text('operation for');
-
-      middleText.append('tspan')
-        .style('dominant-baseline', 'hanging')
-        .attr('x', textX)
-        .attr('dy', '1em')
-        .text('each neuron');
-
-      drawArrow({
-        group: flattenAnnotation,
-        sx: textX + 39,
-        sy: textY + 25,
-        tx: leftX - 10,
-        ty: textY + nodeLength$5 / 2 - 2,
-        dr: 80,
-        hFlip: true,
-        marker: 'marker-alt'
-      });
-
-
-      // Add annotation for the output neuron
-      let outputAnnotation = intermediateLayerAnnotation.append('g')
-        .attr('class', 'output-annotation');
-      
-      outputAnnotation.append('text')
-        .attr('x', nodeCoordinate$2[layerIndexDict['output']][i].x)
-        .attr('y', nodeCoordinate$2[layerIndexDict['output']][i].y + 10)
-        .attr('class', 'annotation-text')
-        .text(`(${d3.format('.4f')(cnn$2[layerIndexDict['output']][i].output)})`);
-
-
-      /* Prototype of using arc to represent the flatten layer (future)
-      let pie = d3.pie()
-        .padAngle(0)
-        .sort(null)
-        .value(d => d.output)
-        .startAngle(0)
-        .endAngle(-Math.PI);
-
-      let radius = 490 / 2;
-      let arc = d3.arc()
-        .innerRadius(radius - 20)
-        .outerRadius(radius);
-
-      let arcs = pie(cnn.flatten);
-      console.log(arcs);
-
-      let test = svg.append('g')
-        .attr('class', 'test')
-        .attr('transform', 'translate(500, 250)');
-
-      test.selectAll("path")
-        .data(arcs)
-        .join("path")
-          .attr('class', 'arc')
-          .attr("fill", d => colorScale((d.value + range/2) / range))
-          .attr("d", arc);
-      */
-
-      // Show everything
-      svg$4.selectAll('g.intermediate-layer, g.intermediate-layer-annotation')
-        .transition()
-        .delay(500)
-        .duration(500)
-        .ease(d3.easeCubicInOut)
-        .style('opacity', 1);
-    };
-
-    /* src\overview\Cnn.svelte generated by Svelte v3.47.0 */
-
-    const { Object: Object_1, console: console_1$2 } = globals;
-
-    const file$b = "src\\overview\\Cnn.svelte";
-
-    function get_each_context(ctx, list, i) {
-    	const child_ctx = ctx.slice();
-    	child_ctx[84] = list[i];
-    	child_ctx[86] = i;
-    	return child_ctx;
-    }
-
-    // (1498:6) {#each imageOptions as image, i}
-    function create_each_block(ctx) {
-    	let div;
-    	let img;
-    	let img_src_value;
-    	let img_title_value;
-    	let img_data_imagename_value;
-    	let div_data_imagename_value;
-    	let mounted;
-    	let dispose;
-
-    	const block = {
-    		c: function create() {
-    			div = element("div");
-    			img = element("img");
-    			if (!src_url_equal(img.src, img_src_value = "/assets/img/" + /*image*/ ctx[84].file)) attr_dev(img, "src", img_src_value);
-    			attr_dev(img, "alt", "image option");
-    			attr_dev(img, "title", img_title_value = /*image*/ ctx[84].class);
-    			attr_dev(img, "data-imagename", img_data_imagename_value = /*image*/ ctx[84].file);
-    			attr_dev(img, "class", "svelte-9lm4l0");
-    			add_location(img, file$b, 1503, 10, 47706);
-    			attr_dev(div, "class", "image-container svelte-9lm4l0");
-    			attr_dev(div, "data-imagename", div_data_imagename_value = /*image*/ ctx[84].file);
-    			toggle_class(div, "inactive", /*selectedImage*/ ctx[7] !== /*image*/ ctx[84].file);
-    			toggle_class(div, "disabled", /*disableControl*/ ctx[6]);
-    			add_location(div, file$b, 1498, 8, 47462);
-    		},
-    		m: function mount(target, anchor) {
-    			insert_dev(target, div, anchor);
-    			append_dev(div, img);
-
-    			if (!mounted) {
-    				dispose = listen_dev(
-    					div,
-    					"click",
-    					function () {
-    						if (is_function(/*disableControl*/ ctx[6]
-    						? click_handler
-    						: /*imageOptionClicked*/ ctx[17])) (/*disableControl*/ ctx[6]
-    						? click_handler
-    						: /*imageOptionClicked*/ ctx[17]).apply(this, arguments);
-    					},
-    					false,
-    					false,
-    					false
-    				);
-
-    				mounted = true;
-    			}
-    		},
-    		p: function update(new_ctx, dirty) {
-    			ctx = new_ctx;
-
-    			if (dirty[0] & /*selectedImage, imageOptions*/ 32896) {
-    				toggle_class(div, "inactive", /*selectedImage*/ ctx[7] !== /*image*/ ctx[84].file);
-    			}
-
-    			if (dirty[0] & /*disableControl*/ 64) {
-    				toggle_class(div, "disabled", /*disableControl*/ ctx[6]);
-    			}
-    		},
-    		d: function destroy(detaching) {
-    			if (detaching) detach_dev(div);
-    			mounted = false;
-    			dispose();
-    		}
-    	};
-
-    	dispatch_dev("SvelteRegisterBlock", {
-    		block,
-    		id: create_each_block.name,
-    		type: "each",
-    		source: "(1498:6) {#each imageOptions as image, i}",
-    		ctx
-    	});
-
-    	return block;
-    }
-
-    // (1511:6) {#if overviewConfig.modeImg == 3}
-    function create_if_block_4(ctx) {
-    	let div;
-    	let img;
-    	let img_src_value;
-    	let t0;
-    	let span;
-    	let i0;
-    	let t1;
-    	let i1;
-    	let div_data_imagename_value;
-    	let mounted;
-    	let dispose;
-
-    	const block = {
-    		c: function create() {
-    			div = element("div");
-    			img = element("img");
-    			t0 = space();
-    			span = element("span");
-    			i0 = element("i");
-    			t1 = space();
-    			i1 = element("i");
-    			attr_dev(img, "class", "custom-image svelte-9lm4l0");
-    			if (!src_url_equal(img.src, img_src_value = "/assets/img/plus.svg")) attr_dev(img, "src", img_src_value);
-    			attr_dev(img, "alt", "plus button");
-    			attr_dev(img, "title", "Add new input image");
-    			attr_dev(img, "data-imagename", "custom");
-    			add_location(img, file$b, 1518, 10, 48209);
-    			attr_dev(i0, "class", "fas fa-circle fa-stack-2x");
-    			add_location(i0, file$b, 1526, 12, 48500);
-    			attr_dev(i1, "class", "fas fa-pen fa-stack-1x fa-inverse");
-    			add_location(i1, file$b, 1527, 12, 48554);
-    			attr_dev(span, "class", "fa-stack edit-icon svelte-9lm4l0");
-    			toggle_class(span, "hidden", /*customImageURL*/ ctx[12] === null);
-    			add_location(span, file$b, 1524, 10, 48403);
-    			attr_dev(div, "class", "image-container svelte-9lm4l0");
-    			attr_dev(div, "data-imagename", div_data_imagename_value = 'custom');
-    			toggle_class(div, "inactive", /*selectedImage*/ ctx[7] !== 'custom');
-    			toggle_class(div, "disabled", /*disableControl*/ ctx[6]);
-    			add_location(div, file$b, 1512, 8, 47968);
-    		},
-    		m: function mount(target, anchor) {
-    			insert_dev(target, div, anchor);
-    			append_dev(div, img);
-    			append_dev(div, t0);
-    			append_dev(div, span);
-    			append_dev(span, i0);
-    			append_dev(span, t1);
-    			append_dev(span, i1);
-
-    			if (!mounted) {
-    				dispose = listen_dev(
-    					div,
-    					"click",
-    					function () {
-    						if (is_function(/*disableControl*/ ctx[6]
-    						? click_handler_1
-    						: /*customImageClicked*/ ctx[18])) (/*disableControl*/ ctx[6]
-    						? click_handler_1
-    						: /*customImageClicked*/ ctx[18]).apply(this, arguments);
-    					},
-    					false,
-    					false,
-    					false
-    				);
-
-    				mounted = true;
-    			}
-    		},
-    		p: function update(new_ctx, dirty) {
-    			ctx = new_ctx;
-
-    			if (dirty[0] & /*customImageURL*/ 4096) {
-    				toggle_class(span, "hidden", /*customImageURL*/ ctx[12] === null);
-    			}
-
-    			if (dirty[0] & /*selectedImage*/ 128) {
-    				toggle_class(div, "inactive", /*selectedImage*/ ctx[7] !== 'custom');
-    			}
-
-    			if (dirty[0] & /*disableControl*/ 64) {
-    				toggle_class(div, "disabled", /*disableControl*/ ctx[6]);
-    			}
-    		},
-    		d: function destroy(detaching) {
-    			if (detaching) detach_dev(div);
-    			mounted = false;
-    			dispose();
-    		}
-    	};
-
-    	dispatch_dev("SvelteRegisterBlock", {
-    		block,
-    		id: create_if_block_4.name,
-    		type: "if",
-    		source: "(1511:6) {#if overviewConfig.modeImg == 3}",
-    		ctx
-    	});
-
-    	return block;
-    }
-
-    // (1614:39) 
-    function create_if_block_3(ctx) {
-    	let softmaxview;
-    	let current;
-
-    	softmaxview = new Softmaxview({
-    			props: {
-    				logits: /*softmaxDetailViewInfo*/ ctx[3].logits,
-    				logitColors: /*softmaxDetailViewInfo*/ ctx[3].logitColors,
-    				selectedI: /*softmaxDetailViewInfo*/ ctx[3].selectedI,
-    				highlightI: /*softmaxDetailViewInfo*/ ctx[3].highlightI,
-    				outputName: /*softmaxDetailViewInfo*/ ctx[3].outputName,
-    				outputValue: /*softmaxDetailViewInfo*/ ctx[3].outputValue,
-    				startAnimation: /*softmaxDetailViewInfo*/ ctx[3].startAnimation
-    			},
-    			$$inline: true
-    		});
-
-    	softmaxview.$on("xClicked", /*handleExitFromDetiledSoftmaxView*/ ctx[24]);
-    	softmaxview.$on("mouseOver", softmaxDetailViewMouseOverHandler);
-    	softmaxview.$on("mouseLeave", softmaxDetailViewMouseLeaveHandler);
-
-    	const block = {
-    		c: function create() {
-    			create_component(softmaxview.$$.fragment);
-    		},
-    		m: function mount(target, anchor) {
-    			mount_component(softmaxview, target, anchor);
-    			current = true;
-    		},
-    		p: function update(ctx, dirty) {
-    			const softmaxview_changes = {};
-    			if (dirty[0] & /*softmaxDetailViewInfo*/ 8) softmaxview_changes.logits = /*softmaxDetailViewInfo*/ ctx[3].logits;
-    			if (dirty[0] & /*softmaxDetailViewInfo*/ 8) softmaxview_changes.logitColors = /*softmaxDetailViewInfo*/ ctx[3].logitColors;
-    			if (dirty[0] & /*softmaxDetailViewInfo*/ 8) softmaxview_changes.selectedI = /*softmaxDetailViewInfo*/ ctx[3].selectedI;
-    			if (dirty[0] & /*softmaxDetailViewInfo*/ 8) softmaxview_changes.highlightI = /*softmaxDetailViewInfo*/ ctx[3].highlightI;
-    			if (dirty[0] & /*softmaxDetailViewInfo*/ 8) softmaxview_changes.outputName = /*softmaxDetailViewInfo*/ ctx[3].outputName;
-    			if (dirty[0] & /*softmaxDetailViewInfo*/ 8) softmaxview_changes.outputValue = /*softmaxDetailViewInfo*/ ctx[3].outputValue;
-    			if (dirty[0] & /*softmaxDetailViewInfo*/ 8) softmaxview_changes.startAnimation = /*softmaxDetailViewInfo*/ ctx[3].startAnimation;
-    			softmaxview.$set(softmaxview_changes);
-    		},
-    		i: function intro(local) {
-    			if (current) return;
-    			transition_in(softmaxview.$$.fragment, local);
-    			current = true;
-    		},
-    		o: function outro(local) {
-    			transition_out(softmaxview.$$.fragment, local);
-    			current = false;
-    		},
-    		d: function destroy(detaching) {
-    			destroy_component(softmaxview, detaching);
-    		}
-    	};
-
-    	dispatch_dev("SvelteRegisterBlock", {
-    		block,
-    		id: create_if_block_3.name,
-    		type: "if",
-    		source: "(1614:39) ",
-    		ctx
-    	});
-
-    	return block;
-    }
-
-    // (1609:67) 
-    function create_if_block_2(ctx) {
-    	let poolview;
-    	let current;
-
-    	poolview = new Poolview({
-    			props: {
-    				input: /*nodeData*/ ctx[8][0].input,
-    				kernelLength: 2,
-    				dataRange: /*nodeData*/ ctx[8].colorRange,
-    				isExited: /*isExitedFromDetailedView*/ ctx[10]
-    			},
-    			$$inline: true
-    		});
-
-    	poolview.$on("message", /*handleExitFromDetiledPoolView*/ ctx[22]);
-
-    	const block = {
-    		c: function create() {
-    			create_component(poolview.$$.fragment);
-    		},
-    		m: function mount(target, anchor) {
-    			mount_component(poolview, target, anchor);
-    			current = true;
-    		},
-    		p: function update(ctx, dirty) {
-    			const poolview_changes = {};
-    			if (dirty[0] & /*nodeData*/ 256) poolview_changes.input = /*nodeData*/ ctx[8][0].input;
-    			if (dirty[0] & /*nodeData*/ 256) poolview_changes.dataRange = /*nodeData*/ ctx[8].colorRange;
-    			if (dirty[0] & /*isExitedFromDetailedView*/ 1024) poolview_changes.isExited = /*isExitedFromDetailedView*/ ctx[10];
-    			poolview.$set(poolview_changes);
-    		},
-    		i: function intro(local) {
-    			if (current) return;
-    			transition_in(poolview.$$.fragment, local);
-    			current = true;
-    		},
-    		o: function outro(local) {
-    			transition_out(poolview.$$.fragment, local);
-    			current = false;
-    		},
-    		d: function destroy(detaching) {
-    			destroy_component(poolview, detaching);
-    		}
-    	};
-
-    	dispatch_dev("SvelteRegisterBlock", {
-    		block,
-    		id: create_if_block_2.name,
-    		type: "if",
-    		source: "(1609:67) ",
-    		ctx
-    	});
-
-    	return block;
-    }
-
-    // (1604:67) 
-    function create_if_block_1(ctx) {
-    	let activationview;
-    	let current;
-
-    	activationview = new Activationview({
-    			props: {
-    				input: /*nodeData*/ ctx[8][0].input,
-    				output: /*nodeData*/ ctx[8][0].output,
-    				dataRange: /*nodeData*/ ctx[8].colorRange,
-    				isExited: /*isExitedFromDetailedView*/ ctx[10]
-    			},
-    			$$inline: true
-    		});
-
-    	activationview.$on("message", /*handleExitFromDetiledActivationView*/ ctx[23]);
-
-    	const block = {
-    		c: function create() {
-    			create_component(activationview.$$.fragment);
-    		},
-    		m: function mount(target, anchor) {
-    			mount_component(activationview, target, anchor);
-    			current = true;
-    		},
-    		p: function update(ctx, dirty) {
-    			const activationview_changes = {};
-    			if (dirty[0] & /*nodeData*/ 256) activationview_changes.input = /*nodeData*/ ctx[8][0].input;
-    			if (dirty[0] & /*nodeData*/ 256) activationview_changes.output = /*nodeData*/ ctx[8][0].output;
-    			if (dirty[0] & /*nodeData*/ 256) activationview_changes.dataRange = /*nodeData*/ ctx[8].colorRange;
-    			if (dirty[0] & /*isExitedFromDetailedView*/ 1024) activationview_changes.isExited = /*isExitedFromDetailedView*/ ctx[10];
-    			activationview.$set(activationview_changes);
-    		},
-    		i: function intro(local) {
-    			if (current) return;
-    			transition_in(activationview.$$.fragment, local);
-    			current = true;
-    		},
-    		o: function outro(local) {
-    			transition_out(activationview.$$.fragment, local);
-    			current = false;
-    		},
-    		d: function destroy(detaching) {
-    			destroy_component(activationview, detaching);
-    		}
-    	};
-
-    	dispatch_dev("SvelteRegisterBlock", {
-    		block,
-    		id: create_if_block_1.name,
-    		type: "if",
-    		source: "(1604:67) ",
-    		ctx
-    	});
-
-    	return block;
-    }
-
-    // (1596:2) {#if selectedNode.data && selectedNode.data.type === 'conv' && selectedNodeIndex != -1}
-    function create_if_block$3(ctx) {
-    	let convolutionview;
-    	let current;
-
-    	convolutionview = new Convolutionview({
-    			props: {
-    				input: /*nodeData*/ ctx[8][/*selectedNodeIndex*/ ctx[9]].input,
-    				kernel: /*nodeData*/ ctx[8][/*selectedNodeIndex*/ ctx[9]].kernel,
-    				dataRange: /*nodeData*/ ctx[8].colorRange,
-    				colorScale: /*nodeData*/ ctx[8].inputIsInputLayer
-    				? /*layerColorScales*/ ctx[14].input[0]
-    				: /*layerColorScales*/ ctx[14].conv,
-    				isInputInputLayer: /*nodeData*/ ctx[8].inputIsInputLayer,
-    				isExited: /*isExitedFromCollapse*/ ctx[11]
-    			},
-    			$$inline: true
-    		});
-
-    	convolutionview.$on("message", /*handleExitFromDetiledConvView*/ ctx[21]);
-
-    	const block = {
-    		c: function create() {
-    			create_component(convolutionview.$$.fragment);
-    		},
-    		m: function mount(target, anchor) {
-    			mount_component(convolutionview, target, anchor);
-    			current = true;
-    		},
-    		p: function update(ctx, dirty) {
-    			const convolutionview_changes = {};
-    			if (dirty[0] & /*nodeData, selectedNodeIndex*/ 768) convolutionview_changes.input = /*nodeData*/ ctx[8][/*selectedNodeIndex*/ ctx[9]].input;
-    			if (dirty[0] & /*nodeData, selectedNodeIndex*/ 768) convolutionview_changes.kernel = /*nodeData*/ ctx[8][/*selectedNodeIndex*/ ctx[9]].kernel;
-    			if (dirty[0] & /*nodeData*/ 256) convolutionview_changes.dataRange = /*nodeData*/ ctx[8].colorRange;
-
-    			if (dirty[0] & /*nodeData*/ 256) convolutionview_changes.colorScale = /*nodeData*/ ctx[8].inputIsInputLayer
-    			? /*layerColorScales*/ ctx[14].input[0]
-    			: /*layerColorScales*/ ctx[14].conv;
-
-    			if (dirty[0] & /*nodeData*/ 256) convolutionview_changes.isInputInputLayer = /*nodeData*/ ctx[8].inputIsInputLayer;
-    			if (dirty[0] & /*isExitedFromCollapse*/ 2048) convolutionview_changes.isExited = /*isExitedFromCollapse*/ ctx[11];
-    			convolutionview.$set(convolutionview_changes);
-    		},
-    		i: function intro(local) {
-    			if (current) return;
-    			transition_in(convolutionview.$$.fragment, local);
-    			current = true;
-    		},
-    		o: function outro(local) {
-    			transition_out(convolutionview.$$.fragment, local);
-    			current = false;
-    		},
-    		d: function destroy(detaching) {
-    			destroy_component(convolutionview, detaching);
-    		}
-    	};
-
-    	dispatch_dev("SvelteRegisterBlock", {
-    		block,
-    		id: create_if_block$3.name,
-    		type: "if",
-    		source: "(1596:2) {#if selectedNode.data && selectedNode.data.type === 'conv' && selectedNodeIndex != -1}",
-    		ctx
-    	});
-
-    	return block;
-    }
-
-    function create_fragment$b(ctx) {
-    	let div6;
-    	let div4;
-    	let div0;
-    	let t0;
-    	let t1;
-    	let button0;
-    	let span0;
-    	let i0;
-    	let t2;
-    	let span1;
-    	let t3_value = /*hoverInfo*/ ctx[4].text + "";
-    	let t3;
-    	let t4;
-    	let div3;
-    	let button1;
-    	let span2;
-    	let i1;
-    	let t5;
-    	let span3;
-    	let t7;
-    	let button2;
-    	let span4;
-    	let i2;
-    	let t8;
-    	let span5;
-    	let t10;
-    	let div2;
-    	let span6;
-    	let i3;
-    	let t11;
-    	let div1;
-    	let select;
-    	let option0;
-    	let option1;
-    	let option2;
-    	let t15;
-    	let div5;
-    	let svg_1;
-    	let t16;
-    	let div7;
-    	let current_block_type_index;
-    	let if_block1;
-    	let t17;
-    	let modal;
-    	let current;
-    	let mounted;
-    	let dispose;
-    	let each_value = /*imageOptions*/ ctx[15];
-    	validate_each_argument(each_value);
-    	let each_blocks = [];
-
-    	for (let i = 0; i < each_value.length; i += 1) {
-    		each_blocks[i] = create_each_block(get_each_context(ctx, each_value, i));
-    	}
-
-    	let if_block0 = overviewConfig.modeImg == 3 && create_if_block_4(ctx);
-    	const if_block_creators = [create_if_block$3, create_if_block_1, create_if_block_2, create_if_block_3];
-    	const if_blocks = [];
-
-    	function select_block_type(ctx, dirty) {
-    		if (/*selectedNode*/ ctx[5].data && /*selectedNode*/ ctx[5].data.type === 'conv' && /*selectedNodeIndex*/ ctx[9] != -1) return 0;
-    		if (/*selectedNode*/ ctx[5].data && /*selectedNode*/ ctx[5].data.type === 'relu') return 1;
-    		if (/*selectedNode*/ ctx[5].data && /*selectedNode*/ ctx[5].data.type === 'pool') return 2;
-    		if (/*softmaxDetailViewInfo*/ ctx[3].show) return 3;
-    		return -1;
-    	}
-
-    	if (~(current_block_type_index = select_block_type(ctx))) {
-    		if_block1 = if_blocks[current_block_type_index] = if_block_creators[current_block_type_index](ctx);
-    	}
-
-    	modal = new Modal({ $$inline: true });
-    	modal.$on("xClicked", /*handleModalCanceled*/ ctx[19]);
-    	modal.$on("urlTyped", /*handleCustomImage*/ ctx[20]);
-
-    	const block = {
-    		c: function create() {
-    			div6 = element("div");
-    			div4 = element("div");
-    			div0 = element("div");
-
-    			for (let i = 0; i < each_blocks.length; i += 1) {
-    				each_blocks[i].c();
-    			}
-
-    			t0 = space();
-    			if (if_block0) if_block0.c();
-    			t1 = space();
-    			button0 = element("button");
-    			span0 = element("span");
-    			i0 = element("i");
-    			t2 = space();
-    			span1 = element("span");
-    			t3 = text(t3_value);
-    			t4 = space();
-    			div3 = element("div");
-    			button1 = element("button");
-    			span2 = element("span");
-    			i1 = element("i");
-    			t5 = space();
-    			span3 = element("span");
-    			span3.textContent = "Faire le test";
-    			t7 = space();
-    			button2 = element("button");
-    			span4 = element("span");
-    			i2 = element("i");
-    			t8 = space();
-    			span5 = element("span");
-    			span5.textContent = "Détail";
-    			t10 = space();
-    			div2 = element("div");
-    			span6 = element("span");
-    			i3 = element("i");
-    			t11 = space();
-    			div1 = element("div");
-    			select = element("select");
-    			option0 = element("option");
-    			option0.textContent = "Unit";
-    			option1 = element("option");
-    			option1.textContent = "Module";
-    			option2 = element("option");
-    			option2.textContent = "Global";
-    			t15 = space();
-    			div5 = element("div");
-    			svg_1 = svg_element("svg");
-    			t16 = space();
-    			div7 = element("div");
-    			if (if_block1) if_block1.c();
-    			t17 = space();
-    			create_component(modal.$$.fragment);
-    			attr_dev(i0, "class", "fas fa-crosshairs ");
-    			add_location(i0, file$b, 1536, 10, 48850);
-    			attr_dev(span0, "class", "icon");
-    			set_style(span0, "margin-right", "5px");
-    			add_location(span0, file$b, 1535, 8, 48793);
-    			attr_dev(span1, "id", "hover-label-text");
-    			add_location(span1, file$b, 1538, 8, 48909);
-    			attr_dev(button0, "class", "button is-very-small is-link is-light svelte-9lm4l0");
-    			attr_dev(button0, "id", "hover-label");
-    			set_style(button0, "opacity", /*hoverInfo*/ ctx[4].show ? 1 : 0);
-    			add_location(button0, file$b, 1532, 6, 48656);
-    			attr_dev(div0, "class", "left-control svelte-9lm4l0");
-    			add_location(div0, file$b, 1496, 4, 47388);
-    			attr_dev(i1, "class", "fa-solid fa-address-card");
-    			add_location(i1, file$b, 1548, 10, 49174);
-    			attr_dev(span2, "class", "icon");
-    			add_location(span2, file$b, 1547, 8, 49144);
-    			add_location(span3, file$b, 1550, 12, 49243);
-    			attr_dev(button1, "class", "button is-success is-very-small is-activated svelte-9lm4l0");
-    			add_location(button1, file$b, 1546, 8, 49050);
-    			attr_dev(i2, "class", "fas fa-eye");
-    			add_location(i2, file$b, 1562, 10, 49552);
-    			attr_dev(span4, "class", "icon");
-    			add_location(span4, file$b, 1561, 8, 49522);
-    			attr_dev(span5, "id", "hover-label-text");
-    			add_location(span5, file$b, 1564, 8, 49603);
-    			attr_dev(button2, "class", "button blue-button is-very-small svelte-9lm4l0");
-    			attr_dev(button2, "id", "detailed-button");
-    			button2.disabled = /*disableControl*/ ctx[6];
-    			toggle_class(button2, "is-activated", /*detailedMode*/ ctx[2]);
-    			add_location(button2, file$b, 1556, 8, 49318);
-    			attr_dev(i3, "class", "fas fa-palette");
-    			add_location(i3, file$b, 1572, 10, 49826);
-    			attr_dev(span6, "class", "icon is-left");
-    			add_location(span6, file$b, 1571, 8, 49788);
-    			option0.__value = "local";
-    			option0.value = option0.__value;
-    			add_location(option0, file$b, 1578, 12, 50022);
-    			option1.__value = "module";
-    			option1.value = option1.__value;
-    			add_location(option1, file$b, 1579, 12, 50070);
-    			option2.__value = "global";
-    			option2.value = option2.__value;
-    			add_location(option2, file$b, 1580, 12, 50121);
-    			attr_dev(select, "id", "level-select");
-    			select.disabled = /*disableControl*/ ctx[6];
-    			attr_dev(select, "class", "svelte-9lm4l0");
-    			if (/*selectedScaleLevel*/ ctx[0] === void 0) add_render_callback(() => /*select_change_handler*/ ctx[25].call(select));
-    			add_location(select, file$b, 1576, 10, 49913);
-    			attr_dev(div1, "class", "select svelte-9lm4l0");
-    			add_location(div1, file$b, 1575, 8, 49882);
-    			attr_dev(div2, "class", "control is-very-small has-icons-left svelte-9lm4l0");
-    			attr_dev(div2, "title", "Change color scale range");
-    			add_location(div2, file$b, 1569, 6, 49688);
-    			attr_dev(div3, "class", "right-control svelte-9lm4l0");
-    			add_location(div3, file$b, 1544, 4, 49013);
-    			attr_dev(div4, "class", "control-container svelte-9lm4l0");
-    			add_location(div4, file$b, 1494, 2, 47351);
-    			attr_dev(svg_1, "id", "cnn-svg");
-    			attr_dev(svg_1, "class", "svelte-9lm4l0");
-    			add_location(svg_1, file$b, 1590, 4, 50259);
-    			attr_dev(div5, "class", "cnn svelte-9lm4l0");
-    			add_location(div5, file$b, 1589, 2, 50237);
-    			attr_dev(div6, "class", "overview svelte-9lm4l0");
-    			add_location(div6, file$b, 1491, 0, 47293);
-    			attr_dev(div7, "id", "detailview");
-    			add_location(div7, file$b, 1594, 0, 50301);
-    		},
-    		l: function claim(nodes) {
-    			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
-    		},
-    		m: function mount(target, anchor) {
-    			insert_dev(target, div6, anchor);
-    			append_dev(div6, div4);
-    			append_dev(div4, div0);
-
-    			for (let i = 0; i < each_blocks.length; i += 1) {
-    				each_blocks[i].m(div0, null);
-    			}
-
-    			append_dev(div0, t0);
-    			if (if_block0) if_block0.m(div0, null);
-    			append_dev(div0, t1);
-    			append_dev(div0, button0);
-    			append_dev(button0, span0);
-    			append_dev(span0, i0);
-    			append_dev(button0, t2);
-    			append_dev(button0, span1);
-    			append_dev(span1, t3);
-    			append_dev(div4, t4);
-    			append_dev(div4, div3);
-    			append_dev(div3, button1);
-    			append_dev(button1, span2);
-    			append_dev(span2, i1);
-    			append_dev(button1, t5);
-    			append_dev(button1, span3);
-    			append_dev(div3, t7);
-    			append_dev(div3, button2);
-    			append_dev(button2, span4);
-    			append_dev(span4, i2);
-    			append_dev(button2, t8);
-    			append_dev(button2, span5);
-    			append_dev(div3, t10);
-    			append_dev(div3, div2);
-    			append_dev(div2, span6);
-    			append_dev(span6, i3);
-    			append_dev(div2, t11);
-    			append_dev(div2, div1);
-    			append_dev(div1, select);
-    			append_dev(select, option0);
-    			append_dev(select, option1);
-    			append_dev(select, option2);
-    			select_option(select, /*selectedScaleLevel*/ ctx[0]);
-    			append_dev(div6, t15);
-    			append_dev(div6, div5);
-    			append_dev(div5, svg_1);
-    			/*div6_binding*/ ctx[26](div6);
-    			insert_dev(target, t16, anchor);
-    			insert_dev(target, div7, anchor);
-
-    			if (~current_block_type_index) {
-    				if_blocks[current_block_type_index].m(div7, null);
-    			}
-
-    			insert_dev(target, t17, anchor);
-    			mount_component(modal, target, anchor);
-    			current = true;
-
-    			if (!mounted) {
-    				dispose = [
-    					listen_dev(button1, "click", /*afficheStart*/ ctx[13], false, false, false),
-    					listen_dev(button2, "click", /*detailedButtonClicked*/ ctx[16], false, false, false),
-    					listen_dev(select, "change", /*select_change_handler*/ ctx[25])
-    				];
-
-    				mounted = true;
-    			}
-    		},
-    		p: function update(ctx, dirty) {
-    			if (dirty[0] & /*imageOptions, selectedImage, disableControl, imageOptionClicked*/ 164032) {
-    				each_value = /*imageOptions*/ ctx[15];
-    				validate_each_argument(each_value);
-    				let i;
-
-    				for (i = 0; i < each_value.length; i += 1) {
-    					const child_ctx = get_each_context(ctx, each_value, i);
-
-    					if (each_blocks[i]) {
-    						each_blocks[i].p(child_ctx, dirty);
-    					} else {
-    						each_blocks[i] = create_each_block(child_ctx);
-    						each_blocks[i].c();
-    						each_blocks[i].m(div0, t0);
-    					}
-    				}
-
-    				for (; i < each_blocks.length; i += 1) {
-    					each_blocks[i].d(1);
-    				}
-
-    				each_blocks.length = each_value.length;
-    			}
-
-    			if (overviewConfig.modeImg == 3) if_block0.p(ctx, dirty);
-    			if ((!current || dirty[0] & /*hoverInfo*/ 16) && t3_value !== (t3_value = /*hoverInfo*/ ctx[4].text + "")) set_data_dev(t3, t3_value);
-
-    			if (!current || dirty[0] & /*hoverInfo*/ 16) {
-    				set_style(button0, "opacity", /*hoverInfo*/ ctx[4].show ? 1 : 0);
-    			}
-
-    			if (!current || dirty[0] & /*disableControl*/ 64) {
-    				prop_dev(button2, "disabled", /*disableControl*/ ctx[6]);
-    			}
-
-    			if (dirty[0] & /*detailedMode*/ 4) {
-    				toggle_class(button2, "is-activated", /*detailedMode*/ ctx[2]);
-    			}
-
-    			if (!current || dirty[0] & /*disableControl*/ 64) {
-    				prop_dev(select, "disabled", /*disableControl*/ ctx[6]);
-    			}
-
-    			if (dirty[0] & /*selectedScaleLevel*/ 1) {
-    				select_option(select, /*selectedScaleLevel*/ ctx[0]);
-    			}
-
-    			let previous_block_index = current_block_type_index;
-    			current_block_type_index = select_block_type(ctx);
-
-    			if (current_block_type_index === previous_block_index) {
-    				if (~current_block_type_index) {
-    					if_blocks[current_block_type_index].p(ctx, dirty);
-    				}
-    			} else {
-    				if (if_block1) {
-    					group_outros();
-
-    					transition_out(if_blocks[previous_block_index], 1, 1, () => {
-    						if_blocks[previous_block_index] = null;
-    					});
-
-    					check_outros();
-    				}
-
-    				if (~current_block_type_index) {
-    					if_block1 = if_blocks[current_block_type_index];
-
-    					if (!if_block1) {
-    						if_block1 = if_blocks[current_block_type_index] = if_block_creators[current_block_type_index](ctx);
-    						if_block1.c();
-    					} else {
-    						if_block1.p(ctx, dirty);
-    					}
-
-    					transition_in(if_block1, 1);
-    					if_block1.m(div7, null);
-    				} else {
-    					if_block1 = null;
-    				}
-    			}
-    		},
-    		i: function intro(local) {
-    			if (current) return;
-    			transition_in(if_block1);
-    			transition_in(modal.$$.fragment, local);
-    			current = true;
-    		},
-    		o: function outro(local) {
-    			transition_out(if_block1);
-    			transition_out(modal.$$.fragment, local);
-    			current = false;
-    		},
-    		d: function destroy(detaching) {
-    			if (detaching) detach_dev(div6);
-    			destroy_each(each_blocks, detaching);
-    			if (if_block0) if_block0.d();
-    			/*div6_binding*/ ctx[26](null);
-    			if (detaching) detach_dev(t16);
-    			if (detaching) detach_dev(div7);
-
-    			if (~current_block_type_index) {
-    				if_blocks[current_block_type_index].d();
-    			}
-
-    			if (detaching) detach_dev(t17);
-    			destroy_component(modal, detaching);
-    			mounted = false;
-    			run_all(dispose);
-    		}
-    	};
-
-    	dispatch_dev("SvelteRegisterBlock", {
-    		block,
-    		id: create_fragment$b.name,
-    		type: "component",
-    		source: "",
-    		ctx
-    	});
-
-    	return block;
-    }
-
-    const click_handler = () => {
-    	
-    };
-
-    const click_handler_1 = () => {
-    	
-    };
-
-    function instance$b($$self, $$props, $$invalidate) {
-    	let { $$slots: slots = {}, $$scope } = $$props;
-    	validate_slots('Cnn', slots, []);
-
-    	function afficheStart() {
-    		leftStartStore.update(n => 0);
-    	}
-
-    	// View bindings
-    	let overviewComponent;
-
-    	let scaleLevelSet = new Set(['local', 'module', 'global']);
-    	let selectedScaleLevel = 'local';
-    	selectedScaleLevelStore.set(selectedScaleLevel);
-    	let previousSelectedScaleLevel = selectedScaleLevel;
-    	let wholeSvg = undefined;
-    	let svg = undefined;
-
-    	// Configs
-    	const layerColorScales = overviewConfig.layerColorScales;
-
-    	const nodeLength = overviewConfig.nodeLength;
-    	const plusSymbolRadius = overviewConfig.plusSymbolRadius;
-    	const numLayers = overviewConfig.numLayers;
-    	const edgeOpacity = overviewConfig.edgeOpacity;
-    	const edgeInitColor = overviewConfig.edgeInitColor;
-    	const edgeHoverColor = overviewConfig.edgeHoverColor;
-    	const edgeHoverOuting = overviewConfig.edgeHoverOuting;
-    	const edgeStrokeWidth = overviewConfig.edgeStrokeWidth;
-    	const intermediateColor = overviewConfig.intermediateColor;
-    	const kernelRectLength = overviewConfig.kernelRectLength;
-    	const svgPaddings = overviewConfig.svgPaddings;
-    	const gapRatio = overviewConfig.gapRatio;
-    	const overlayRectOffset = overviewConfig.overlayRectOffset;
-    	const classLists = overviewConfig.classLists;
-
-    	// Shared properties
-    	let needRedraw = [undefined, undefined];
-
-    	needRedrawStore.subscribe(value => {
-    		needRedraw = value;
-    	});
-
-    	let nodeCoordinate = undefined;
-
-    	nodeCoordinateStore.subscribe(value => {
-    		nodeCoordinate = value;
-    	});
-
-    	let cnnLayerRanges = undefined;
-
-    	cnnLayerRangesStore.subscribe(value => {
-    		cnnLayerRanges = value;
-    	});
-
-    	let cnnLayerMinMax = undefined;
-
-    	cnnLayerMinMaxStore.subscribe(value => {
-    		cnnLayerMinMax = value;
-    	});
-
-    	let detailedMode = undefined;
-
-    	detailedModeStore.subscribe(value => {
-    		$$invalidate(2, detailedMode = value);
-    	});
-
-    	let shouldIntermediateAnimate = undefined;
-
-    	shouldIntermediateAnimateStore.subscribe(value => {
-    		shouldIntermediateAnimate = value;
-    	});
-
-    	let vSpaceAroundGap = undefined;
-
-    	vSpaceAroundGapStore.subscribe(value => {
-    		vSpaceAroundGap = value;
-    	});
-
-    	let hSpaceAroundGap = undefined;
-
-    	hSpaceAroundGapStore.subscribe(value => {
-    		hSpaceAroundGap = value;
-    	});
-
-    	let isInSoftmax = undefined;
-
-    	isInSoftmaxStore.subscribe(value => {
-    		isInSoftmax = value;
-    	});
-
-    	let softmaxDetailViewInfo = undefined;
-
-    	softmaxDetailViewStore.subscribe(value => {
-    		$$invalidate(3, softmaxDetailViewInfo = value);
-    	});
-
-    	let modalInfo = undefined;
-
-    	modalStore.subscribe(value => {
-    		modalInfo = value;
-    	});
-
-    	let hoverInfo = undefined;
-
-    	hoverInfoStore.subscribe(value => {
-    		$$invalidate(4, hoverInfo = value);
-    	});
-
-    	let intermediateLayerPosition = undefined;
-
-    	intermediateLayerPositionStore.subscribe(value => {
-    		intermediateLayerPosition = value;
-    	});
-
-    	let width = undefined;
-    	let height = undefined;
-    	let model = undefined;
-    	let selectedNode = { layerName: '', index: -1, data: null };
-    	let isInIntermediateView = false;
-    	let isInActPoolDetailView = false;
-    	let actPoolDetailViewNodeIndex = -1;
-    	let actPoolDetailViewLayerIndex = -1;
-    	let detailedViewNum = undefined;
-    	let disableControl = false;
-
-    	// Wait to load
-    	let cnn = undefined;
-
-    	let detailedViewAbsCoords = {
-    		1: [600, 270, 490, 290],
-    		2: [500, 270, 490, 290],
-    		3: [700, 270, 490, 290],
-    		4: [600, 270, 490, 290],
-    		5: [650, 270, 490, 290],
-    		6: [775, 270, 490, 290],
-    		7: [100, 270, 490, 290],
-    		8: [60, 270, 490, 290],
-    		9: [200, 270, 490, 290],
-    		10: [300, 270, 490, 290]
-    	};
-
-    	const layerIndexDict = {
-    		'input': 0,
-    		'conv_1_1': 1,
-    		'relu_1_1': 2,
-    		'conv_1_2': 3,
-    		'relu_1_2': 4,
-    		'max_pool_1': 5,
-    		'conv_2_1': 6,
-    		'relu_2_1': 7,
-    		'conv_2_2': 8,
-    		'relu_2_2': 9,
-    		'max_pool_2': 10,
-    		'output': 11
-    	};
-
-    	const layerLegendDict = {
-    		0: {
-    			local: 'input-legend',
-    			module: 'input-legend',
-    			global: 'input-legend'
-    		},
-    		1: {
-    			local: 'local-legend-0-1',
-    			module: 'module-legend-0',
-    			global: 'global-legend'
-    		},
-    		2: {
-    			local: 'local-legend-0-1',
-    			module: 'module-legend-0',
-    			global: 'global-legend'
-    		},
-    		3: {
-    			local: 'local-legend-0-2',
-    			module: 'module-legend-0',
-    			global: 'global-legend'
-    		},
-    		4: {
-    			local: 'local-legend-0-2',
-    			module: 'module-legend-0',
-    			global: 'global-legend'
-    		},
-    		5: {
-    			local: 'local-legend-0-2',
-    			module: 'module-legend-0',
-    			global: 'global-legend'
-    		},
-    		6: {
-    			local: 'local-legend-1-1',
-    			module: 'module-legend-1',
-    			global: 'global-legend'
-    		},
-    		7: {
-    			local: 'local-legend-1-1',
-    			module: 'module-legend-1',
-    			global: 'global-legend'
-    		},
-    		8: {
-    			local: 'local-legend-1-2',
-    			module: 'module-legend-1',
-    			global: 'global-legend'
-    		},
-    		9: {
-    			local: 'local-legend-1-2',
-    			module: 'module-legend-1',
-    			global: 'global-legend'
-    		},
-    		10: {
-    			local: 'local-legend-1-2',
-    			module: 'module-legend-1',
-    			global: 'global-legend'
-    		},
-    		11: {
-    			local: 'output-legend',
-    			module: 'output-legend',
-    			global: 'output-legend'
-    		}
-    	};
-
-    	let imageOptions = [
-    		{ file: 'colere.jpg', class: 'Colère' },
-    		{ file: 'degout.jpg', class: 'Dégoût' },
-    		{ file: 'peur.jpg', class: 'Peur' },
-    		{ file: 'joyeux.jpg', class: 'Joyeux' },
-    		{ file: 'triste.jpg', class: 'Triste' },
-    		{ file: 'surprise.jpg', class: 'Surprise' },
-    		{ file: 'neutre.jpg', class: 'Neutre' }
-    	];
-
-    	let selectedImage = imageOptions[0].file;
-    	let nodeData;
-    	let selectedNodeIndex = -1;
-    	let isExitedFromDetailedView = true;
-    	let isExitedFromCollapse = true;
-    	let customImageURL = null;
-
-    	// Helper functions
-    	const selectedScaleLevelChanged = () => {
-    		if (svg !== undefined) {
-    			if (!scaleLevelSet.add(selectedScaleLevel)) {
-    				console.error('Encounter unknown scale level!');
-    			}
-
-    			// Update nodes and legends
-    			if (selectedScaleLevel != previousSelectedScaleLevel) {
-    				// We can simply redraw all nodes using the new color scale, or we can
-    				// make it faster by only redraw certian nodes
-    				let updatingLayerIndexDict = {
-    					local: {
-    						module: [1, 2, 8, 9, 10],
-    						global: [1, 2, 3, 4, 5, 8, 9, 10]
-    					},
-    					module: {
-    						local: [1, 2, 8, 9, 10],
-    						global: [1, 2, 3, 4, 5, 8, 9, 10]
-    					},
-    					global: {
-    						local: [1, 2, 3, 4, 5, 8, 9, 10],
-    						module: [1, 2, 3, 4, 5]
-    					}
-    				};
-
-    				let updatingLayerIndex = updatingLayerIndexDict[previousSelectedScaleLevel][selectedScaleLevel];
-
-    				updatingLayerIndex.forEach(l => {
-    					let range = cnnLayerRanges[selectedScaleLevel][l];
-    					svg.select(`#cnn-layer-group-${l}`).selectAll('.node-image').each((d, i, g) => drawOutput(d, i, g, range));
-    				});
-
-    				// Hide previous legend
-    				svg.selectAll(`.${previousSelectedScaleLevel}-legend`).classed('hidden', true);
-
-    				// Show selected legends
-    				svg.selectAll(`.${selectedScaleLevel}-legend`).classed('hidden', !detailedMode);
-    			}
-
-    			previousSelectedScaleLevel = selectedScaleLevel;
-    			selectedScaleLevelStore.set(selectedScaleLevel);
-    		}
-    	};
-
-    	const intermediateNodeMouseOverHandler = (d, i, g) => {
-    		if (detailedViewNum !== undefined) {
-    			return;
-    		}
-
-    		svg.select(`rect#underneath-gateway-${d.index}`).style('opacity', 1);
-    	};
-
-    	const intermediateNodeMouseLeaveHandler = (d, i, g) => {
-    		// screenshot
-    		// return;
-    		if (detailedViewNum !== undefined) {
-    			return;
-    		}
-
-    		svg.select(`rect#underneath-gateway-${d.index}`).style('opacity', 0);
-    	};
-
-    	const intermediateNodeClicked = (d, i, g, selectedI, curLayerIndex) => {
-    		d3.event.stopPropagation();
-    		$$invalidate(11, isExitedFromCollapse = false);
-
-    		// Use this event to trigger the detailed view
-    		if (detailedViewNum === d.index) {
-    			// Setting this for testing purposes currently.
-    			$$invalidate(9, selectedNodeIndex = -1);
-
-    			// User clicks this node again -> rewind
-    			detailedViewNum = undefined;
-
-    			svg.select(`rect#underneath-gateway-${d.index}`).style('opacity', 0);
-    		} else // We need to show a new detailed view (two cases: if we need to close the
-    		// old detailed view or not)
-    		{
-    			// Setting this for testing purposes currently.
-    			$$invalidate(9, selectedNodeIndex = d.index);
-
-    			let inputMatrix = d.output;
-    			let kernelMatrix = d.outputLinks[selectedI].weight;
-
-    			// let interMatrix = singleConv(inputMatrix, kernelMatrix);
-    			let colorScale = layerColorScales.conv;
-
-    			// Compute the color range
-    			let rangePre = cnnLayerRanges[selectedScaleLevel][curLayerIndex - 1];
-
-    			let rangeCur = cnnLayerRanges[selectedScaleLevel][curLayerIndex];
-    			let range = Math.max(rangePre, rangeCur);
-
-    			// User triggers a different detailed view
-    			if (detailedViewNum !== undefined) {
-    				// Change the underneath highlight
-    				svg.select(`rect#underneath-gateway-${detailedViewNum}`).style('opacity', 0);
-
-    				svg.select(`rect#underneath-gateway-${d.index}`).style('opacity', 1);
-    			}
-
-    			// Dynamically position the detail view
-    			let wholeSvg = d3.select('#cnn-svg');
-
-    			let svgYMid = +wholeSvg.style('height').replace('px', '') / 2;
-    			let svgWidth = +wholeSvg.style('width').replace('px', '');
-    			let detailViewTop = 100 + svgYMid - 250 / 2;
-    			let positionX = intermediateLayerPosition[Object.keys(layerIndexDict)[curLayerIndex]];
-    			let posX = 0;
-
-    			if (curLayerIndex > 6) {
-    				posX = (positionX - svgPaddings.left) / 2;
-    				posX = svgPaddings.left + posX - 486 / 2;
-    			} else {
-    				posX = (svgWidth + svgPaddings.right - positionX) / 2;
-    				posX = positionX + posX - 486 / 2;
-    			}
-
-    			const detailview = document.getElementById('detailview');
-    			detailview.style.top = `${detailViewTop}px`;
-    			detailview.style.left = `${posX}px`;
-    			detailview.style.position = 'absolute';
-    			detailedViewNum = d.index;
-
-    			// Send the currently used color range to detailed view
-    			$$invalidate(8, nodeData.colorRange = range, nodeData);
-
-    			$$invalidate(8, nodeData.inputIsInputLayer = curLayerIndex <= 1, nodeData);
-    		}
-    	};
-
-    	// The order of the if/else statements in this function is very critical
-    	const emptySpaceClicked = () => {
-    		// If detail view -> rewind to intermediate view
-    		if (detailedViewNum !== undefined) {
-    			// Setting this for testing purposes currently.
-    			$$invalidate(9, selectedNodeIndex = -1);
-
-    			// User clicks this node again -> rewind
-    			svg.select(`rect#underneath-gateway-${detailedViewNum}`).style('opacity', 0);
-
-    			detailedViewNum = undefined;
-    		} else // If softmax view -> rewind to flatten layer view
-    		if (isInSoftmax) {
-    			svg.select('.softmax-symbol').dispatch('click');
-    		} else // If intermediate view -> rewind to overview
-    		if (isInIntermediateView) {
-    			let curLayerIndex = layerIndexDict[selectedNode.layerName];
-    			quitIntermediateView(curLayerIndex, selectedNode.domG, selectedNode.domI);
-    			d3.select(selectedNode.domG[selectedNode.domI]).dispatch('mouseleave');
-    		} else // If pool/act detail view -> rewind to overview
-    		if (isInActPoolDetailView) {
-    			quitActPoolDetailView();
-    		}
-    	};
-
-    	const prepareToEnterIntermediateView = (d, g, i, curLayerIndex) => {
-    		isInIntermediateView = true;
-
-    		// Hide all legends
-    		svg.selectAll(`.${selectedScaleLevel}-legend`).classed('hidden', true);
-
-    		svg.selectAll('.input-legend').classed('hidden', true);
-    		svg.selectAll('.output-legend').classed('hidden', true);
-
-    		// Hide the input annotation
-    		svg.select('.input-annotation').classed('hidden', true);
-
-    		// Highlight the previous layer and this node
-    		svg.select(`g#cnn-layer-group-${curLayerIndex - 1}`).selectAll('rect.bounding').style('stroke-width', 2);
-
-    		d3.select(g[i]).select('rect.bounding').style('stroke-width', 2);
-
-    		// Disable control panel UI
-    		// d3.select('#level-select').property('disabled', true);
-    		// d3.selectAll('.image-container')
-    		//   .style('cursor', 'not-allowed')
-    		//   .on('mouseclick', () => {});
-    		$$invalidate(6, disableControl = true);
-
-    		// Allow infinite animation loop
-    		shouldIntermediateAnimateStore.set(true);
-
-    		// Highlight the labels
-    		svg.selectAll(`g#layer-label-${curLayerIndex - 1},
-      g#layer-detailed-label-${curLayerIndex - 1},
-      g#layer-label-${curLayerIndex},
-      g#layer-detailed-label-${curLayerIndex}`).style('font-weight', '800');
-
-    		// Register a handler on the svg element so user can click empty space to quit
-    		// the intermediate view
-    		d3.select('#cnn-svg').on('click', emptySpaceClicked);
-    	};
-
-    	const quitActPoolDetailView = () => {
-    		isInActPoolDetailView = false;
-    		actPoolDetailViewNodeIndex = -1;
-    		let layerIndex = layerIndexDict[selectedNode.layerName];
-    		let nodeIndex = selectedNode.index;
-    		svg.select(`g#layer-${layerIndex}-node-${nodeIndex}`).select('rect.bounding').classed('hidden', true);
-
-    		selectedNode.data.inputLinks.forEach(link => {
-    			let layerIndex = layerIndexDict[link.source.layerName];
-    			let nodeIndex = link.source.index;
-    			svg.select(`g#layer-${layerIndex}-node-${nodeIndex}`).select('rect.bounding').classed('hidden', true);
-    		});
-
-    		// Clean up the underneath rects
-    		svg.select('g.underneath').selectAll('rect').remove();
-
-    		// Show all edges
-    		let unimportantEdges = svg.select('g.edge-group').selectAll('.edge').filter(d => {
-    			return d.targetLayerIndex !== actPoolDetailViewLayerIndex;
-    		}).style('visibility', null);
-
-    		// Recover control UI
-    		$$invalidate(6, disableControl = false);
-
-    		// Show legends if in detailed mode
-    		svg.selectAll(`.${selectedScaleLevel}-legend`).classed('hidden', !detailedMode);
-
-    		svg.selectAll('.input-legend').classed('hidden', !detailedMode);
-    		svg.selectAll('.output-legend').classed('hidden', !detailedMode);
-
-    		// Also dehighlight the edge
-    		let edgeGroup = svg.select('g.cnn-group').select('g.edge-group');
-
-    		edgeGroup.selectAll(`path.edge-${layerIndex}-${nodeIndex}`).transition().ease(d3.easeCubicOut).duration(200).style('stroke', edgeInitColor).style('stroke-width', edgeStrokeWidth).style('opacity', edgeOpacity);
-
-    		// Remove the overlay rect
-    		svg.selectAll('g.intermediate-layer-overlay, g.intermediate-layer-annotation').transition('remove').duration(500).ease(d3.easeCubicInOut).style('opacity', 0).on('end', (d, i, g) => {
-    			svg.selectAll('g.intermediate-layer-overlay, g.intermediate-layer-annotation').remove();
-    			svg.selectAll('defs.overlay-gradient').remove();
-    			svg.select('.input-annotation').classed('hidden', false);
-    		});
-
-    		// Turn the fade out nodes back
-    		svg.select(`g#cnn-layer-group-${layerIndex}`).selectAll('g.node-group').each((sd, si, sg) => {
-    			d3.select(sg[si]).style('pointer-events', 'all');
-    		});
-
-    		svg.select(`g#cnn-layer-group-${layerIndex - 1}`).selectAll('g.node-group').each((sd, si, sg) => {
-    			// Recover the old events
-    			d3.select(sg[si]).style('pointer-events', 'all').on('mouseover', nodeMouseOverHandler).on('mouseleave', nodeMouseLeaveHandler).on('click', nodeClickHandler);
-    		});
-
-    		// Deselect the node
-    		$$invalidate(5, selectedNode.layerName = '', selectedNode);
-
-    		$$invalidate(5, selectedNode.index = -1, selectedNode);
-    		$$invalidate(5, selectedNode.data = null, selectedNode);
-    		actPoolDetailViewLayerIndex = -1;
-    	};
-
-    	const actPoolDetailViewPreNodeMouseOverHandler = (d, i, g) => {
-    		// Highlight the edges
-    		let layerIndex = layerIndexDict[d.layerName];
-
-    		let nodeIndex = d.index;
-    		let edgeGroup = svg.select('g.cnn-group').select('g.edge-group');
-    		edgeGroup.selectAll(`path.edge-${actPoolDetailViewLayerIndex}-${nodeIndex}`).raise().transition().ease(d3.easeCubicInOut).duration(400).style('stroke', edgeHoverColor).style('stroke-width', '1').style('opacity', 1);
-
-    		// Highlight its border
-    		d3.select(g[i]).select('rect.bounding').classed('hidden', false);
-
-    		// Highlight node's pair
-    		let associatedLayerIndex = layerIndex - 1;
-
-    		if (layerIndex === actPoolDetailViewLayerIndex - 1) {
-    			associatedLayerIndex = layerIndex + 1;
-    		}
-
-    		svg.select(`g#layer-${associatedLayerIndex}-node-${nodeIndex}`).select('rect.bounding').classed('hidden', false);
-    	};
-
-    	const actPoolDetailViewPreNodeMouseLeaveHandler = (d, i, g) => {
-    		// De-highlight the edges
-    		let layerIndex = layerIndexDict[d.layerName];
-
-    		let nodeIndex = d.index;
-    		let edgeGroup = svg.select('g.cnn-group').select('g.edge-group');
-    		edgeGroup.selectAll(`path.edge-${actPoolDetailViewLayerIndex}-${nodeIndex}`).transition().ease(d3.easeCubicOut).duration(200).style('stroke', edgeInitColor).style('stroke-width', edgeStrokeWidth).style('opacity', edgeOpacity);
-
-    		// De-highlight its border
-    		d3.select(g[i]).select('rect.bounding').classed('hidden', true);
-
-    		// De-highlight node's pair
-    		let associatedLayerIndex = layerIndex - 1;
-
-    		if (layerIndex === actPoolDetailViewLayerIndex - 1) {
-    			associatedLayerIndex = layerIndex + 1;
-    		}
-
-    		svg.select(`g#layer-${associatedLayerIndex}-node-${nodeIndex}`).select('rect.bounding').classed('hidden', true);
-    	};
-
-    	const actPoolDetailViewPreNodeClickHandler = (d, i, g) => {
-    		let layerIndex = layerIndexDict[d.layerName];
-    		let nodeIndex = d.index;
-
-    		// Click the pre-layer node in detail view has the same effect as clicking
-    		// the cur-layer node, which is to open a new detail view window
-    		svg.select(`g#layer-${layerIndex + 1}-node-${nodeIndex}`).node().dispatchEvent(new Event('click'));
-    	};
-
-    	const enterDetailView = (curLayerIndex, i) => {
-    		isInActPoolDetailView = true;
-    		actPoolDetailViewNodeIndex = i;
-    		actPoolDetailViewLayerIndex = curLayerIndex;
-
-    		// Dynamically position the detail view
-    		let wholeSvg = d3.select('#cnn-svg');
-
-    		let svgYMid = +wholeSvg.style('height').replace('px', '') / 2;
-    		let svgWidth = +wholeSvg.style('width').replace('px', '');
-    		let detailViewTop = 100 + svgYMid - 260 / 2;
-    		let posX = 0;
-
-    		if (curLayerIndex > 5) {
-    			posX = nodeCoordinate[curLayerIndex - 1][0].x + 50;
-    			posX = posX / 2 - 500 / 2;
-    		} else {
-    			posX = (svgWidth - nodeCoordinate[curLayerIndex][0].x - nodeLength) / 2;
-    			posX = nodeCoordinate[curLayerIndex][0].x + nodeLength + posX - 500 / 2;
-    		}
-
-    		const detailview = document.getElementById('detailview');
-    		detailview.style.top = `${detailViewTop}px`;
-    		detailview.style.left = `${posX}px`;
-    		detailview.style.position = 'absolute';
-
-    		// Hide all edges
-    		let unimportantEdges = svg.select('g.edge-group').selectAll('.edge').filter(d => {
-    			return d.targetLayerIndex !== curLayerIndex;
-    		}).style('visibility', 'hidden');
-
-    		// Disable UI
-    		$$invalidate(6, disableControl = true);
-
-    		// Hide input annotaitons
-    		svg.select('.input-annotation').classed('hidden', true);
-
-    		// Hide legends
-    		svg.selectAll(`.${selectedScaleLevel}-legend`).classed('hidden', true);
-
-    		svg.selectAll('.input-legend').classed('hidden', true);
-    		svg.selectAll('.output-legend').classed('hidden', true);
-    		svg.select(`#${layerLegendDict[curLayerIndex][selectedScaleLevel]}`).classed('hidden', false);
-
-    		// Add overlay rects
-    		let leftX = nodeCoordinate[curLayerIndex - 1][i].x;
-
-    		// +5 to cover the detailed mode long label
-    		let rightStart = nodeCoordinate[curLayerIndex][i].x + nodeLength + 5;
-
-    		// Compute the left and right overlay rect width
-    		let rightWidth = width - rightStart - overlayRectOffset / 2;
-
-    		let leftWidth = leftX - nodeCoordinate[0][0].x;
-
-    		// The overlay rects should be symmetric
-    		if (rightWidth > leftWidth) {
-    			let stops = [
-    				{
-    					offset: '0%',
-    					color: 'rgb(250, 250, 250)',
-    					opacity: 0.85
-    				},
-    				{
-    					offset: '50%',
-    					color: 'rgb(250, 250, 250)',
-    					opacity: 0.9
-    				},
-    				{
-    					offset: '100%',
-    					color: 'rgb(250, 250, 250)',
-    					opacity: 1
-    				}
-    			];
-
-    			addOverlayGradient('overlay-gradient-right', stops);
-    			let leftEndOpacity = 0.85 + (0.95 - 0.85) * (leftWidth / rightWidth);
-
-    			stops = [
-    				{
-    					offset: '0%',
-    					color: 'rgb(250, 250, 250)',
-    					opacity: leftEndOpacity
-    				},
-    				{
-    					offset: '100%',
-    					color: 'rgb(250, 250, 250)',
-    					opacity: 0.85
-    				}
-    			];
-
-    			addOverlayGradient('overlay-gradient-left', stops);
-    		} else {
-    			let stops = [
-    				{
-    					offset: '0%',
-    					color: 'rgb(250, 250, 250)',
-    					opacity: 1
-    				},
-    				{
-    					offset: '50%',
-    					color: 'rgb(250, 250, 250)',
-    					opacity: 0.9
-    				},
-    				{
-    					offset: '100%',
-    					color: 'rgb(250, 250, 250)',
-    					opacity: 0.85
-    				}
-    			];
-
-    			addOverlayGradient('overlay-gradient-left', stops);
-    			let rightEndOpacity = 0.85 + (0.95 - 0.85) * (rightWidth / leftWidth);
-
-    			stops = [
-    				{
-    					offset: '0%',
-    					color: 'rgb(250, 250, 250)',
-    					opacity: 0.85
-    				},
-    				{
-    					offset: '100%',
-    					color: 'rgb(250, 250, 250)',
-    					opacity: rightEndOpacity
-    				}
-    			];
-
-    			addOverlayGradient('overlay-gradient-right', stops);
-    		}
-
-    		addOverlayRect('overlay-gradient-right', rightStart + overlayRectOffset / 2 + 0.5, 0, rightWidth, height + svgPaddings.top);
-    		addOverlayRect('overlay-gradient-left', nodeCoordinate[0][0].x - overlayRectOffset / 2, 0, leftWidth, height + svgPaddings.top);
-    		svg.selectAll('rect.overlay').on('click', emptySpaceClicked);
-
-    		// Add underneath rectangles
-    		let underGroup = svg.select('g.underneath');
-
-    		let padding = 7;
-
-    		for (let n = 0; n < cnn[curLayerIndex - 1].length; n++) {
-    			underGroup.append('rect').attr('class', 'underneath-gateway').attr('id', `underneath-gateway-${n}`).attr('x', nodeCoordinate[curLayerIndex - 1][n].x - padding).attr('y', nodeCoordinate[curLayerIndex - 1][n].y - padding).attr('width', 2 * nodeLength + hSpaceAroundGap + 2 * padding).attr('height', nodeLength + 2 * padding).attr('rx', 10).style('fill', 'rgba(160, 160, 160, 0.3)').style('opacity', 0);
-
-    			// Update the event functions for these two layers
-    			svg.select(`g#layer-${curLayerIndex - 1}-node-${n}`).style('pointer-events', 'all').style('cursor', 'pointer').on('mouseover', actPoolDetailViewPreNodeMouseOverHandler).on('mouseleave', actPoolDetailViewPreNodeMouseLeaveHandler).on('click', actPoolDetailViewPreNodeClickHandler);
-    		}
-
-    		underGroup.lower();
-
-    		// Highlight the selcted pair
-    		underGroup.select(`#underneath-gateway-${i}`).style('opacity', 1);
-    	};
-
-    	const quitIntermediateView = (curLayerIndex, g, i) => {
-    		// If it is the softmax detail view, quit that view first
-    		if (isInSoftmax) {
-    			svg.select('.logit-layer').remove();
-    			svg.select('.logit-layer-lower').remove();
-    			svg.selectAll('.plus-symbol-clone').remove();
-
-    			// Instead of removing the paths, we hide them, so it is faster to load in
-    			// the future
-    			svg.select('.underneath').selectAll('.logit-lower').style('opacity', 0);
-
-    			softmaxDetailViewStore.set({ show: false, logits: [] });
-    			allowsSoftmaxAnimationStore.set(false);
-    		}
-
-    		isInSoftmaxStore.set(false);
-    		isInIntermediateView = false;
-
-    		// Show the legend
-    		svg.selectAll(`.${selectedScaleLevel}-legend`).classed('hidden', !detailedMode);
-
-    		svg.selectAll('.input-legend').classed('hidden', !detailedMode);
-    		svg.selectAll('.output-legend').classed('hidden', !detailedMode);
-
-    		// Recover control panel UI
-    		$$invalidate(6, disableControl = false);
-
-    		// Recover the input layer node's event
-    		for (let n = 0; n < cnn[curLayerIndex - 1].length; n++) {
-    			svg.select(`g#layer-${curLayerIndex - 1}-node-${n}`).on('mouseover', nodeMouseOverHandler).on('mouseleave', nodeMouseLeaveHandler).on('click', nodeClickHandler);
-    		}
-
-    		// Clean up the underneath rects
-    		svg.select('g.underneath').selectAll('rect').remove();
-
-    		detailedViewNum = undefined;
-
-    		// Highlight the previous layer and this node
-    		svg.select(`g#cnn-layer-group-${curLayerIndex - 1}`).selectAll('rect.bounding').style('stroke-width', 1);
-
-    		d3.select(g[i]).select('rect.bounding').style('stroke-width', 1);
-
-    		// Highlight the labels
-    		svg.selectAll(`g#layer-label-${curLayerIndex - 1},
-      g#layer-detailed-label-${curLayerIndex - 1},
-      g#layer-label-${curLayerIndex},
-      g#layer-detailed-label-${curLayerIndex}`).style('font-weight', 'normal');
-
-    		// Also unclick the node
-    		// Record the current clicked node
-    		$$invalidate(5, selectedNode.layerName = '', selectedNode);
-
-    		$$invalidate(5, selectedNode.index = -1, selectedNode);
-    		$$invalidate(5, selectedNode.data = null, selectedNode);
-    		$$invalidate(11, isExitedFromCollapse = true);
-
-    		// Remove the intermediate layer
-    		let intermediateLayer = svg.select('g.intermediate-layer');
-
-    		// Kill the infinite animation loop
-    		shouldIntermediateAnimateStore.set(false);
-
-    		intermediateLayer.transition('remove').duration(500).ease(d3.easeCubicInOut).style('opacity', 0).on('end', (d, i, g) => {
-    			d3.select(g[i]).remove();
-    		});
-
-    		// Remove the output node overlay mask
-    		svg.selectAll('.overlay-group').remove();
-
-    		// Remove the overlay rect
-    		svg.selectAll('g.intermediate-layer-overlay, g.intermediate-layer-annotation').transition('remove').duration(500).ease(d3.easeCubicInOut).style('opacity', 0).on('end', (d, i, g) => {
-    			svg.selectAll('g.intermediate-layer-overlay, g.intermediate-layer-annotation').remove();
-    			svg.selectAll('defs.overlay-gradient').remove();
-    		});
-
-    		// Recover the layer if we have drdrawn it
-    		if (needRedraw[0] !== undefined) {
-    			let redrawRange = cnnLayerRanges[selectedScaleLevel][needRedraw[0]];
-
-    			if (needRedraw[1] !== undefined) {
-    				svg.select(`g#layer-${needRedraw[0]}-node-${needRedraw[1]}`).select('image.node-image').each((d, i, g) => drawOutput(d, i, g, redrawRange));
-    			} else {
-    				svg.select(`g#cnn-layer-group-${needRedraw[0]}`).selectAll('image.node-image').each((d, i, g) => drawOutput(d, i, g, redrawRange));
-    			}
-    		}
-
-    		// Move all layers to their original place
-    		for (let i = 0; i < numLayers; i++) {
-    			moveLayerX({
-    				layerIndex: i,
-    				targetX: nodeCoordinate[i][0].x,
-    				disable: false,
-    				delay: 500,
-    				opacity: 1
-    			});
-    		}
-
-    		moveLayerX({
-    			layerIndex: numLayers - 2,
-    			targetX: nodeCoordinate[numLayers - 2][0].x,
-    			opacity: 1,
-    			disable: false,
-    			delay: 500,
-    			onEndFunc: () => {
-    				// Show all edges on the last moving animation end
-    				svg.select('g.edge-group').style('visibility', 'visible');
-
-    				// Recover the input annotation
-    				svg.select('.input-annotation').classed('hidden', false);
-    			}
-    		});
-    	};
-
-    	const nodeClickHandler = (d, i, g) => {
-    		d3.event.stopPropagation();
-    		let nodeIndex = d.index;
-
-    		// Record the current clicked node
-    		$$invalidate(5, selectedNode.layerName = d.layerName, selectedNode);
-
-    		$$invalidate(5, selectedNode.index = d.index, selectedNode);
-    		$$invalidate(5, selectedNode.data = d, selectedNode);
-    		$$invalidate(5, selectedNode.domI = i, selectedNode);
-    		$$invalidate(5, selectedNode.domG = g, selectedNode);
-
-    		// Record data for detailed view.
-    		if (d.type === 'conv' || d.type === 'relu' || d.type === 'pool') {
-    			let data = [];
-
-    			for (let j = 0; j < d.inputLinks.length; j++) {
-    				data.push({
-    					input: d.inputLinks[j].source.output,
-    					kernel: d.inputLinks[j].weight,
-    					output: d.inputLinks[j].dest.output
-    				});
-    			}
-
-    			let curLayerIndex = layerIndexDict[d.layerName];
-    			data.colorRange = cnnLayerRanges[selectedScaleLevel][curLayerIndex];
-    			data.isInputInputLayer = curLayerIndex <= 1;
-    			$$invalidate(8, nodeData = data);
-    		}
-
-    		let curLayerIndex = layerIndexDict[d.layerName];
-
-    		if (d.type == 'relu' || d.type == 'pool') {
-    			$$invalidate(10, isExitedFromDetailedView = false);
-
-    			if (!isInActPoolDetailView) {
-    				// Enter the act pool detail view
-    				enterDetailView(curLayerIndex, d.index);
-    			} else {
-    				if (d.index === actPoolDetailViewNodeIndex) {
-    					// Quit the act pool detail view
-    					quitActPoolDetailView();
-    				} else {
-    					// Switch the detail view input to the new clicked pair
-    					// Remove the previous selection effect
-    					svg.select(`g#layer-${curLayerIndex}-node-${actPoolDetailViewNodeIndex}`).select('rect.bounding').classed('hidden', true);
-
-    					svg.select(`g#layer-${curLayerIndex - 1}-node-${actPoolDetailViewNodeIndex}`).select('rect.bounding').classed('hidden', true);
-    					let edgeGroup = svg.select('g.cnn-group').select('g.edge-group');
-    					edgeGroup.selectAll(`path.edge-${curLayerIndex}-${actPoolDetailViewNodeIndex}`).transition().ease(d3.easeCubicOut).duration(200).style('stroke', edgeInitColor).style('stroke-width', edgeStrokeWidth).style('opacity', edgeOpacity);
-    					let underGroup = svg.select('g.underneath');
-    					underGroup.select(`#underneath-gateway-${actPoolDetailViewNodeIndex}`).style('opacity', 0);
-
-    					// Add selection effect on the new selected pair
-    					svg.select(`g#layer-${curLayerIndex}-node-${nodeIndex}`).select('rect.bounding').classed('hidden', false);
-
-    					svg.select(`g#layer-${curLayerIndex - 1}-node-${nodeIndex}`).select('rect.bounding').classed('hidden', false);
-    					edgeGroup.selectAll(`path.edge-${curLayerIndex}-${nodeIndex}`).raise().transition().ease(d3.easeCubicInOut).duration(400).style('stroke', edgeHoverColor).style('stroke-width', '1').style('opacity', 1);
-    					underGroup.select(`#underneath-gateway-${nodeIndex}`).style('opacity', 1);
-    					actPoolDetailViewNodeIndex = nodeIndex;
-    				}
-    			}
-    		}
-
-    		// Enter the second view (layer-view) when user clicks a conv node
-    		if ((d.type === 'conv' || d.layerName === 'output') && !isInIntermediateView) {
-    			prepareToEnterIntermediateView(d, g, nodeIndex, curLayerIndex);
-
-    			if (d.layerName === 'conv_1_1') {
-    				drawConv1(curLayerIndex, d, nodeIndex, width, height, intermediateNodeMouseOverHandler, intermediateNodeMouseLeaveHandler, intermediateNodeClicked);
-    			} else if (d.layerName === 'conv_1_2') {
-    				drawConv2(curLayerIndex, d, nodeIndex, width, height, intermediateNodeMouseOverHandler, intermediateNodeMouseLeaveHandler, intermediateNodeClicked);
-    			} else if (d.layerName === 'conv_2_1') {
-    				drawConv3(curLayerIndex, d, nodeIndex, width, height, intermediateNodeMouseOverHandler, intermediateNodeMouseLeaveHandler, intermediateNodeClicked);
-    			} else if (d.layerName === 'conv_2_2') {
-    				drawConv4(curLayerIndex, d, nodeIndex, width, height, intermediateNodeMouseOverHandler, intermediateNodeMouseLeaveHandler, intermediateNodeClicked);
-    			} else if (d.layerName === 'output') {
-    				drawFlatten(curLayerIndex, d, nodeIndex, width, height);
-    			}
-    		} else // Quit the layerview
-    		if ((d.type === 'conv' || d.layerName === 'output') && isInIntermediateView) {
-    			quitIntermediateView(curLayerIndex, g, i);
-    		}
-    	};
-
-    	const nodeMouseOverHandler = (d, i, g) => {
-    		// if (isInIntermediateView || isInActPoolDetailView) { return; }
-    		if (isInIntermediateView) {
-    			return;
-    		}
-
-    		// Highlight the edges
-    		let layerIndex = layerIndexDict[d.layerName];
-
-    		let nodeIndex = d.index;
-    		let edgeGroup = svg.select('g.cnn-group').select('g.edge-group');
-    		edgeGroup.selectAll(`path.edge-${layerIndex}-${nodeIndex}`).raise().transition().ease(d3.easeCubicInOut).duration(400).style('stroke', edgeHoverColor).style('stroke-width', '1').style('opacity', 1);
-
-    		// Highlight its border
-    		d3.select(g[i]).select('rect.bounding').classed('hidden', false);
-
-    		// Highlight source's border
-    		if (d.inputLinks.length === 1) {
-    			let link = d.inputLinks[0];
-    			let layerIndex = layerIndexDict[link.source.layerName];
-    			let nodeIndex = link.source.index;
-    			svg.select(`g#layer-${layerIndex}-node-${nodeIndex}`).select('rect.bounding').classed('hidden', false);
-    		} else {
-    			svg.select(`g#cnn-layer-group-${layerIndex - 1}`).selectAll('g.node-group').selectAll('rect.bounding').classed('hidden', false);
-    		}
-
-    		// Highlight the output text
-    		if (d.layerName === 'output') {
-    			d3.select(g[i]).select('.output-text').style('opacity', 0.8).style('text-decoration', 'underline');
-    		}
-    	}; /* Use the following commented code if we have non-linear model
-    d.inputLinks.forEach(link => {
-      let layerIndex = layerIndexDict[link.source.layerName];
-      let nodeIndex = link.source.index;
-      svg.select(`g#layer-${layerIndex}-node-${nodeIndex}`)
-        .select('rect.bounding')
-        .classed('hidden', false);
-    });
-    */
-
-    	const nodeMouseLeaveHandler = (d, i, g) => {
-    		// Screenshot
-    		// return;
-    		if (isInIntermediateView) {
-    			return;
-    		}
-
-    		// Keep the highlight if user has clicked
-    		if (isInActPoolDetailView || (d.layerName !== selectedNode.layerName || d.index !== selectedNode.index)) {
-    			let layerIndex = layerIndexDict[d.layerName];
-    			let nodeIndex = d.index;
-    			let edgeGroup = svg.select('g.cnn-group').select('g.edge-group');
-    			edgeGroup.selectAll(`path.edge-${layerIndex}-${nodeIndex}`).transition().ease(d3.easeCubicOut).duration(200).style('stroke', edgeInitColor).style('stroke-width', edgeStrokeWidth).style('opacity', edgeOpacity);
-    			d3.select(g[i]).select('rect.bounding').classed('hidden', true);
-
-    			if (d.inputLinks.length === 1) {
-    				let link = d.inputLinks[0];
-    				let layerIndex = layerIndexDict[link.source.layerName];
-    				let nodeIndex = link.source.index;
-    				svg.select(`g#layer-${layerIndex}-node-${nodeIndex}`).select('rect.bounding').classed('hidden', true);
-    			} else {
-    				svg.select(`g#cnn-layer-group-${layerIndex - 1}`).selectAll('g.node-group').selectAll('rect.bounding').classed('hidden', d => d.layerName !== selectedNode.layerName || d.index !== selectedNode.index);
-    			}
-
-    			// Dehighlight the output text
-    			if (d.layerName === 'output') {
-    				d3.select(g[i]).select('.output-text').style('fill', 'black').style('opacity', 0.5).style('text-decoration', 'none');
-    			}
-    		} /* Use the following commented code if we have non-linear model
-    d.inputLinks.forEach(link => {
-      let layerIndex = layerIndexDict[link.source.layerName];
-      let nodeIndex = link.source.index;
-      svg.select(`g#layer-${layerIndex}-node-${nodeIndex}`)
-        .select('rect.bounding')
-        .classed('hidden', true);
-    });
-    */
-    	};
-
-    	let logits = [-4.28, 2.96, -0.38, 5.24, -7.56, -3.43, 8.63, 2.63, 6.30, 0.68];
-    	let selectedI = 4;
-
-    	onMount(async () => {
-    		// Create SVG
-    		wholeSvg = d3.select(overviewComponent).select('#cnn-svg');
-
-    		svg = wholeSvg.append('g').attr('class', 'main-svg').attr('transform', `translate(${svgPaddings.left}, 0)`);
-    		svgStore.set(svg);
-    		width = Number(wholeSvg.style('width').replace('px', '')) - svgPaddings.left - svgPaddings.right;
-    		height = Number(wholeSvg.style('height').replace('px', '')) - svgPaddings.top - svgPaddings.bottom;
-    		let cnnGroup = svg.append('g').attr('class', 'cnn-group');
-    		let underGroup = svg.append('g').attr('class', 'underneath');
-    		let svgYMid = +wholeSvg.style('height').replace('px', '') / 2;
-
-    		detailedViewAbsCoords = {
-    			1: [600, 100 + svgYMid - 220 / 2, 490, 290],
-    			2: [500, 100 + svgYMid - 220 / 2, 490, 290],
-    			3: [700, 100 + svgYMid - 220 / 2, 490, 290],
-    			4: [600, 100 + svgYMid - 220 / 2, 490, 290],
-    			5: [650, 100 + svgYMid - 220 / 2, 490, 290],
-    			6: [850, 100 + svgYMid - 220 / 2, 490, 290],
-    			7: [100, 100 + svgYMid - 220 / 2, 490, 290],
-    			8: [60, 100 + svgYMid - 220 / 2, 490, 290],
-    			9: [200, 100 + svgYMid - 220 / 2, 490, 290],
-    			10: [300, 100 + svgYMid - 220 / 2, 490, 290]
-    		};
-
-    		// Define global arrow marker end
-    		svg.append("defs").append("marker").attr("id", 'marker').attr("viewBox", "0 -5 10 10").attr("refX", 6).attr("refY", 0).attr("markerWidth", 6).attr("markerHeight", 6).attr("orient", "auto").append("path").style('stroke-width', 1.2).style('fill', 'gray').style('stroke', 'gray').attr("d", "M0,-5L10,0L0,5");
-
-    		// Alternative arrow head style for non-interactive annotation
-    		svg.append("defs").append("marker").attr("id", 'marker-alt').attr("viewBox", "0 -5 10 10").attr("refX", 6).attr("refY", 0).attr("markerWidth", 6).attr("markerHeight", 6).attr("orient", "auto").append("path").style('fill', 'none').style('stroke', 'gray').style('stroke-width', 2).attr("d", "M-5,-10L10,0L-5,10");
-
-    		console.time('Construct cnn');
-    		model = await loadTrainedModel('/assets/data/fer_tinyVGG/model.json');
-    		cnn = await constructCNN(`/assets/img/${selectedImage}`, model);
-    		console.timeEnd('Construct cnn');
-    		cnnStore.set(cnn);
-
-    		// Ignore the flatten layer for now
-    		let flatten = cnn[cnn.length - 2];
-
-    		cnn.splice(cnn.length - 2, 1);
-    		cnn.flatten = flatten;
-    		updateCNNLayerRanges();
-
-    		// Create and draw the CNN view
-    		drawCNN(width, height, cnnGroup, nodeMouseOverHandler, nodeMouseLeaveHandler, nodeClickHandler);
-    	});
-
-    	const detailedButtonClicked = () => {
-    		$$invalidate(2, detailedMode = !detailedMode);
-    		detailedModeStore.set(detailedMode);
-
-    		if (!isInIntermediateView) {
-    			// Show the legend
-    			svg.selectAll(`.${selectedScaleLevel}-legend`).classed('hidden', !detailedMode);
-
-    			svg.selectAll('.input-legend').classed('hidden', !detailedMode);
-    			svg.selectAll('.output-legend').classed('hidden', !detailedMode);
-    		}
-
-    		// Switch the layer name
-    		svg.selectAll('.layer-detailed-label').classed('hidden', !detailedMode);
-
-    		svg.selectAll('.layer-label').classed('hidden', detailedMode);
-    	};
-
-    	const imageOptionClicked = async e => {
-    		let newImageName = d3.select(e.target).attr('data-imageName');
-
-    		if (newImageName !== selectedImage) {
-    			$$invalidate(7, selectedImage = newImageName);
-
-    			// Re-compute the CNN using the new input image
-    			cnn = await constructCNN(`/assets/img/${selectedImage}`, model);
-
-    			// Ignore the flatten layer for now
-    			let flatten = cnn[cnn.length - 2];
-
-    			cnn.splice(cnn.length - 2, 1);
-    			cnn.flatten = flatten;
-    			cnnStore.set(cnn);
-
-    			// Update all scales used in the CNN view
-    			updateCNNLayerRanges();
-
-    			updateCNN();
-    		}
-    	};
-
-    	const customImageClicked = () => {
-    		// Case 1: there is no custom image -> show the modal to get user input
-    		if (customImageURL === null) {
-    			modalInfo.show = true;
-    			modalInfo.preImage = selectedImage;
-    			modalStore.set(modalInfo);
-    		} else // Case 2: there is an existing custom image, not the focus -> switch to this image
-    		if (selectedImage !== 'custom') {
-    			let fakeEvent = { detail: { url: customImageURL } };
-    			handleCustomImage(fakeEvent);
-    		} else // Case 3: there is an existing custom image, and its the focus -> let user
-    		// upload a new image
-    		{
-    			modalInfo.show = true;
-    			modalInfo.preImage = selectedImage;
-    			modalStore.set(modalInfo);
-    		}
-
-    		if (selectedImage !== 'custom') {
-    			$$invalidate(7, selectedImage = 'custom');
-    		}
-    	};
-
-    	const handleModalCanceled = event => {
-    		// User cancels the modal without a successful image, so we restore the
-    		// previous selected image as input
-    		$$invalidate(7, selectedImage = event.detail.preImage);
-    	};
-
-    	const handleCustomImage = async event => {
-    		// User gives a valid image URL
-    		$$invalidate(12, customImageURL = event.detail.url);
-
-    		// Re-compute the CNN using the new input image
-    		cnn = await constructCNN(customImageURL, model);
-
-    		// Ignore the flatten layer for now
-    		let flatten = cnn[cnn.length - 2];
-
-    		cnn.splice(cnn.length - 2, 1);
-    		cnn.flatten = flatten;
-    		cnnStore.set(cnn);
-
-    		// Update the UI
-    		let customImageSlot = d3.select(overviewComponent).select('.custom-image').node();
-
-    		drawCustomImage(customImageSlot, cnn[0]);
-
-    		// Update all scales used in the CNN view
-    		updateCNNLayerRanges();
-
-    		updateCNN();
-    	};
-
-    	function handleExitFromDetiledConvView(event) {
-    		if (event.detail.text) {
-    			detailedViewNum = undefined;
-    			svg.select(`rect#underneath-gateway-${selectedNodeIndex}`).style('opacity', 0);
-    			$$invalidate(9, selectedNodeIndex = -1);
-    		}
-    	}
-
-    	function handleExitFromDetiledPoolView(event) {
-    		if (event.detail.text) {
-    			quitActPoolDetailView();
-    			$$invalidate(10, isExitedFromDetailedView = true);
-    		}
-    	}
-
-    	function handleExitFromDetiledActivationView(event) {
-    		if (event.detail.text) {
-    			quitActPoolDetailView();
-    			$$invalidate(10, isExitedFromDetailedView = true);
-    		}
-    	}
-
-    	function handleExitFromDetiledSoftmaxView(event) {
-    		$$invalidate(3, softmaxDetailViewInfo.show = false, softmaxDetailViewInfo);
-    		softmaxDetailViewStore.set(softmaxDetailViewInfo);
-    	}
-
-    	const writable_props = [];
-
-    	Object_1.keys($$props).forEach(key => {
-    		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== '$$' && key !== 'slot') console_1$2.warn(`<Cnn> was created with unknown prop '${key}'`);
-    	});
-
-    	function select_change_handler() {
-    		selectedScaleLevel = select_value(this);
-    		$$invalidate(0, selectedScaleLevel);
-    	}
-
-    	function div6_binding($$value) {
-    		binding_callbacks[$$value ? 'unshift' : 'push'](() => {
-    			overviewComponent = $$value;
-    			$$invalidate(1, overviewComponent);
-    		});
-    	}
-
-    	$$self.$capture_state = () => ({
-    		onMount,
-    		cnnStore,
-    		svgStore,
-    		vSpaceAroundGapStore,
-    		hSpaceAroundGapStore,
-    		nodeCoordinateStore,
-    		selectedScaleLevelStore,
-    		cnnLayerRangesStore,
-    		needRedrawStore,
-    		cnnLayerMinMaxStore,
-    		detailedModeStore,
-    		shouldIntermediateAnimateStore,
-    		isInSoftmaxStore,
-    		softmaxDetailViewStore,
-    		hoverInfoStore,
-    		allowsSoftmaxAnimationStore,
-    		modalStore,
-    		intermediateLayerPositionStore,
-    		leftStartStore,
-    		ConvolutionView: Convolutionview,
-    		ActivationView: Activationview,
-    		PoolView: Poolview,
-    		SoftmaxView: Softmaxview,
-    		Modal,
-    		Article,
-    		loadTrainedModel,
-    		constructCNN,
-    		overviewConfig,
-    		addOverlayRect,
-    		drawConv1,
-    		drawConv2,
-    		drawConv3,
-    		drawConv4,
-    		moveLayerX,
-    		addOverlayGradient,
-    		drawFlatten,
-    		softmaxDetailViewMouseOverHandler,
-    		softmaxDetailViewMouseLeaveHandler,
-    		drawOutput,
-    		drawCNN,
-    		updateCNN,
-    		updateCNNLayerRanges,
-    		drawCustomImage,
-    		afficheStart,
-    		overviewComponent,
-    		scaleLevelSet,
-    		selectedScaleLevel,
-    		previousSelectedScaleLevel,
-    		wholeSvg,
-    		svg,
-    		layerColorScales,
-    		nodeLength,
-    		plusSymbolRadius,
-    		numLayers,
-    		edgeOpacity,
-    		edgeInitColor,
-    		edgeHoverColor,
-    		edgeHoverOuting,
-    		edgeStrokeWidth,
-    		intermediateColor,
-    		kernelRectLength,
-    		svgPaddings,
-    		gapRatio,
-    		overlayRectOffset,
-    		classLists,
-    		needRedraw,
-    		nodeCoordinate,
-    		cnnLayerRanges,
-    		cnnLayerMinMax,
-    		detailedMode,
-    		shouldIntermediateAnimate,
-    		vSpaceAroundGap,
-    		hSpaceAroundGap,
-    		isInSoftmax,
-    		softmaxDetailViewInfo,
-    		modalInfo,
-    		hoverInfo,
-    		intermediateLayerPosition,
-    		width,
-    		height,
-    		model,
-    		selectedNode,
-    		isInIntermediateView,
-    		isInActPoolDetailView,
-    		actPoolDetailViewNodeIndex,
-    		actPoolDetailViewLayerIndex,
-    		detailedViewNum,
-    		disableControl,
-    		cnn,
-    		detailedViewAbsCoords,
-    		layerIndexDict,
-    		layerLegendDict,
-    		imageOptions,
-    		selectedImage,
-    		nodeData,
-    		selectedNodeIndex,
-    		isExitedFromDetailedView,
-    		isExitedFromCollapse,
-    		customImageURL,
-    		selectedScaleLevelChanged,
-    		intermediateNodeMouseOverHandler,
-    		intermediateNodeMouseLeaveHandler,
-    		intermediateNodeClicked,
-    		emptySpaceClicked,
-    		prepareToEnterIntermediateView,
-    		quitActPoolDetailView,
-    		actPoolDetailViewPreNodeMouseOverHandler,
-    		actPoolDetailViewPreNodeMouseLeaveHandler,
-    		actPoolDetailViewPreNodeClickHandler,
-    		enterDetailView,
-    		quitIntermediateView,
-    		nodeClickHandler,
-    		nodeMouseOverHandler,
-    		nodeMouseLeaveHandler,
-    		logits,
-    		selectedI,
-    		detailedButtonClicked,
-    		imageOptionClicked,
-    		customImageClicked,
-    		handleModalCanceled,
-    		handleCustomImage,
-    		handleExitFromDetiledConvView,
-    		handleExitFromDetiledPoolView,
-    		handleExitFromDetiledActivationView,
-    		handleExitFromDetiledSoftmaxView
-    	});
-
-    	$$self.$inject_state = $$props => {
-    		if ('overviewComponent' in $$props) $$invalidate(1, overviewComponent = $$props.overviewComponent);
-    		if ('scaleLevelSet' in $$props) scaleLevelSet = $$props.scaleLevelSet;
-    		if ('selectedScaleLevel' in $$props) $$invalidate(0, selectedScaleLevel = $$props.selectedScaleLevel);
-    		if ('previousSelectedScaleLevel' in $$props) previousSelectedScaleLevel = $$props.previousSelectedScaleLevel;
-    		if ('wholeSvg' in $$props) wholeSvg = $$props.wholeSvg;
-    		if ('svg' in $$props) svg = $$props.svg;
-    		if ('needRedraw' in $$props) needRedraw = $$props.needRedraw;
-    		if ('nodeCoordinate' in $$props) nodeCoordinate = $$props.nodeCoordinate;
-    		if ('cnnLayerRanges' in $$props) cnnLayerRanges = $$props.cnnLayerRanges;
-    		if ('cnnLayerMinMax' in $$props) cnnLayerMinMax = $$props.cnnLayerMinMax;
-    		if ('detailedMode' in $$props) $$invalidate(2, detailedMode = $$props.detailedMode);
-    		if ('shouldIntermediateAnimate' in $$props) shouldIntermediateAnimate = $$props.shouldIntermediateAnimate;
-    		if ('vSpaceAroundGap' in $$props) vSpaceAroundGap = $$props.vSpaceAroundGap;
-    		if ('hSpaceAroundGap' in $$props) hSpaceAroundGap = $$props.hSpaceAroundGap;
-    		if ('isInSoftmax' in $$props) isInSoftmax = $$props.isInSoftmax;
-    		if ('softmaxDetailViewInfo' in $$props) $$invalidate(3, softmaxDetailViewInfo = $$props.softmaxDetailViewInfo);
-    		if ('modalInfo' in $$props) modalInfo = $$props.modalInfo;
-    		if ('hoverInfo' in $$props) $$invalidate(4, hoverInfo = $$props.hoverInfo);
-    		if ('intermediateLayerPosition' in $$props) intermediateLayerPosition = $$props.intermediateLayerPosition;
-    		if ('width' in $$props) width = $$props.width;
-    		if ('height' in $$props) height = $$props.height;
-    		if ('model' in $$props) model = $$props.model;
-    		if ('selectedNode' in $$props) $$invalidate(5, selectedNode = $$props.selectedNode);
-    		if ('isInIntermediateView' in $$props) isInIntermediateView = $$props.isInIntermediateView;
-    		if ('isInActPoolDetailView' in $$props) isInActPoolDetailView = $$props.isInActPoolDetailView;
-    		if ('actPoolDetailViewNodeIndex' in $$props) actPoolDetailViewNodeIndex = $$props.actPoolDetailViewNodeIndex;
-    		if ('actPoolDetailViewLayerIndex' in $$props) actPoolDetailViewLayerIndex = $$props.actPoolDetailViewLayerIndex;
-    		if ('detailedViewNum' in $$props) detailedViewNum = $$props.detailedViewNum;
-    		if ('disableControl' in $$props) $$invalidate(6, disableControl = $$props.disableControl);
-    		if ('cnn' in $$props) cnn = $$props.cnn;
-    		if ('detailedViewAbsCoords' in $$props) detailedViewAbsCoords = $$props.detailedViewAbsCoords;
-    		if ('imageOptions' in $$props) $$invalidate(15, imageOptions = $$props.imageOptions);
-    		if ('selectedImage' in $$props) $$invalidate(7, selectedImage = $$props.selectedImage);
-    		if ('nodeData' in $$props) $$invalidate(8, nodeData = $$props.nodeData);
-    		if ('selectedNodeIndex' in $$props) $$invalidate(9, selectedNodeIndex = $$props.selectedNodeIndex);
-    		if ('isExitedFromDetailedView' in $$props) $$invalidate(10, isExitedFromDetailedView = $$props.isExitedFromDetailedView);
-    		if ('isExitedFromCollapse' in $$props) $$invalidate(11, isExitedFromCollapse = $$props.isExitedFromCollapse);
-    		if ('customImageURL' in $$props) $$invalidate(12, customImageURL = $$props.customImageURL);
-    		if ('logits' in $$props) logits = $$props.logits;
-    		if ('selectedI' in $$props) selectedI = $$props.selectedI;
-    	};
-
-    	if ($$props && "$$inject" in $$props) {
-    		$$self.$inject_state($$props.$$inject);
-    	}
-
-    	$$self.$$.update = () => {
-    		if ($$self.$$.dirty[0] & /*selectedScaleLevel*/ 1) {
-    			 (selectedScaleLevelChanged());
-    		}
-    	};
-
-    	return [
-    		selectedScaleLevel,
-    		overviewComponent,
-    		detailedMode,
-    		softmaxDetailViewInfo,
-    		hoverInfo,
-    		selectedNode,
-    		disableControl,
-    		selectedImage,
-    		nodeData,
-    		selectedNodeIndex,
-    		isExitedFromDetailedView,
-    		isExitedFromCollapse,
-    		customImageURL,
-    		afficheStart,
-    		layerColorScales,
-    		imageOptions,
-    		detailedButtonClicked,
-    		imageOptionClicked,
-    		customImageClicked,
-    		handleModalCanceled,
-    		handleCustomImage,
-    		handleExitFromDetiledConvView,
-    		handleExitFromDetiledPoolView,
-    		handleExitFromDetiledActivationView,
-    		handleExitFromDetiledSoftmaxView,
-    		select_change_handler,
-    		div6_binding
-    	];
-    }
-
-    class Cnn extends SvelteComponentDev {
-    	constructor(options) {
-    		super(options);
-    		init(this, options, instance$b, create_fragment$b, safe_not_equal, {}, null, [-1, -1, -1]);
-
-    		dispatch_dev("SvelteRegisterComponent", {
-    			component: this,
-    			tagName: "Cnn",
-    			options,
-    			id: create_fragment$b.name
-    		});
-    	}
-    }
-
-    /* src\overview\Presentation.svelte generated by Svelte v3.47.0 */
-    const file$c = "src\\overview\\Presentation.svelte";
-
-    function create_fragment$c(ctx) {
-    	let div12;
-    	let div11;
-    	let div10;
-    	let div6;
-    	let div4;
-    	let div2;
-    	let article0;
-    	let h2;
-    	let t1;
-    	let div0;
-    	let button0;
-    	let span0;
-    	let i0;
-    	let t2;
-    	let span1;
-    	let t4;
-    	let article1;
-    	let p0;
-    	let t6;
-    	let p1;
-    	let t8;
-    	let div1;
-    	let button1;
-    	let span2;
-    	let i1;
-    	let t9;
-    	let span3;
-    	let t11;
-    	let div3;
-    	let article2;
-    	let p2;
-    	let t13;
-    	let p3;
-    	let t15;
-    	let figure;
-    	let img;
-    	let img_src_value;
-    	let t16;
-    	let div5;
-    	let article3;
-    	let p4;
-    	let t18;
-    	let p5;
-    	let t20;
-    	let div9;
-    	let article4;
-    	let div8;
-    	let p6;
-    	let t22;
-    	let div7;
-    	let p7;
-    	let t24;
-    	let p8;
-    	let t26;
-    	let p9;
-    	let t28;
-    	let button2;
-    	let span4;
-    	let i2;
-    	let t29;
-    	let span5;
-    	let mounted;
-    	let dispose;
-    	add_render_callback(/*onwindowresize*/ ctx[4]);
-
-    	const block = {
-    		c: function create() {
-    			div12 = element("div");
-    			div11 = element("div");
-    			div10 = element("div");
-    			div6 = element("div");
-    			div4 = element("div");
-    			div2 = element("div");
-    			article0 = element("article");
-    			h2 = element("h2");
-    			h2.textContent = "Obtenir son profil d'apprenant";
-    			t1 = space();
-    			div0 = element("div");
-    			button0 = element("button");
-    			span0 = element("span");
-    			i0 = element("i");
-    			t2 = space();
-    			span1 = element("span");
-    			span1.textContent = "Faire le test";
-    			t4 = space();
-    			article1 = element("article");
-    			p0 = element("p");
-    			p0.textContent = "DataTrainX";
-    			t6 = space();
-    			p1 = element("p");
-    			p1.textContent = "A travers la saisie d’un questionnaire (Kolb) nous cherchons à déterminer un profil d’apprenant dans le projet DataTrainx. L’utilisateur sera enregistré en vidéo et une comparaison sera effectuée avec les émotions que vous aurez exprimées.";
-    			t8 = space();
-    			div1 = element("div");
-    			button1 = element("button");
-    			span2 = element("span");
-    			i1 = element("i");
-    			t9 = space();
-    			span3 = element("span");
-    			span3.textContent = "En savoir plus";
-    			t11 = space();
-    			div3 = element("div");
-    			article2 = element("article");
-    			p2 = element("p");
-    			p2.textContent = "Capture vidéo";
-    			t13 = space();
-    			p3 = element("p");
-    			p3.textContent = "Prêt à capturer vos émotions ?";
-    			t15 = space();
-    			figure = element("figure");
-    			img = element("img");
-    			t16 = space();
-    			div5 = element("div");
-    			article3 = element("article");
-    			p4 = element("p");
-    			p4.textContent = "Protection de votre image";
-    			t18 = space();
-    			p5 = element("p");
-    			p5.textContent = "Des données collectés uniquement à des fins de recherche en partenaria avec l'IPST CNAM de l'université de Toulouse. DataTrainX est un projet d'étude personnel dans le cadre de mon mémoire d'ingénieur. Les données sont collectés sur mon propre serveur, il n'y a aucun autre intermédiaire et les données transitent de manière cryptée!";
-    			t20 = space();
-    			div9 = element("div");
-    			article4 = element("article");
-    			div8 = element("div");
-    			p6 = element("p");
-    			p6.textContent = "Réseau neuronal convolutif";
-    			t22 = space();
-    			div7 = element("div");
-    			p7 = element("p");
-    			p7.textContent = "En apprentissage automatique, un réseau de neurones convolutifs, appellé aussi CNN, est un type de réseau de neurones artificiels, dans lequel le motif de connexion entre les neurones est inspiré par le cortex visuel des animaux. Les neurones de cette région du cerveau sont arrangés de sorte qu'ils correspondent à des régions qui se chevauchent lors du pavage du champ visuel.";
-    			t24 = space();
-    			p8 = element("p");
-    			p8.textContent = "Leur fonctionnement est inspiré par les processus biologiques, ils consistent en un empilage multicouche de perceptrons, dont le but est de prétraiter de petites quantités d'informations.";
-    			t26 = space();
-    			p9 = element("p");
-    			p9.textContent = "Les réseaux neuronaux convolutifs ont de larges applications dans la reconnaissance d'image et vidéo, les systèmes de recommandation et le traitement du langage naturel.";
-    			t28 = space();
-    			button2 = element("button");
-    			span4 = element("span");
-    			i2 = element("i");
-    			t29 = space();
-    			span5 = element("span");
-    			span5.textContent = "Comment ça marche ?";
-    			attr_dev(h2, "class", "svelte-gh4brt");
-    			add_location(h2, file$c, 51, 26, 1341);
-    			attr_dev(i0, "class", "fa-solid fa-address-card");
-    			add_location(i0, file$c, 55, 34, 1664);
-    			attr_dev(span0, "class", "icon");
-    			add_location(span0, file$c, 54, 32, 1609);
-    			add_location(span1, file$c, 57, 34, 1781);
-    			attr_dev(button0, "class", "button are-medium center is-link is-rounded");
-    			add_location(button0, file$c, 53, 30, 1472);
-    			attr_dev(div0, "class", "buttons are-medium");
-    			add_location(div0, file$c, 52, 26, 1408);
-    			attr_dev(article0, "class", "tile is-child notification is-primary svelte-gh4brt");
-    			add_location(article0, file$c, 50, 22, 1258);
-    			attr_dev(p0, "class", "title logo-text");
-    			add_location(p0, file$c, 62, 26, 2023);
-    			add_location(p1, file$c, 63, 26, 2092);
-    			attr_dev(i1, "class", "fa-solid fa-circle-info");
-    			add_location(i1, file$c, 67, 36, 2637);
-    			attr_dev(span2, "class", "icon");
-    			add_location(span2, file$c, 66, 32, 2580);
-    			add_location(span3, file$c, 69, 34, 2753);
-    			attr_dev(button1, "class", "button are-medium right is-warning is-light");
-    			add_location(button1, file$c, 65, 30, 2419);
-    			attr_dev(div1, "class", "buttons");
-    			add_location(div1, file$c, 64, 26, 2366);
-    			attr_dev(article1, "class", "tile is-child notification is-warning svelte-gh4brt");
-    			add_location(article1, file$c, 61, 22, 1940);
-    			attr_dev(div2, "class", "tile is-parent is-vertical");
-    			add_location(div2, file$c, 49, 18, 1194);
-    			attr_dev(p2, "class", "title");
-    			add_location(p2, file$c, 76, 26, 3067);
-    			attr_dev(p3, "class", "subtitle");
-    			add_location(p3, file$c, 77, 26, 3129);
-    			if (!src_url_equal(img.src, img_src_value = "https://bulma.io/images/placeholders/640x480.png")) attr_dev(img, "src", img_src_value);
-    			add_location(img, file$c, 79, 30, 3273);
-    			attr_dev(figure, "class", "image is-4by3");
-    			add_location(figure, file$c, 78, 26, 3211);
-    			attr_dev(article2, "class", "tile is-child notification is-info svelte-gh4brt");
-    			add_location(article2, file$c, 75, 22, 2987);
-    			attr_dev(div3, "class", "tile is-parent");
-    			add_location(div3, file$c, 74, 18, 2935);
-    			attr_dev(div4, "class", "tile");
-    			add_location(div4, file$c, 48, 14, 1156);
-    			attr_dev(p4, "class", "title");
-    			add_location(p4, file$c, 86, 22, 3594);
-    			attr_dev(p5, "class", "");
-    			add_location(p5, file$c, 87, 22, 3664);
-    			attr_dev(article3, "class", "tile is-child notification is-danger svelte-gh4brt");
-    			add_location(article3, file$c, 85, 18, 3516);
-    			attr_dev(div5, "class", "tile is-parent");
-    			add_location(div5, file$c, 84, 14, 3468);
-    			attr_dev(div6, "class", "tile is-vertical is-8");
-    			add_location(div6, file$c, 47, 10, 1105);
-    			attr_dev(p6, "class", "title");
-    			add_location(p6, file$c, 94, 22, 4259);
-    			add_location(p7, file$c, 96, 26, 4379);
-    			add_location(p8, file$c, 97, 26, 4792);
-    			add_location(p9, file$c, 98, 26, 5014);
-    			attr_dev(i2, "class", "fas fa-eye");
-    			add_location(i2, file$c, 101, 30, 5396);
-    			attr_dev(span4, "class", "icon");
-    			add_location(span4, file$c, 100, 28, 5345);
-    			add_location(span5, file$c, 103, 30, 5491);
-    			attr_dev(button2, "class", "button is-primary");
-    			attr_dev(button2, "id", "explain-button");
-    			add_location(button2, file$c, 99, 26, 5218);
-    			attr_dev(div7, "class", "content");
-    			add_location(div7, file$c, 95, 22, 4330);
-    			attr_dev(div8, "class", "content");
-    			add_location(div8, file$c, 93, 18, 4214);
-    			attr_dev(article4, "class", "tile is-child notification is-success svelte-gh4brt");
-    			add_location(article4, file$c, 92, 14, 4139);
-    			attr_dev(div9, "class", "tile is-parent");
-    			add_location(div9, file$c, 91, 10, 4095);
-    			attr_dev(div10, "class", "tile is-ancestor svelte-gh4brt");
-    			set_style(div10, "height", /*innerHeight*/ ctx[1] - /*top*/ ctx[3] + "px");
-    			add_location(div10, file$c, 46, 6, 1023);
-    			attr_dev(div11, "class", "container");
-    			add_location(div11, file$c, 45, 2, 992);
-    			attr_dev(div12, "id", "home");
-    			attr_dev(div12, "class", "start jumbotron text-center svelte-gh4brt");
-    			set_style(div12, "height", /*innerHeight*/ ctx[1] - /*top*/ ctx[3] + "px");
-    			set_style(div12, "left", /*leftStartValue*/ ctx[2] + "px");
-    			add_location(div12, file$c, 44, 0, 873);
-    		},
-    		l: function claim(nodes) {
-    			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
-    		},
-    		m: function mount(target, anchor) {
-    			insert_dev(target, div12, anchor);
-    			append_dev(div12, div11);
-    			append_dev(div11, div10);
-    			append_dev(div10, div6);
-    			append_dev(div6, div4);
-    			append_dev(div4, div2);
-    			append_dev(div2, article0);
-    			append_dev(article0, h2);
-    			append_dev(article0, t1);
-    			append_dev(article0, div0);
-    			append_dev(div0, button0);
-    			append_dev(button0, span0);
-    			append_dev(span0, i0);
-    			append_dev(button0, t2);
-    			append_dev(button0, span1);
-    			append_dev(div2, t4);
-    			append_dev(div2, article1);
-    			append_dev(article1, p0);
-    			append_dev(article1, t6);
-    			append_dev(article1, p1);
-    			append_dev(article1, t8);
-    			append_dev(article1, div1);
-    			append_dev(div1, button1);
-    			append_dev(button1, span2);
-    			append_dev(span2, i1);
-    			append_dev(button1, t9);
-    			append_dev(button1, span3);
-    			append_dev(div4, t11);
-    			append_dev(div4, div3);
-    			append_dev(div3, article2);
-    			append_dev(article2, p2);
-    			append_dev(article2, t13);
-    			append_dev(article2, p3);
-    			append_dev(article2, t15);
-    			append_dev(article2, figure);
-    			append_dev(figure, img);
-    			append_dev(div6, t16);
-    			append_dev(div6, div5);
-    			append_dev(div5, article3);
-    			append_dev(article3, p4);
-    			append_dev(article3, t18);
-    			append_dev(article3, p5);
-    			append_dev(div10, t20);
-    			append_dev(div10, div9);
-    			append_dev(div9, article4);
-    			append_dev(article4, div8);
-    			append_dev(div8, p6);
-    			append_dev(div8, t22);
-    			append_dev(div8, div7);
-    			append_dev(div7, p7);
-    			append_dev(div7, t24);
-    			append_dev(div7, p8);
-    			append_dev(div7, t26);
-    			append_dev(div7, p9);
-    			append_dev(div7, t28);
-    			append_dev(div7, button2);
-    			append_dev(button2, span4);
-    			append_dev(span4, i2);
-    			append_dev(button2, t29);
-    			append_dev(button2, span5);
-
-    			if (!mounted) {
-    				dispose = [
-    					listen_dev(window, "resize", /*onwindowresize*/ ctx[4]),
-    					listen_dev(
-    						button0,
-    						"click",
-    						function () {
-    							if (is_function(leftStartStore.set(-/*innerWidth*/ ctx[0]))) leftStartStore.set(-/*innerWidth*/ ctx[0]).apply(this, arguments);
-    						},
-    						false,
-    						false,
-    						false
-    					),
-    					listen_dev(button1, "click", /*click_handler*/ ctx[5], false, false, false),
-    					listen_dev(
-    						button2,
-    						"click",
-    						function () {
-    							if (is_function(leftStartStore.set(-/*innerWidth*/ ctx[0]))) leftStartStore.set(-/*innerWidth*/ ctx[0]).apply(this, arguments);
-    						},
-    						false,
-    						false,
-    						false
-    					)
-    				];
-
-    				mounted = true;
-    			}
-    		},
-    		p: function update(new_ctx, [dirty]) {
-    			ctx = new_ctx;
-
-    			if (dirty & /*innerHeight*/ 2) {
-    				set_style(div10, "height", /*innerHeight*/ ctx[1] - /*top*/ ctx[3] + "px");
-    			}
-
-    			if (dirty & /*innerHeight*/ 2) {
-    				set_style(div12, "height", /*innerHeight*/ ctx[1] - /*top*/ ctx[3] + "px");
-    			}
-
-    			if (dirty & /*leftStartValue*/ 4) {
-    				set_style(div12, "left", /*leftStartValue*/ ctx[2] + "px");
-    			}
-    		},
-    		i: noop,
-    		o: noop,
-    		d: function destroy(detaching) {
-    			if (detaching) detach_dev(div12);
-    			mounted = false;
-    			run_all(dispose);
-    		}
-    	};
-
-    	dispatch_dev("SvelteRegisterBlock", {
-    		block,
-    		id: create_fragment$c.name,
-    		type: "component",
-    		source: "",
-    		ctx
-    	});
-
-    	return block;
-    }
-
-    function instance$c($$self, $$props, $$invalidate) {
-    	let { $$slots: slots = {}, $$scope } = $$props;
-    	validate_slots('Presentation', slots, []);
-    	let innerWidth;
-    	let innerHeight;
-    	let clientHeight;
-    	let top = 50;
-    	let leftStartValue;
-
-    	leftStartStore.subscribe(value => {
-    		$$invalidate(2, leftStartValue = value);
-    	});
-
-    	const writable_props = [];
-
-    	Object.keys($$props).forEach(key => {
-    		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== '$$' && key !== 'slot') console.warn(`<Presentation> was created with unknown prop '${key}'`);
-    	});
-
-    	function onwindowresize() {
-    		$$invalidate(1, innerHeight = window.innerHeight);
-    		$$invalidate(0, innerWidth = window.innerWidth);
-    	}
-
-    	const click_handler = () => scrollTo({ element: "#description" });
-
-    	$$self.$capture_state = () => ({
-    		animateScroll,
-    		leftStartStore,
-    		innerWidth,
-    		innerHeight,
-    		clientHeight,
-    		top,
-    		leftStartValue
-    	});
-
-    	$$self.$inject_state = $$props => {
-    		if ('innerWidth' in $$props) $$invalidate(0, innerWidth = $$props.innerWidth);
-    		if ('innerHeight' in $$props) $$invalidate(1, innerHeight = $$props.innerHeight);
-    		if ('clientHeight' in $$props) clientHeight = $$props.clientHeight;
-    		if ('top' in $$props) $$invalidate(3, top = $$props.top);
-    		if ('leftStartValue' in $$props) $$invalidate(2, leftStartValue = $$props.leftStartValue);
-    	};
-
-    	if ($$props && "$$inject" in $$props) {
-    		$$self.$inject_state($$props.$$inject);
-    	}
-
-    	return [innerWidth, innerHeight, leftStartValue, top, onwindowresize, click_handler];
-    }
-
-    class Presentation extends SvelteComponentDev {
-    	constructor(options) {
-    		super(options);
-    		init(this, options, instance$c, create_fragment$c, safe_not_equal, {});
-
-    		dispatch_dev("SvelteRegisterComponent", {
-    			component: this,
-    			tagName: "Presentation",
-    			options,
-    			id: create_fragment$c.name
-    		});
-    	}
-    }
-
-    /* src\Datatrainx.svelte generated by Svelte v3.47.0 */
-    const file$d = "src\\Datatrainx.svelte";
-
-    function create_fragment$d(ctx) {
-    	let main;
-    	let section0;
-    	let start;
-    	let t0;
-    	let section1;
-    	let cnn;
-    	let t1;
-    	let section2;
-    	let article;
-    	let current;
-    	start = new Presentation({ $$inline: true });
-    	cnn = new Cnn({ $$inline: true });
-    	article = new Article({ $$inline: true });
-
-    	const block = {
-    		c: function create() {
-    			main = element("main");
-    			section0 = element("section");
-    			create_component(start.$$.fragment);
-    			t0 = space();
-    			section1 = element("section");
-    			create_component(cnn.$$.fragment);
-    			t1 = space();
-    			section2 = element("section");
-    			create_component(article.$$.fragment);
-    			attr_dev(section0, "id", "start");
-    			add_location(section0, file$d, 33, 4, 700);
-    			attr_dev(section1, "id", "cnn");
-    			attr_dev(section1, "class", "svelte-1nuj68o");
-    			add_location(section1, file$d, 36, 4, 757);
-    			attr_dev(section2, "id", "description");
-    			add_location(section2, file$d, 39, 4, 810);
-    			add_location(main, file$d, 32, 0, 689);
-    		},
-    		l: function claim(nodes) {
-    			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
-    		},
-    		m: function mount(target, anchor) {
-    			insert_dev(target, main, anchor);
-    			append_dev(main, section0);
-    			mount_component(start, section0, null);
-    			append_dev(main, t0);
-    			append_dev(main, section1);
-    			mount_component(cnn, section1, null);
-    			append_dev(main, t1);
-    			append_dev(main, section2);
-    			mount_component(article, section2, null);
-    			current = true;
-    		},
-    		p: noop,
-    		i: function intro(local) {
-    			if (current) return;
-    			transition_in(start.$$.fragment, local);
-    			transition_in(cnn.$$.fragment, local);
-    			transition_in(article.$$.fragment, local);
-    			current = true;
-    		},
-    		o: function outro(local) {
-    			transition_out(start.$$.fragment, local);
-    			transition_out(cnn.$$.fragment, local);
-    			transition_out(article.$$.fragment, local);
-    			current = false;
-    		},
-    		d: function destroy(detaching) {
-    			if (detaching) detach_dev(main);
-    			destroy_component(start);
-    			destroy_component(cnn);
-    			destroy_component(article);
-    		}
-    	};
-
-    	dispatch_dev("SvelteRegisterBlock", {
-    		block,
-    		id: create_fragment$d.name,
-    		type: "component",
-    		source: "",
-    		ctx
-    	});
-
-    	return block;
-    }
-
-    function instance$d($$self, $$props, $$invalidate) {
-    	let { $$slots: slots = {}, $$scope } = $$props;
-    	validate_slots('Datatrainx', slots, []);
-
-    	const View = {
-    		OVERVIEW: 'overview',
-    		LAYERVIEW: 'layerview',
-    		DETAILVIEW: 'detailview'
-    	};
-
-    	let mainView = View.OVERVIEW;
-    	const writable_props = [];
-
-    	Object.keys($$props).forEach(key => {
-    		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== '$$' && key !== 'slot') console.warn(`<Datatrainx> was created with unknown prop '${key}'`);
-    	});
-
-    	$$self.$capture_state = () => ({
-    		Cnn,
-    		cnnStore,
-    		Start: Presentation,
-    		Article,
-    		View,
-    		mainView
-    	});
-
-    	$$self.$inject_state = $$props => {
-    		if ('mainView' in $$props) mainView = $$props.mainView;
-    	};
-
-    	if ($$props && "$$inject" in $$props) {
-    		$$self.$inject_state($$props.$$inject);
-    	}
-
-    	return [];
-    }
-
-    class Datatrainx extends SvelteComponentDev {
-    	constructor(options) {
-    		super(options);
-    		init(this, options, instance$d, create_fragment$d, safe_not_equal, {});
-
-    		dispatch_dev("SvelteRegisterComponent", {
-    			component: this,
-    			tagName: "Datatrainx",
-    			options,
-    			id: create_fragment$d.name
-    		});
-    	}
-    }
-
-    /* src\Header.svelte generated by Svelte v3.47.0 */
-
-    const file$e = "src\\Header.svelte";
-
-    function create_fragment$e(ctx) {
-    	let header;
-    	let div2;
-    	let div0;
-    	let t1;
-    	let div1;
-    	let t3;
-    	let div4;
-    	let div3;
-    	let a;
-    	let i;
-
-    	const block = {
-    		c: function create() {
-    			header = element("header");
-    			div2 = element("div");
-    			div0 = element("div");
-    			div0.textContent = "DataTrainX";
-    			t1 = space();
-    			div1 = element("div");
-    			div1.textContent = "Outil de recherche des singularités cognitives d’un étudiant!";
-    			t3 = space();
-    			div4 = element("div");
-    			div3 = element("div");
-    			a = element("a");
-    			i = element("i");
-    			attr_dev(div0, "id", "logo-text");
-    			add_location(div0, file$e, 8, 8, 72);
-    			attr_dev(div1, "id", "svg-logo-tagline");
-    			add_location(div1, file$e, 11, 8, 139);
-    			attr_dev(div2, "id", "logo");
-    			add_location(div2, file$e, 7, 4, 48);
-    			attr_dev(i, "class", "fa-brands fa-github");
-    			add_location(i, file$e, 19, 16, 443);
-    			attr_dev(a, "target", "_blank");
-    			attr_dev(a, "href", "https://github.com/davy-blavette/DatatrainX");
-    			add_location(a, file$e, 18, 12, 356);
-    			attr_dev(div3, "class", "icon");
-    			attr_dev(div3, "title", "Open-source code");
-    			add_location(div3, file$e, 17, 8, 300);
-    			attr_dev(div4, "class", "icons");
-    			add_location(div4, file$e, 16, 4, 272);
-    			attr_dev(header, "id", "header");
-    			add_location(header, file$e, 5, 0, 22);
-    		},
-    		l: function claim(nodes) {
-    			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
-    		},
-    		m: function mount(target, anchor) {
-    			insert_dev(target, header, anchor);
-    			append_dev(header, div2);
-    			append_dev(div2, div0);
-    			append_dev(div2, t1);
-    			append_dev(div2, div1);
-    			append_dev(header, t3);
-    			append_dev(header, div4);
-    			append_dev(div4, div3);
-    			append_dev(div3, a);
-    			append_dev(a, i);
-    		},
-    		p: noop,
-    		i: noop,
-    		o: noop,
-    		d: function destroy(detaching) {
-    			if (detaching) detach_dev(header);
-    		}
-    	};
-
-    	dispatch_dev("SvelteRegisterBlock", {
-    		block,
-    		id: create_fragment$e.name,
-    		type: "component",
-    		source: "",
-    		ctx
-    	});
-
-    	return block;
-    }
-
-    function instance$e($$self, $$props) {
-    	let { $$slots: slots = {}, $$scope } = $$props;
-    	validate_slots('Header', slots, []);
-    	const writable_props = [];
-
-    	Object.keys($$props).forEach(key => {
-    		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== '$$' && key !== 'slot') console.warn(`<Header> was created with unknown prop '${key}'`);
-    	});
-
-    	return [];
-    }
-
-    class Header extends SvelteComponentDev {
-    	constructor(options) {
-    		super(options);
-    		init(this, options, instance$e, create_fragment$e, safe_not_equal, {});
-
-    		dispatch_dev("SvelteRegisterComponent", {
-    			component: this,
-    			tagName: "Header",
-    			options,
-    			id: create_fragment$e.name
-    		});
-    	}
-    }
-
-    /* src\Footer.svelte generated by Svelte v3.47.0 */
-
-    const file$f = "src\\Footer.svelte";
-
-    function create_fragment$f(ctx) {
-    	let footer;
-    	let div1;
-    	let span;
-    	let t1;
-    	let p;
-    	let t2;
-    	let a0;
-    	let t4;
-    	let a1;
-    	let t6;
-    	let a2;
-    	let t8;
-    	let t9;
-    	let div0;
-    	let a3;
-    	let i;
-
-    	const block = {
-    		c: function create() {
-    			footer = element("footer");
-    			div1 = element("div");
-    			span = element("span");
-    			span.textContent = "DataTrainX";
-    			t1 = space();
-    			p = element("p");
-    			t2 = text("By ");
-    			a0 = element("a");
-    			a0.textContent = "Davy Blavette";
-    			t4 = text(". The source code is licensed\r\n            ");
-    			a1 = element("a");
-    			a1.textContent = "MIT";
-    			t6 = text(". The website content\r\n            is licensed ");
-    			a2 = element("a");
-    			a2.textContent = "CC BY NC SA 4.0";
-    			t8 = text(".");
-    			t9 = space();
-    			div0 = element("div");
-    			a3 = element("a");
-    			i = element("i");
-    			attr_dev(span, "class", "logo-text svelte-1301xvb");
-    			add_location(span, file$f, 36, 8, 666);
-    			attr_dev(a0, "href", "https://jgthms.com");
-    			attr_dev(a0, "class", "svelte-1301xvb");
-    			add_location(a0, file$f, 38, 15, 737);
-    			attr_dev(a1, "href", "http://opensource.org/licenses/mit-license.php");
-    			attr_dev(a1, "class", "svelte-1301xvb");
-    			add_location(a1, file$f, 39, 12, 826);
-    			attr_dev(a2, "href", "http://creativecommons.org/licenses/by-nc-sa/4.0/");
-    			attr_dev(a2, "class", "svelte-1301xvb");
-    			add_location(a2, file$f, 40, 24, 937);
-    			add_location(p, file$f, 37, 8, 717);
-    			attr_dev(i, "class", "fa-brands fa-github");
-    			add_location(i, file$f, 42, 121, 1154);
-    			attr_dev(a3, "target", "_blank");
-    			attr_dev(a3, "href", "https://github.com/davy-blavette/DatatrainX");
-    			attr_dev(a3, "class", "svelte-1301xvb");
-    			add_location(a3, file$f, 42, 51, 1084);
-    			attr_dev(div0, "class", "icon svelte-1301xvb");
-    			attr_dev(div0, "title", "Open-source code");
-    			add_location(div0, file$f, 42, 8, 1041);
-    			attr_dev(div1, "class", "content has-text-centered");
-    			add_location(div1, file$f, 35, 4, 617);
-    			attr_dev(footer, "class", "footer svelte-1301xvb");
-    			add_location(footer, file$f, 34, 0, 588);
-    		},
-    		l: function claim(nodes) {
-    			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
-    		},
-    		m: function mount(target, anchor) {
-    			insert_dev(target, footer, anchor);
-    			append_dev(footer, div1);
-    			append_dev(div1, span);
-    			append_dev(div1, t1);
-    			append_dev(div1, p);
-    			append_dev(p, t2);
-    			append_dev(p, a0);
-    			append_dev(p, t4);
-    			append_dev(p, a1);
-    			append_dev(p, t6);
-    			append_dev(p, a2);
-    			append_dev(p, t8);
-    			append_dev(div1, t9);
-    			append_dev(div1, div0);
-    			append_dev(div0, a3);
-    			append_dev(a3, i);
-    		},
-    		p: noop,
-    		i: noop,
-    		o: noop,
-    		d: function destroy(detaching) {
-    			if (detaching) detach_dev(footer);
-    		}
-    	};
-
-    	dispatch_dev("SvelteRegisterBlock", {
-    		block,
-    		id: create_fragment$f.name,
-    		type: "component",
-    		source: "",
-    		ctx
-    	});
-
-    	return block;
-    }
-
-    function instance$f($$self, $$props) {
-    	let { $$slots: slots = {}, $$scope } = $$props;
-    	validate_slots('Footer', slots, []);
-    	const writable_props = [];
-
-    	Object.keys($$props).forEach(key => {
-    		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== '$$' && key !== 'slot') console.warn(`<Footer> was created with unknown prop '${key}'`);
-    	});
-
-    	return [];
-    }
-
-    class Footer extends SvelteComponentDev {
-    	constructor(options) {
-    		super(options);
-    		init(this, options, instance$f, create_fragment$f, safe_not_equal, {});
-
-    		dispatch_dev("SvelteRegisterComponent", {
-    			component: this,
-    			tagName: "Footer",
-    			options,
-    			id: create_fragment$f.name
-    		});
-    	}
-    }
-
-    /* src\App.svelte generated by Svelte v3.47.0 */
-
-    function create_fragment$g(ctx) {
-    	let header;
-    	let t0;
-    	let datatrainx;
-    	let t1;
-    	let footer;
-    	let current;
-    	header = new Header({ $$inline: true });
-    	datatrainx = new Datatrainx({ $$inline: true });
-    	footer = new Footer({ $$inline: true });
-
-    	const block = {
-    		c: function create() {
-    			create_component(header.$$.fragment);
-    			t0 = space();
-    			create_component(datatrainx.$$.fragment);
-    			t1 = space();
-    			create_component(footer.$$.fragment);
-    		},
-    		l: function claim(nodes) {
-    			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
-    		},
-    		m: function mount(target, anchor) {
-    			mount_component(header, target, anchor);
-    			insert_dev(target, t0, anchor);
-    			mount_component(datatrainx, target, anchor);
-    			insert_dev(target, t1, anchor);
-    			mount_component(footer, target, anchor);
-    			current = true;
-    		},
-    		p: noop,
-    		i: function intro(local) {
-    			if (current) return;
-    			transition_in(header.$$.fragment, local);
-    			transition_in(datatrainx.$$.fragment, local);
-    			transition_in(footer.$$.fragment, local);
-    			current = true;
-    		},
-    		o: function outro(local) {
-    			transition_out(header.$$.fragment, local);
-    			transition_out(datatrainx.$$.fragment, local);
-    			transition_out(footer.$$.fragment, local);
-    			current = false;
-    		},
-    		d: function destroy(detaching) {
-    			destroy_component(header, detaching);
-    			if (detaching) detach_dev(t0);
-    			destroy_component(datatrainx, detaching);
-    			if (detaching) detach_dev(t1);
-    			destroy_component(footer, detaching);
-    		}
-    	};
-
-    	dispatch_dev("SvelteRegisterBlock", {
-    		block,
-    		id: create_fragment$g.name,
-    		type: "component",
-    		source: "",
-    		ctx
-    	});
-
-    	return block;
-    }
-
-    function instance$g($$self, $$props, $$invalidate) {
-    	let { $$slots: slots = {}, $$scope } = $$props;
-    	validate_slots('App', slots, []);
-    	const writable_props = [];
-
-    	Object.keys($$props).forEach(key => {
-    		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== '$$' && key !== 'slot') console.warn(`<App> was created with unknown prop '${key}'`);
-    	});
-
-    	$$self.$capture_state = () => ({ Datatrainx, Header, Footer });
-    	return [];
-    }
-
-    class App extends SvelteComponentDev {
-    	constructor(options) {
-    		super(options);
-    		init(this, options, instance$g, create_fragment$g, safe_not_equal, {});
-
-    		dispatch_dev("SvelteRegisterComponent", {
-    			component: this,
-    			tagName: "App",
-    			options,
-    			id: create_fragment$g.name
-    		});
-    	}
-    }
-
-    const app = new App({
-    	target: document.body,
-    	props: {}
-    });
-
-    return app;
-
-}());
+function(t,e,n="nearest",r="constant",a=0,o){const i=fo(t,"image","transform","float32"),s=fo(e,"transforms","transform","float32");oa(4===i.rank,()=>`Error in transform: image must be rank 4,but got rank ${i.rank}.`),oa(2===s.rank&&(s.shape[0]===i.shape[0]||1===s.shape[0])&&8===s.shape[1],()=>"Error in transform: Input transform should be batch x 8 or 1 x 8"),oa(null==o||2===o.length,()=>`Error in transform: outputShape must be [height, width] or null, but got ${o}.`);const l={image:i,transforms:s},c={interpolation:n,fillMode:r,fillValue:a,outputShape:o};return lo.runKernel("Transform",l,c)}})};
+/**
+     * @license
+     * Copyright 2020 Google LLC. All Rights Reserved.
+     * Licensed under the Apache License, Version 2.0 (the "License");
+     * you may not use this file except in compliance with the License.
+     * You may obtain a copy of the License at
+     *
+     * http://www.apache.org/licenses/LICENSE-2.0
+     *
+     * Unless required by applicable law or agreed to in writing, software
+     * distributed under the License is distributed on an "AS IS" BASIS,
+     * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     * See the License for the specific language governing permissions and
+     * limitations under the License.
+     * =============================================================================
+     */var ys=function(t,e){return(ys=Object.setPrototypeOf||{__proto__:[]}instanceof Array&&function(t,e){t.__proto__=e}||function(t,e){for(var n in e)Object.prototype.hasOwnProperty.call(e,n)&&(t[n]=e[n])})(t,e)};function vs(t,e){if("function"!=typeof e&&null!==e)throw new TypeError("Class extends value "+String(e)+" is not a constructor or null");function n(){this.constructor=t}ys(t,e),t.prototype=null===e?Object.create(e):(n.prototype=e.prototype,new n)}var bs=function(){return(bs=Object.assign||function(t){for(var e,n=1,r=arguments.length;n<r;n++)for(var a in e=arguments[n])Object.prototype.hasOwnProperty.call(e,a)&&(t[a]=e[a]);return t}).apply(this,arguments)};function xs(t,e,n,r){return new(n||(n=Promise))((function(a,o){function i(t){try{l(r.next(t))}catch(t){o(t)}}function s(t){try{l(r.throw(t))}catch(t){o(t)}}function l(t){var e;t.done?a(t.value):(e=t.value,e instanceof n?e:new n((function(t){t(e)}))).then(i,s)}l((r=r.apply(t,e||[])).next())}))}function ws(t,e){var n,r,a,o,i={label:0,sent:function(){if(1&a[0])throw a[1];return a[1]},trys:[],ops:[]};return o={next:s(0),throw:s(1),return:s(2)},"function"==typeof Symbol&&(o[Symbol.iterator]=function(){return this}),o;function s(o){return function(s){return function(o){if(n)throw new TypeError("Generator is already executing.");for(;i;)try{if(n=1,r&&(a=2&o[0]?r.return:o[0]?r.throw||((a=r.return)&&a.call(r),0):r.next)&&!(a=a.call(r,o[1])).done)return a;switch(r=0,a&&(o=[2&o[0],a.value]),o[0]){case 0:case 1:a=o;break;case 4:return i.label++,{value:o[1],done:!1};case 5:i.label++,r=o[1],o=[0];continue;case 7:o=i.ops.pop(),i.trys.pop();continue;default:if(!(a=i.trys,(a=a.length>0&&a[a.length-1])||6!==o[0]&&2!==o[0])){i=0;continue}if(3===o[0]&&(!a||o[1]>a[0]&&o[1]<a[3])){i.label=o[1];break}if(6===o[0]&&i.label<a[1]){i.label=a[1],a=o;break}if(a&&i.label<a[2]){i.label=a[2],i.ops.push(o);break}a[2]&&i.ops.pop(),i.trys.pop();continue}o=e.call(t,i)}catch(t){o=[6,t],r=0}finally{n=a=0}if(5&o[0])throw o[1];return{value:o[0]?o[1]:void 0,done:!0}}([o,s])}}}function _s(){for(var t=0,e=0,n=arguments.length;e<n;e++)t+=arguments[e].length;var r=Array(t),a=0;for(e=0;e<n;e++)for(var o=arguments[e],i=0,s=o.length;i<s;i++,a++)r[a]=o[i];return r}var ks=function(){function t(t,e){if(!Cs(t)||!Cs(e))throw new Error("Dimensions.constructor - expected width and height to be valid numbers, instead have "+JSON.stringify({width:t,height:e}));this._width=t,this._height=e}return Object.defineProperty(t.prototype,"width",{get:function(){return this._width},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"height",{get:function(){return this._height},enumerable:!0,configurable:!0}),t.prototype.reverse=function(){return new t(1/this.width,1/this.height)},t}();function Es(t,e){return t instanceof Ua&&t.shape.length===e}function $s(t){return Es(t,3)}function Is(t){return Es(t,4)}function Ms(t){return t%2==0}function Ps(t,e){void 0===e&&(e=2);var n=Math.pow(10,e);return Math.floor(t*n)/n}function Ss(t){return t&&t.width&&t.height}function As(t){return t.reduce((function(t,e){return t.add(e)}),new Fs(0,0)).div(new Fs(t.length,t.length))}function Ts(t,e,n){return Array(t).fill(0).map((function(t,r){return e+r*n}))}function Cs(t){return!!t&&t!==1/0&&t!==-1/0&&!isNaN(t)||0===t}function Ls(t){return Cs(t)&&0<=t&&t<=1}var Fs=function(){function t(t,e){this._x=t,this._y=e}return Object.defineProperty(t.prototype,"x",{get:function(){return this._x},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"y",{get:function(){return this._y},enumerable:!0,configurable:!0}),t.prototype.add=function(e){return new t(this.x+e.x,this.y+e.y)},t.prototype.sub=function(e){return new t(this.x-e.x,this.y-e.y)},t.prototype.mul=function(e){return new t(this.x*e.x,this.y*e.y)},t.prototype.div=function(e){return new t(this.x/e.x,this.y/e.y)},t.prototype.abs=function(){return new t(Math.abs(this.x),Math.abs(this.y))},t.prototype.magnitude=function(){return Math.sqrt(Math.pow(this.x,2)+Math.pow(this.y,2))},t.prototype.floor=function(){return new t(Math.floor(this.x),Math.floor(this.y))},t}(),Ds=function(){function t(e,n){void 0===n&&(n=!0);var r=e||{},a=[r.left,r.top,r.right,r.bottom].every(Cs),o=[r.x,r.y,r.width,r.height].every(Cs);if(!o&&!a)throw new Error("Box.constructor - expected box to be IBoundingBox | IRect, instead have "+JSON.stringify(r));var i=o?[r.x,r.y,r.width,r.height]:[r.left,r.top,r.right-r.left,r.bottom-r.top],s=i[0],l=i[1],c=i[2],u=i[3];t.assertIsValidBox({x:s,y:l,width:c,height:u},"Box.constructor",n),this._x=s,this._y=l,this._width=c,this._height=u}return t.isRect=function(t){return!!t&&[t.x,t.y,t.width,t.height].every(Cs)},t.assertIsValidBox=function(e,n,r){if(void 0===r&&(r=!1),!t.isRect(e))throw new Error(n+" - invalid box: "+JSON.stringify(e)+", expected object with properties x, y, width, height");if(!r&&(e.width<0||e.height<0))throw new Error(n+" - width ("+e.width+") and height ("+e.height+") must be positive numbers")},Object.defineProperty(t.prototype,"x",{get:function(){return this._x},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"y",{get:function(){return this._y},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"width",{get:function(){return this._width},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"height",{get:function(){return this._height},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"left",{get:function(){return this.x},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"top",{get:function(){return this.y},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"right",{get:function(){return this.x+this.width},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"bottom",{get:function(){return this.y+this.height},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"area",{get:function(){return this.width*this.height},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"topLeft",{get:function(){return new Fs(this.left,this.top)},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"topRight",{get:function(){return new Fs(this.right,this.top)},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"bottomLeft",{get:function(){return new Fs(this.left,this.bottom)},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"bottomRight",{get:function(){return new Fs(this.right,this.bottom)},enumerable:!0,configurable:!0}),t.prototype.round=function(){var e=[this.x,this.y,this.width,this.height].map((function(t){return Math.round(t)}));return new t({x:e[0],y:e[1],width:e[2],height:e[3]})},t.prototype.floor=function(){var e=[this.x,this.y,this.width,this.height].map((function(t){return Math.floor(t)}));return new t({x:e[0],y:e[1],width:e[2],height:e[3]})},t.prototype.toSquare=function(){var e=this.x,n=this.y,r=this.width,a=this.height,o=Math.abs(r-a);return r<a&&(e-=o/2,r+=o),a<r&&(n-=o/2,a+=o),new t({x:e,y:n,width:r,height:a})},t.prototype.rescale=function(e){var n=Ss(e)?e.width:e,r=Ss(e)?e.height:e;return new t({x:this.x*n,y:this.y*r,width:this.width*n,height:this.height*r})},t.prototype.pad=function(e,n){var r=[this.x-e/2,this.y-n/2,this.width+e,this.height+n];return new t({x:r[0],y:r[1],width:r[2],height:r[3]})},t.prototype.clipAtImageBorders=function(e,n){var r=this.x,a=this.y,o=this.right,i=this.bottom,s=Math.max(r,0),l=Math.max(a,0),c=o-s,u=i-l;return new t({x:s,y:l,width:Math.min(c,e-s),height:Math.min(u,n-l)}).floor()},t.prototype.shift=function(e,n){var r=this.width,a=this.height;return new t({x:this.x+e,y:this.y+n,width:r,height:a})},t.prototype.padAtBorders=function(t,e){var n=this.width+1,r=this.height+1,a=n,o=r,i=this.left,s=this.top,l=this.right,c=this.bottom;return l>e&&(a=-l+e+n,l=e),c>t&&(o=-c+t+r,c=t),i<1&&(o=2-i,i=1),s<1&&(o=2-s,s=1),{dy:1,edy:o,dx:1,edx:a,y:s,ey:c,x:i,ex:l,w:n,h:r}},t.prototype.calibrate=function(e){return new t({left:this.left+e.left*this.width,top:this.top+e.top*this.height,right:this.right+e.right*this.width,bottom:this.bottom+e.bottom*this.height}).toSquare().round()},t}(),Ns=function(t){function e(e,n,r,a,o){return void 0===o&&(o=!1),t.call(this,{left:e,top:n,right:r,bottom:a},o)||this}return vs(e,t),e}(Ds),Rs=function(){function t(t,e,n,r,a){this._imageDims=new ks(a.width,a.height),this._score=t,this._classScore=e,this._className=n,this._box=new Ds(r).rescale(this._imageDims)}return Object.defineProperty(t.prototype,"score",{get:function(){return this._score},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"classScore",{get:function(){return this._classScore},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"className",{get:function(){return this._className},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"box",{get:function(){return this._box},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"imageDims",{get:function(){return this._imageDims},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"imageWidth",{get:function(){return this.imageDims.width},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"imageHeight",{get:function(){return this.imageDims.height},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"relativeBox",{get:function(){return new Ds(this._box).rescale(this.imageDims.reverse())},enumerable:!0,configurable:!0}),t.prototype.forSize=function(e,n){return new t(this.score,this.classScore,this.className,this.relativeBox,{width:e,height:n})},t}(),Bs=function(t){function e(e,n,r){return t.call(this,e,e,"",n,r)||this}return vs(e,t),e.prototype.forSize=function(n,r){var a=t.prototype.forSize.call(this,n,r);return new e(a.score,a.relativeBox,a.imageDims)},e}(Rs);function Os(t,e,n){void 0===n&&(n=!0);var r=Math.max(0,Math.min(t.right,e.right)-Math.max(t.left,e.left))*Math.max(0,Math.min(t.bottom,e.bottom)-Math.max(t.top,e.top));return n?r/(t.area+e.area-r):r/Math.min(t.area,e.area)}function zs(t,e,n,r){void 0===r&&(r=!0);for(var a=e.map((function(t,e){return{score:t,boxIndex:e}})).sort((function(t,e){return t.score-e.score})).map((function(t){return t.boxIndex})),o=[],i=function(){var e=a.pop();o.push(e);for(var i=a,s=[],l=0;l<i.length;l++){var c=i[l],u=t[e],d=t[c];s.push(Os(u,d,r))}a=a.filter((function(t,e){return s[e]<=n}))};a.length>0;)i();return o}function js(t,e){return ii((function(){var n=e[0],r=e[1],a=e[2],o=Si(_s(t.shape.slice(0,3),[1]),n),i=Si(_s(t.shape.slice(0,3),[1]),r),s=Si(_s(t.shape.slice(0,3),[1]),a),l=mi([o,i,s],3);return Fi(t,l)}))}function Hs(t){return 1/(1+Math.exp(-t))}var qs,Ws=function(t){function e(e,n,r,a,o){return void 0===o&&(o=!1),t.call(this,{x:e,y:n,width:r,height:a},o)||this}return vs(e,t),e}(Ds),Gs=function(){function t(t,e,n){void 0===n&&(n=new Fs(0,0));var r=e.width,a=e.height;this._imgDims=new ks(r,a),this._shift=n,this._positions=t.map((function(t){return t.mul(new Fs(r,a)).add(n)}))}return Object.defineProperty(t.prototype,"shift",{get:function(){return new Fs(this._shift.x,this._shift.y)},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"imageWidth",{get:function(){return this._imgDims.width},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"imageHeight",{get:function(){return this._imgDims.height},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"positions",{get:function(){return this._positions},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"relativePositions",{get:function(){var t=this;return this._positions.map((function(e){return e.sub(t._shift).div(new Fs(t.imageWidth,t.imageHeight))}))},enumerable:!0,configurable:!0}),t.prototype.forSize=function(t,e){return new this.constructor(this.relativePositions,{width:t,height:e})},t.prototype.shiftBy=function(t,e){return new this.constructor(this.relativePositions,this._imgDims,new Fs(t,e))},t.prototype.shiftByPoint=function(t){return this.shiftBy(t.x,t.y)},t.prototype.align=function(t,e){if(void 0===e&&(e={}),t){var n=t instanceof Bs?t.box.floor():new Ds(t);return this.shiftBy(n.x,n.y).align(null,e)}var r=Object.assign({},{useDlibAlignment:!1,minBoxPadding:.2},e),a=r.useDlibAlignment,o=r.minBoxPadding;return a?this.alignDlib():this.alignMinBbox(o)},t.prototype.alignDlib=function(){var t=this.getRefPointsForAlignment(),e=t[0],n=t[1],r=t[2],a=function(t){return r.sub(t).magnitude()},o=(a(e)+a(n))/2,i=Math.floor(o/.45),s=As(t),l=Math.floor(Math.max(0,s.x-.5*i)),c=Math.floor(Math.max(0,s.y-.43*i));return new Ws(l,c,Math.min(i,this.imageWidth+l),Math.min(i,this.imageHeight+c))},t.prototype.alignMinBbox=function(t){var e,n,r,a,o,i,s,l=(e=this.positions,n=e.map((function(t){return t.x})),r=e.map((function(t){return t.y})),a=n.reduce((function(t,e){return e<t?e:t}),1/0),o=r.reduce((function(t,e){return e<t?e:t}),1/0),i=n.reduce((function(t,e){return t<e?e:t}),0),s=r.reduce((function(t,e){return t<e?e:t}),0),new Ns(a,o,i,s));return l.pad(l.width*t,l.height*t)},t.prototype.getRefPointsForAlignment=function(){throw new Error("getRefPointsForAlignment not implemented by base class")},t}(),Vs=function(t){function e(){return null!==t&&t.apply(this,arguments)||this}return vs(e,t),e.prototype.getRefPointsForAlignment=function(){var t=this.positions;return[t[0],t[1],As([t[3],t[4]])]},e}(Gs),Ks=function(t){function e(){return null!==t&&t.apply(this,arguments)||this}return vs(e,t),e.prototype.getJawOutline=function(){return this.positions.slice(0,17)},e.prototype.getLeftEyeBrow=function(){return this.positions.slice(17,22)},e.prototype.getRightEyeBrow=function(){return this.positions.slice(22,27)},e.prototype.getNose=function(){return this.positions.slice(27,36)},e.prototype.getLeftEye=function(){return this.positions.slice(36,42)},e.prototype.getRightEye=function(){return this.positions.slice(42,48)},e.prototype.getMouth=function(){return this.positions.slice(48,68)},e.prototype.getRefPointsForAlignment=function(){return[this.getLeftEye(),this.getRightEye(),this.getMouth()].map(As)},e}(Gs),Us=function(){function t(t,e){this._label=t,this._distance=e}return Object.defineProperty(t.prototype,"label",{get:function(){return this._label},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"distance",{get:function(){return this._distance},enumerable:!0,configurable:!0}),t.prototype.toString=function(t){return void 0===t&&(t=!0),this.label+(t?" ("+Ps(this.distance)+")":"")},t}(),Xs=function(t){function e(e,n){var r=t.call(this,e)||this;return r._label=n,r}return vs(e,t),e.assertIsValidLabeledBox=function(t,e){if(Ds.assertIsValidBox(t,e),!Cs(t.label))throw new Error(e+" - expected property label ("+t.label+") to be a number")},Object.defineProperty(e.prototype,"label",{get:function(){return this._label},enumerable:!0,configurable:!0}),e}(Ds),Js=function(){function t(t,e){if("string"!=typeof t)throw new Error("LabeledFaceDescriptors - constructor expected label to be a string");if(!Array.isArray(e)||e.some((function(t){return!(t instanceof Float32Array)})))throw new Error("LabeledFaceDescriptors - constructor expected descriptors to be an array of Float32Array");this._label=t,this._descriptors=e}return Object.defineProperty(t.prototype,"label",{get:function(){return this._label},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"descriptors",{get:function(){return this._descriptors},enumerable:!0,configurable:!0}),t.prototype.toJSON=function(){return{label:this.label,descriptors:this.descriptors.map((function(t){return Array.from(t)}))}},t.fromJSON=function(e){var n=e.descriptors.map((function(t){return new Float32Array(t)}));return new t(e.label,n)},t}();!function(t){function e(e,n,r,a){var o=t.call(this,e,n)||this;return o._score=r,o._classScore=a,o}vs(e,t),e.assertIsValidPredictedBox=function(t,e){if(Xs.assertIsValidLabeledBox(t,e),!Ls(t.score)||!Ls(t.classScore))throw new Error(e+" - expected properties score ("+t.score+") and ("+t.classScore+") to be a number between [0, 1]")},Object.defineProperty(e.prototype,"score",{get:function(){return this._score},enumerable:!0,configurable:!0}),Object.defineProperty(e.prototype,"classScore",{get:function(){return this._classScore},enumerable:!0,configurable:!0})}(Xs);function Ys(t){return t.detection instanceof Bs}function Qs(t,e){var n={detection:e};return Object.assign({},t,n)}function Zs(){var t=window.fetch||function(){throw new Error("fetch - missing fetch implementation for browser environment")};return{Canvas:HTMLCanvasElement,CanvasRenderingContext2D:CanvasRenderingContext2D,Image:HTMLImageElement,ImageData:ImageData,Video:HTMLVideoElement,createCanvasElement:function(){return document.createElement("canvas")},createImageElement:function(){return document.createElement("img")},fetch:t,readFile:function(){throw new Error("readFile - filesystem not available for browser environment")}}}function tl(t){var e="";if(!t)try{t=require("fs")}catch(t){e=t.toString()}return{readFile:t?function(e){return new Promise((function(n,r){t.readFile(e,(function(t,e){return t?r(t):n(e)}))}))}:function(){throw new Error("readFile - failed to require fs in nodejs environment with error: "+e)}}}function el(){var t=global.Canvas||global.HTMLCanvasElement,e=global.Image||global.HTMLImageElement,n=global.fetch||function(){throw new Error("fetch - missing fetch implementation for nodejs environment")},r=tl();return bs({Canvas:t||function(){},CanvasRenderingContext2D:global.CanvasRenderingContext2D||function(){},Image:e||function(){},ImageData:global.ImageData||function(){},Video:global.HTMLVideoElement||function(){},createCanvasElement:function(){if(t)return new t;throw new Error("createCanvasElement - missing Canvas implementation for nodejs environment")},createImageElement:function(){if(e)return new e;throw new Error("createImageElement - missing Image implementation for nodejs environment")},fetch:n},r)}function nl(){return"object"==typeof window&&"undefined"!=typeof document&&"undefined"!=typeof HTMLImageElement&&"undefined"!=typeof HTMLCanvasElement&&"undefined"!=typeof HTMLVideoElement&&"undefined"!=typeof ImageData&&"undefined"!=typeof CanvasRenderingContext2D}function rl(){return"object"==typeof global&&"function"==typeof require&&"undefined"!=typeof module&&"undefined"!=typeof process&&!!process.version}function al(t){qs=t}function ol(){nl()&&al(Zs()),rl()&&al(el())}var il,sl={getEnv:function(){if(!qs)throw new Error("getEnv - environment is not defined, check isNodejs() and isBrowser()");return qs},setEnv:al,initialize:ol,createBrowserEnv:Zs,createFileSystem:tl,createNodejsEnv:el,monkeyPatch:function(t){if(qs||ol(),!qs)throw new Error("monkeyPatch - environment is not defined, check isNodejs() and isBrowser()");var e=t.Canvas,n=void 0===e?qs.Canvas:e,r=t.Image,a=void 0===r?qs.Image:r;qs.Canvas=n,qs.Image=a,qs.createCanvasElement=t.createCanvasElement||function(){return new n},qs.createImageElement=t.createImageElement||function(){return new a},qs.ImageData=t.ImageData||qs.ImageData,qs.Video=t.Video||qs.Video,qs.fetch=t.fetch||qs.fetch,qs.readFile=t.readFile||qs.readFile},isBrowser:nl,isNodejs:rl};function ll(t){return sl.isNodejs()||"string"!=typeof t?t:document.getElementById(t)}function cl(t){var e=sl.getEnv(),n=e.Canvas;if(t instanceof e.CanvasRenderingContext2D)return t;var r=ll(t);if(!(r instanceof n))throw new Error("resolveContext2d - expected canvas to be of instance of Canvas");var a=r.getContext("2d");if(!a)throw new Error("resolveContext2d - canvas 2d context is null");return a}ol(),function(t){t.TOP_LEFT="TOP_LEFT",t.TOP_RIGHT="TOP_RIGHT",t.BOTTOM_LEFT="BOTTOM_LEFT",t.BOTTOM_RIGHT="BOTTOM_RIGHT"}(il||(il={}));var ul=function(t){void 0===t&&(t={});var e=t.anchorPosition,n=t.backgroundColor,r=t.fontColor,a=t.fontSize,o=t.fontStyle,i=t.padding;this.anchorPosition=e||il.TOP_LEFT,this.backgroundColor=n||"rgba(0, 0, 0, 0.5)",this.fontColor=r||"rgba(255, 255, 255, 1)",this.fontSize=a||14,this.fontStyle=o||"Georgia",this.padding=i||4},dl=function(){function t(e,n,r){void 0===r&&(r={}),this.text="string"==typeof e?[e]:e instanceof t?e.text:e,this.anchor=n,this.options=new ul(r)}return t.prototype.measureWidth=function(t){var e=this.options.padding;return this.text.map((function(e){return t.measureText(e).width})).reduce((function(t,e){return t<e?e:t}),0)+2*e},t.prototype.measureHeight=function(){var t=this.options,e=t.fontSize,n=t.padding;return this.text.length*e+2*n},t.prototype.getUpperLeft=function(t,e){var n=this.options.anchorPosition,r=n===il.BOTTOM_RIGHT||n===il.TOP_RIGHT,a=n===il.BOTTOM_LEFT||n===il.BOTTOM_RIGHT,o=this.measureWidth(t),i=this.measureHeight(),s=r?this.anchor.x-o:this.anchor.x,l=a?this.anchor.y-i:this.anchor.y;if(e){var c=e.width,u=e.height;return{x:Math.max(Math.min(s,c-o),0),y:Math.max(Math.min(l,u-i),0)}}return{x:s,y:l}},t.prototype.draw=function(t){var e=ll(t),n=cl(e),r=this.options,a=r.backgroundColor,o=r.fontColor,i=r.fontSize,s=r.fontStyle,l=r.padding;n.font=i+"px "+s;var c=this.measureWidth(n),u=this.measureHeight();n.fillStyle=a;var d=this.getUpperLeft(n,e);n.fillRect(d.x,d.y,c,u),n.fillStyle=o,this.text.forEach((function(t,e){var r=l+d.x,a=l+d.y+(e+1)*i;n.fillText(t,r,a)}))},t}(),pl=function(t){void 0===t&&(t={});var e=t.boxColor,n=t.lineWidth,r=t.label,a=t.drawLabelOptions;this.boxColor=e||"rgba(0, 0, 255, 1)",this.lineWidth=n||2,this.label=r;var o={anchorPosition:il.BOTTOM_LEFT,backgroundColor:this.boxColor};this.drawLabelOptions=new ul(Object.assign({},o,a))},hl=function(){function t(t,e){void 0===e&&(e={}),this.box=new Ds(t),this.options=new pl(e)}return t.prototype.draw=function(t){var e=cl(t),n=this.options,r=n.boxColor,a=n.lineWidth,o=this.box,i=o.x,s=o.y,l=o.width,c=o.height;e.strokeStyle=r,e.lineWidth=a,e.strokeRect(i,s,l,c);var u=this.options.label;u&&new dl([u],{x:i-a/2,y:s},this.options.drawLabelOptions).draw(t)},t}();function fl(t){var e=sl.getEnv(),n=e.Image,r=e.Video;return t instanceof n&&t.complete||t instanceof r&&t.readyState>=3}function gl(t){var e=sl.getEnv(),n=e.Image,r=e.Video;return t instanceof n?new ks(t.naturalWidth,t.naturalHeight):t instanceof r?new ks(t.videoWidth,t.videoHeight):new ks(t.width,t.height)}function ml(t){var e=t.width,n=t.height,r=(0,sl.getEnv().createCanvasElement)();return r.width=e,r.height=n,r}function yl(t,e){var n=sl.getEnv().ImageData;if(!(t instanceof n||fl(t)))throw new Error("createCanvasFromMedia - media has not finished loading yet");var r=e||gl(t),a=r.width,o=r.height,i=ml({width:a,height:o});return t instanceof n?cl(i).putImageData(t,0,0):cl(i).drawImage(t,0,0,a,o),i}function vl(t,e){return xs(this,void 0,void 0,(function(){var n,r,a,o,i,s;return ws(this,(function(l){switch(l.label){case 0:return n=e||sl.getEnv().createCanvasElement(),r=t.shape.slice(Is(t)?1:0),a=r[0],o=r[1],i=r[2],[4,ai(s=ii((function(){return t.as3D(a,o,i).toInt()})),n)];case 1:return l.sent(),s.dispose(),[2,n]}}))}))}function bl(t){var e=sl.getEnv(),n=e.Image,r=e.Canvas,a=e.Video;return t instanceof n||t instanceof r||t instanceof a}var xl=function(){function t(t,e){var n=this;if(void 0===e&&(e=!1),this._imageTensors=[],this._canvases=[],this._treatAsBatchInput=!1,this._inputDimensions=[],!Array.isArray(t))throw new Error("NetInput.constructor - expected inputs to be an Array of TResolvedNetInput or to be instanceof tf.Tensor4D, instead have "+t);this._treatAsBatchInput=e,this._batchSize=t.length,t.forEach((function(t,e){if($s(t))return n._imageTensors[e]=t,void(n._inputDimensions[e]=t.shape);if(Is(t)){var r=t.shape[0];if(1!==r)throw new Error("NetInput - tf.Tensor4D with batchSize "+r+" passed, but not supported in input array");return n._imageTensors[e]=t,void(n._inputDimensions[e]=t.shape.slice(1))}var a=t instanceof sl.getEnv().Canvas?t:yl(t);n._canvases[e]=a,n._inputDimensions[e]=[a.height,a.width,3]}))}return Object.defineProperty(t.prototype,"imageTensors",{get:function(){return this._imageTensors},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"canvases",{get:function(){return this._canvases},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"isBatchInput",{get:function(){return this.batchSize>1||this._treatAsBatchInput},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"batchSize",{get:function(){return this._batchSize},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"inputDimensions",{get:function(){return this._inputDimensions},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"inputSize",{get:function(){return this._inputSize},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"reshapedInputDimensions",{get:function(){var t=this;return Ts(this.batchSize,0,1).map((function(e,n){return t.getReshapedInputDimensions(n)}))},enumerable:!0,configurable:!0}),t.prototype.getInput=function(t){return this.canvases[t]||this.imageTensors[t]},t.prototype.getInputDimensions=function(t){return this._inputDimensions[t]},t.prototype.getInputHeight=function(t){return this._inputDimensions[t][0]},t.prototype.getInputWidth=function(t){return this._inputDimensions[t][1]},t.prototype.getReshapedInputDimensions=function(t){if("number"!=typeof this.inputSize)throw new Error("getReshapedInputDimensions - inputSize not set, toBatchTensor has not been called yet");return function(t,e){var n=t.width,r=t.height,a=e/Math.max(r,n);return new ks(Math.round(n*a),Math.round(r*a))}({width:this.getInputWidth(t),height:this.getInputHeight(t)},this.inputSize)},t.prototype.toBatchTensor=function(t,e){var n=this;return void 0===e&&(e=!0),this._inputSize=t,ii((function(){var r=Ts(n.batchSize,0,1).map((function(r){var a=n.getInput(r);if(a instanceof Ua){var o=Is(a)?a:a.expandDims();return(o=function(t,e){return void 0===e&&(e=!1),ii((function(){var n=t.shape.slice(1),r=n[0],a=n[1];if(r===a)return t;var o=Math.abs(r-a),i=Math.round(o*(e?.5:1)),s=r>a?2:1,l=function(e){var n=t.shape.slice();return n[s]=e,Si(n,0)},c=l(i),u=o-c.shape[s],d=[e&&u?l(u):null,t,c].filter((function(t){return!!t})).map((function(t){return t.toFloat()}));return mi(d,s)}))}(o,e)).shape[1]===t&&o.shape[2]===t||(o=ms.resizeBilinear(o,[t,t])),o.as3D(t,t,3)}if(a instanceof sl.getEnv().Canvas)return oi(function(t,e,n){void 0===n&&(n=!1);var r=sl.getEnv(),a=r.Image,o=r.Canvas;if(!(t instanceof a||t instanceof o))throw new Error("imageToSquare - expected arg0 to be HTMLImageElement | HTMLCanvasElement");var i=gl(t),s=e/Math.max(i.height,i.width),l=s*i.width,c=s*i.height,u=ml({width:e,height:e}),d=t instanceof o?t:yl(t),p=Math.abs(l-c)/2,h=n&&l<c?p:0,f=n&&c<l?p:0;return cl(u).drawImage(d,h,f,l,c),u}(a,t,e));throw new Error("toBatchTensor - at batchIdx "+r+", expected input to be instanceof tf.Tensor or instanceof HTMLCanvasElement, instead have "+a)}));return Ki(r.map((function(t){return t.toFloat()}))).as4D(n.batchSize,t,t,3)}))},t}();function wl(t){return xs(this,void 0,void 0,(function(){var e,n,r;return ws(this,(function(a){switch(a.label){case 0:if(t instanceof xl)return[2,t];if(!(e=Array.isArray(t)?t:[t]).length)throw new Error("toNetInput - empty array passed as input");return n=function(e){return Array.isArray(t)?" at input index "+e+":":""},(r=e.map(ll)).forEach((function(t,r){if(!bl(t)&&!$s(t)&&!Is(t)){if("string"==typeof e[r])throw new Error("toNetInput -"+n(r)+" string passed, but could not resolve HTMLElement for element id "+e[r]);throw new Error("toNetInput -"+n(r)+" expected media to be of type HTMLImageElement | HTMLVideoElement | HTMLCanvasElement | tf.Tensor3D, or to be an element id")}if(Is(t)){var a=t.shape[0];if(1!==a)throw new Error("toNetInput -"+n(r)+" tf.Tensor4D with batchSize "+a+" passed, but not supported in input array")}})),[4,Promise.all(r.map((function(t){return bl(t)&&(e=t,new Promise((function(t,n){if(e instanceof sl.getEnv().Canvas||fl(e))return t();function r(e){e.currentTarget&&(e.currentTarget.removeEventListener("load",r),e.currentTarget.removeEventListener("error",a),t(e))}function a(t){t.currentTarget&&(t.currentTarget.removeEventListener("load",r),t.currentTarget.removeEventListener("error",a),n(t))}e.addEventListener("load",r),e.addEventListener("error",a)})));var e})))];case 1:return a.sent(),[2,new xl(r,Array.isArray(t))]}}))}))}function _l(t,e){return xs(this,void 0,void 0,(function(){var n,r,a,o,i,s;return ws(this,(function(l){switch(l.label){case 0:return n=sl.getEnv().Canvas,r=t,t instanceof n?[3,5]:[4,wl(t)];case 1:if((a=l.sent()).batchSize>1)throw new Error("extractFaces - batchSize > 1 not supported");return(o=a.getInput(0))instanceof n?(i=o,[3,4]):[3,2];case 2:return[4,vl(o)];case 3:i=l.sent(),l.label=4;case 4:r=i,l.label=5;case 5:return s=cl(r),[2,e.map((function(t){return t instanceof Bs?t.forSize(r.width,r.height).box.floor():t})).map((function(t){return t.clipAtImageBorders(r.width,r.height)})).map((function(t){var e=t.x,n=t.y,r=t.width,a=t.height,o=ml({width:r,height:a});return cl(o).putImageData(s.getImageData(e,n,r,a),0,0),o}))]}}))}))}function kl(t,e){return xs(this,void 0,void 0,(function(){return ws(this,(function(n){if(!$s(t)&&!Is(t))throw new Error("extractFaceTensors - expected image tensor to be 3D or 4D");if(Is(t)&&t.shape[0]>1)throw new Error("extractFaceTensors - batchSize > 1 not supported");return[2,ii((function(){var n=t.shape.slice(Is(t)?1:0),r=n[0],a=n[1],o=n[2];return e.map((function(t){return t instanceof Bs?t.forSize(a,r).box:t})).map((function(t){return t.clipAtImageBorders(a,r)})).map((function(e){var n=e.x,i=e.y,s=e.width,l=e.height;return Wi(t.as3D(r,a,o),[i,n,0],[l,s,o])}))}))]}))}))}function El(t,e){return xs(this,void 0,void 0,(function(){var n;return ws(this,(function(r){switch(r.label){case 0:return[4,(0,sl.getEnv().fetch)(t,e)];case 1:if(!((n=r.sent()).status<400))throw new Error("failed to fetch: ("+n.status+") "+n.statusText+", from url: "+n.url);return[2,n]}}))}))}function $l(t){return xs(this,void 0,void 0,(function(){return ws(this,(function(e){switch(e.label){case 0:return[4,El(t)];case 1:return[2,e.sent().json()]}}))}))}function Il(t,e){var n=e+"-weights_manifest.json";if(!t)return{modelBaseUri:"",manifestUri:n};if("/"===t)return{modelBaseUri:"/",manifestUri:"/"+n};var r=t.startsWith("http://")?"http://":t.startsWith("https://")?"https://":"",a=(t=t.replace(r,"")).split("/").filter((function(t){return t})),o=t.endsWith(".json")?a[a.length-1]:n,i=r+(t.endsWith(".json")?a.slice(0,a.length-1):a).join("/");return{modelBaseUri:i=t.startsWith("/")?"/"+i:i,manifestUri:"/"===i?"/"+o:i+"/"+o}}function Ml(t,e){return xs(this,void 0,void 0,(function(){var n,r,a;return ws(this,(function(o){switch(o.label){case 0:return n=Il(t,e),r=n.manifestUri,a=n.modelBaseUri,[4,$l(r)];case 1:return[2,Yo(o.sent(),a)]}}))}))}var Pl=function(){function t(t){this._name=t,this._params=void 0,this._paramMappings=[]}return Object.defineProperty(t.prototype,"params",{get:function(){return this._params},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"paramMappings",{get:function(){return this._paramMappings},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"isLoaded",{get:function(){return!!this.params},enumerable:!0,configurable:!0}),t.prototype.getParamFromPath=function(t){var e=this.traversePropertyPath(t);return e.obj[e.objProp]},t.prototype.reassignParamFromPath=function(t,e){var n=this.traversePropertyPath(t),r=n.obj,a=n.objProp;r[a].dispose(),r[a]=e},t.prototype.getParamList=function(){var t=this;return this._paramMappings.map((function(e){var n=e.paramPath;return{path:n,tensor:t.getParamFromPath(n)}}))},t.prototype.getTrainableParams=function(){return this.getParamList().filter((function(t){return t.tensor instanceof Xa}))},t.prototype.getFrozenParams=function(){return this.getParamList().filter((function(t){return!(t.tensor instanceof Xa)}))},t.prototype.variable=function(){var t=this;this.getFrozenParams().forEach((function(e){var n=e.path,r=e.tensor;t.reassignParamFromPath(n,r.variable())}))},t.prototype.freeze=function(){var t=this;this.getTrainableParams().forEach((function(e){var n=e.path,r=e.tensor,a=bo(r.dataSync());r.dispose(),t.reassignParamFromPath(n,a)}))},t.prototype.dispose=function(t){void 0===t&&(t=!0),this.getParamList().forEach((function(e){if(t&&e.tensor.isDisposed)throw new Error("param tensor has already been disposed for path "+e.path);e.tensor.dispose()})),this._params=void 0},t.prototype.serializeParams=function(){return new Float32Array(this.getParamList().map((function(t){var e=t.tensor;return Array.from(e.dataSync())})).reduce((function(t,e){return t.concat(e)})))},t.prototype.load=function(t){return xs(this,void 0,void 0,(function(){return ws(this,(function(e){switch(e.label){case 0:return t instanceof Float32Array?(this.extractWeights(t),[2]):[4,this.loadFromUri(t)];case 1:return e.sent(),[2]}}))}))},t.prototype.loadFromUri=function(t){return xs(this,void 0,void 0,(function(){var e;return ws(this,(function(n){switch(n.label){case 0:if(t&&"string"!=typeof t)throw new Error(this._name+".loadFromUri - expected model uri");return[4,Ml(t,this.getDefaultModelName())];case 1:return e=n.sent(),this.loadFromWeightMap(e),[2]}}))}))},t.prototype.loadFromDisk=function(t){return xs(this,void 0,void 0,(function(){var e,n,r,a,o,i,s,l,c;return ws(this,(function(u){switch(u.label){case 0:if(t&&"string"!=typeof t)throw new Error(this._name+".loadFromDisk - expected model file path");return e=sl.getEnv().readFile,n=Il(t,this.getDefaultModelName()),r=n.manifestUri,a=n.modelBaseUri,o=Qo((function(t){return Promise.all(t.map((function(t){return e(t).then((function(t){return t.buffer}))})))})),l=(s=JSON).parse,[4,e(r)];case 1:return i=l.apply(s,[u.sent().toString()]),[4,o(i,a)];case 2:return c=u.sent(),this.loadFromWeightMap(c),[2]}}))}))},t.prototype.loadFromWeightMap=function(t){var e=this.extractParamsFromWeigthMap(t),n=e.paramMappings,r=e.params;this._paramMappings=n,this._params=r},t.prototype.extractWeights=function(t){var e=this.extractParams(t),n=e.paramMappings,r=e.params;this._paramMappings=n,this._params=r},t.prototype.traversePropertyPath=function(t){if(!this.params)throw new Error("traversePropertyPath - model has no loaded params");var e=t.split("/").reduce((function(e,n){if(!e.nextObj.hasOwnProperty(n))throw new Error("traversePropertyPath - object does not have property "+n+", for path "+t);return{obj:e.nextObj,objProp:n,nextObj:e.nextObj[n]}}),{nextObj:this.params}),n=e.obj,r=e.objProp;if(!(n&&r&&n[r]instanceof Ua))throw new Error("traversePropertyPath - parameter is not a tensor, for path "+t);return{obj:n,objProp:r}},t}();function Sl(t,e,n){return ii((function(){var r=qi(t,e.depthwise_filter,e.pointwise_filter,n,"same");return r=si(r,e.bias)}))}function Al(t,e,n){return void 0===n&&(n=!1),ii((function(){var r=zi(n?si(ki(t,e.conv0.filters,[2,2],"same"),e.conv0.bias):Sl(t,e.conv0,[2,2])),a=Sl(r,e.conv1,[1,1]),o=Sl(zi(si(r,a)),e.conv2,[1,1]);return zi(si(r,si(a,o)))}))}function Tl(t,e,n,r){return void 0===n&&(n=!1),void 0===r&&(r=!0),ii((function(){var a=zi(n?si(ki(t,e.conv0.filters,r?[2,2]:[1,1],"same"),e.conv0.bias):Sl(t,e.conv0,r?[2,2]:[1,1])),o=Sl(a,e.conv1,[1,1]),i=Sl(zi(si(a,o)),e.conv2,[1,1]),s=Sl(zi(si(a,si(o,i))),e.conv3,[1,1]);return zi(si(a,si(o,si(i,s))))}))}function Cl(t,e,n,r){return void 0===n&&(n="same"),void 0===r&&(r=!1),ii((function(){var a=si(ki(t,e.filters,[1,1],n),e.bias);return r?zi(a):a}))}function Ll(t,e){Object.keys(t).forEach((function(n){e.some((function(t){return t.originalPath===n}))||t[n].dispose()}))}function Fl(t,e){return function(n,r,a,o){var i=Ji(t(n*r*a*a),[a,a,n,r]),s=Ui(t(r));return e.push({paramPath:o+"/filters"},{paramPath:o+"/bias"}),{filters:i,bias:s}}}function Dl(t,e){return function(n,r,a){var o=Xi(t(n*r),[n,r]),i=Ui(t(r));return e.push({paramPath:a+"/weights"},{paramPath:a+"/bias"}),{weights:o,bias:i}}}var Nl=function(t,e,n){this.depthwise_filter=t,this.pointwise_filter=e,this.bias=n};function Rl(t,e){return function(n,r,a){var o=Ji(t(9*n),[3,3,n,1]),i=Ji(t(n*r),[1,1,n,r]),s=Ui(t(r));return e.push({paramPath:a+"/depthwise_filter"},{paramPath:a+"/pointwise_filter"},{paramPath:a+"/bias"}),new Nl(o,i,s)}}function Bl(t){return function(e){var n=t(e+"/depthwise_filter",4),r=t(e+"/pointwise_filter",4),a=t(e+"/bias",1);return new Nl(n,r,a)}}function Ol(t,e){return function(n,r,a){var o=t[n];if(!Es(o,r))throw new Error("expected weightMap["+n+"] to be a Tensor"+r+"D, instead have "+o);return e.push({originalPath:n,paramPath:a||n}),o}}function zl(t){var e=t;return{extractWeights:function(t){var n=e.slice(0,t);return e=e.slice(t),n},getRemainingWeights:function(){return e}}}function jl(t,e){var n=Fl(t,e),r=Rl(t,e);function a(t,e,a,o){return void 0===o&&(o=!1),{conv0:o?n(t,e,3,a+"/conv0"):r(t,e,a+"/conv0"),conv1:r(e,e,a+"/conv1"),conv2:r(e,e,a+"/conv2")}}return{extractDenseBlock3Params:a,extractDenseBlock4Params:function(t,e,n,o){void 0===o&&(o=!1);var i=a(t,e,n,o);return{conv0:i.conv0,conv1:i.conv1,conv2:i.conv2,conv3:r(e,e,n+"/conv3")}}}}function Hl(t){return function(e){return{filters:t(e+"/filters",4),bias:t(e+"/bias",1)}}}function ql(t,e){var n=Ol(t,e),r=Hl(n),a=Bl(n);return{extractDenseBlock3Params:function(t,e){return void 0===e&&(e=!1),{conv0:e?r(t+"/conv0"):a(t+"/conv0"),conv1:a(t+"/conv1"),conv2:a(t+"/conv2")}},extractDenseBlock4Params:function(t,e){return void 0===e&&(e=!1),{conv0:e?r(t+"/conv0"):a(t+"/conv0"),conv1:a(t+"/conv1"),conv2:a(t+"/conv2"),conv3:a(t+"/conv3")}}}}var Wl=function(t){function e(){return t.call(this,"FaceFeatureExtractor")||this}return vs(e,t),e.prototype.forwardInput=function(t){var e=this.params;if(!e)throw new Error("FaceFeatureExtractor - load model before inference");return ii((function(){var n=Tl(js(t.toBatchTensor(112,!0),[122.782,117.001,104.298]).div(Hi(255)),e.dense0,!0);return n=Tl(n,e.dense1),n=Tl(n,e.dense2),n=Tl(n,e.dense3),n=gi(n,[7,7],[2,2],"valid")}))},e.prototype.forward=function(t){return xs(this,void 0,void 0,(function(){var e;return ws(this,(function(n){switch(n.label){case 0:return e=this.forwardInput,[4,wl(t)];case 1:return[2,e.apply(this,[n.sent()])]}}))}))},e.prototype.getDefaultModelName=function(){return"face_feature_extractor_model"},e.prototype.extractParamsFromWeigthMap=function(t){return function(t){var e=[],n=ql(t,e).extractDenseBlock4Params,r={dense0:n("dense0",!0),dense1:n("dense1"),dense2:n("dense2"),dense3:n("dense3")};return Ll(t,e),{params:r,paramMappings:e}}(t)},e.prototype.extractParams=function(t){return function(t){var e=[],n=zl(t),r=n.extractWeights,a=n.getRemainingWeights,o=jl(r,e).extractDenseBlock4Params,i=o(3,32,"dense0",!0),s=o(32,64,"dense1"),l=o(64,128,"dense2"),c=o(128,256,"dense3");if(0!==a().length)throw new Error("weights remaing after extract: "+a().length);return{paramMappings:e,params:{dense0:i,dense1:s,dense2:l,dense3:c}}}(t)},e}(Pl);function Gl(t,e){return ii((function(){return si(Zo(t,e.weights),e.bias)}))}function Vl(t){var e={},n={};return Object.keys(t).forEach((function(r){(r.startsWith("fc")?n:e)[r]=t[r]})),{featureExtractorMap:e,classifierMap:n}}var Kl=function(t){function e(e,n){var r=t.call(this,e)||this;return r._faceFeatureExtractor=n,r}return vs(e,t),Object.defineProperty(e.prototype,"faceFeatureExtractor",{get:function(){return this._faceFeatureExtractor},enumerable:!0,configurable:!0}),e.prototype.runNet=function(t){var e=this,n=this.params;if(!n)throw new Error(this._name+" - load model before inference");return ii((function(){var r=t instanceof xl?e.faceFeatureExtractor.forwardInput(t):t;return Gl(r.as2D(r.shape[0],-1),n.fc)}))},e.prototype.dispose=function(e){void 0===e&&(e=!0),this.faceFeatureExtractor.dispose(e),t.prototype.dispose.call(this,e)},e.prototype.loadClassifierParams=function(t){var e=this.extractClassifierParams(t),n=e.params,r=e.paramMappings;this._params=n,this._paramMappings=r},e.prototype.extractClassifierParams=function(t){return function(t,e,n){var r=[],a=zl(t),o=a.extractWeights,i=a.getRemainingWeights,s=Dl(o,r)(e,n,"fc");if(0!==i().length)throw new Error("weights remaing after extract: "+i().length);return{paramMappings:r,params:{fc:s}}}(t,this.getClassifierChannelsIn(),this.getClassifierChannelsOut())},e.prototype.extractParamsFromWeigthMap=function(t){var e=Vl(t),n=e.featureExtractorMap,r=e.classifierMap;return this.faceFeatureExtractor.loadFromWeightMap(n),function(t){var e,n=[],r=Ol(t,n),a={fc:(e="fc",{weights:r(e+"/weights",2),bias:r(e+"/bias",1)})};return Ll(t,n),{params:a,paramMappings:n}}(r)},e.prototype.extractParams=function(t){var e=this.getClassifierChannelsIn(),n=this.getClassifierChannelsOut(),r=n*e+n,a=t.slice(0,t.length-r),o=t.slice(t.length-r);return this.faceFeatureExtractor.extractWeights(a),this.extractClassifierParams(o)},e}(Pl),Ul=["Neutre","Joyeux","Triste","Colère","Peur","Dégoût","Surprise"],Xl=function(){function t(t){var e=this;if(7!==t.length)throw new Error("FaceExpressions.constructor - expected probabilities.length to be 7, have: "+t.length);Ul.forEach((function(n,r){e[n]=t[r]}))}return t.prototype.asSortedArray=function(){var t=this;return Ul.map((function(e){return{expression:e,probability:t[e]}})).sort((function(t,e){return e.probability-t.probability}))},t}(),Jl=function(t){function e(e){return void 0===e&&(e=new Wl),t.call(this,"FaceExpressionNet",e)||this}return vs(e,t),e.prototype.forwardInput=function(t){var e=this;return ii((function(){return Gi(e.runNet(t))}))},e.prototype.forward=function(t){return xs(this,void 0,void 0,(function(){var e;return ws(this,(function(n){switch(n.label){case 0:return e=this.forwardInput,[4,wl(t)];case 1:return[2,e.apply(this,[n.sent()])]}}))}))},e.prototype.predictExpressions=function(t){return xs(this,void 0,void 0,(function(){var e,n,r,a,o=this;return ws(this,(function(i){switch(i.label){case 0:return[4,wl(t)];case 1:return e=i.sent(),[4,this.forwardInput(e)];case 2:return n=i.sent(),[4,Promise.all(Yi(n).map((function(t){return xs(o,void 0,void 0,(function(){var e;return ws(this,(function(n){switch(n.label){case 0:return[4,t.data()];case 1:return e=n.sent(),t.dispose(),[2,e]}}))}))})))];case 3:return r=i.sent(),n.dispose(),a=r.map((function(t){return new Xl(t)})),[2,e.isBatchInput?a:a[0]]}}))}))},e.prototype.getDefaultModelName=function(){return"face_expression_model"},e.prototype.getClassifierChannelsIn=function(){return 256},e.prototype.getClassifierChannelsOut=function(){return 7},e}(Kl);function Yl(t,e){var n={expressions:e};return Object.assign({},t,n)}function Ql(t,e,n,r){void 0===n&&(n=.1),(Array.isArray(e)?e:[e]).forEach((function(e){var a=e instanceof Xl?e:e.expressions instanceof Xl?e.expressions:void 0;if(!a)throw new Error("drawFaceExpressions - expected faceExpressions to be FaceExpressions | WithFaceExpressions<{}> or array thereof");var o=a.asSortedArray().filter((function(t){return t.probability>n})),i=Ys(e)?e.detection.box.bottomLeft:r||new Fs(0,0);new dl(o.map((function(t){return t.expression+" ("+Ps(t.probability)+")"})),i).draw(t)}))}function Zl(t){return Ys(t)&&t.landmarks instanceof Gs&&t.unshiftedLandmarks instanceof Gs&&t.alignedRect instanceof Bs}function tc(t,e){var n=t.detection.box,r=e.shiftBy(n.x,n.y),a=r.align(),o=t.detection.imageDims,i={landmarks:r,unshiftedLandmarks:e,alignedRect:new Bs(t.detection.score,a.rescale(o.reverse()),o)};return Object.assign({},t,i)}function ec(t,e){var n=[],r=zl(t),a=r.extractWeights,o=r.getRemainingWeights,i=function(t,e){var n=Fl(t,e),r=Rl(t,e);return{extractConvParams:n,extractSeparableConvParams:r,extractReductionBlockParams:function(t,e,a){return{separable_conv0:r(t,e,a+"/separable_conv0"),separable_conv1:r(e,e,a+"/separable_conv1"),expansion_conv:n(t,e,1,a+"/expansion_conv")}},extractMainBlockParams:function(t,e){return{separable_conv0:r(t,t,e+"/separable_conv0"),separable_conv1:r(t,t,e+"/separable_conv1"),separable_conv2:r(t,t,e+"/separable_conv2")}}}}(a,n),s=i.extractConvParams,l=i.extractSeparableConvParams,c=i.extractReductionBlockParams,u=i.extractMainBlockParams,d={conv_in:s(3,32,3,"entry_flow/conv_in"),reduction_block_0:c(32,64,"entry_flow/reduction_block_0"),reduction_block_1:c(64,128,"entry_flow/reduction_block_1")},p={};Ts(e,0,1).forEach((function(t){p["main_block_"+t]=u(128,"middle_flow/main_block_"+t)}));var h={reduction_block:c(128,256,"exit_flow/reduction_block"),separable_conv:l(256,512,"exit_flow/separable_conv")};if(0!==o().length)throw new Error("weights remaing after extract: "+o().length);return{paramMappings:n,params:{entry_flow:d,middle_flow:p,exit_flow:h}}}function nc(t,e){var n=[],r=function(t,e){var n=Ol(t,e),r=Hl(n),a=Bl(n);return{extractConvParams:r,extractSeparableConvParams:a,extractReductionBlockParams:function(t){return{separable_conv0:a(t+"/separable_conv0"),separable_conv1:a(t+"/separable_conv1"),expansion_conv:r(t+"/expansion_conv")}},extractMainBlockParams:function(t){return{separable_conv0:a(t+"/separable_conv0"),separable_conv1:a(t+"/separable_conv1"),separable_conv2:a(t+"/separable_conv2")}}}}(t,n),a=r.extractConvParams,o=r.extractSeparableConvParams,i=r.extractReductionBlockParams,s=r.extractMainBlockParams,l={conv_in:a("entry_flow/conv_in"),reduction_block_0:i("entry_flow/reduction_block_0"),reduction_block_1:i("entry_flow/reduction_block_1")},c={};Ts(e,0,1).forEach((function(t){c["main_block_"+t]=s("middle_flow/main_block_"+t)}));var u={reduction_block:i("exit_flow/reduction_block"),separable_conv:o("exit_flow/separable_conv")};return Ll(t,n),{params:{entry_flow:l,middle_flow:c,exit_flow:u},paramMappings:n}}function rc(t,e,n){return si(ki(t,e.filters,n,"same"),e.bias)}function ac(t,e,n){void 0===n&&(n=!0);var r=n?zi(t):t;return r=Sl(r,e.separable_conv0,[1,1]),r=Sl(zi(r),e.separable_conv1,[1,1]),r=Ni(r,[3,3],[2,2],"same"),r=si(r,rc(t,e.expansion_conv,[2,2]))}var oc,ic=function(t){function e(e){var n=t.call(this,"TinyXception")||this;return n._numMainBlocks=e,n}return vs(e,t),e.prototype.forwardInput=function(t){var e=this,n=this.params;if(!n)throw new Error("TinyXception - load model before inference");return ii((function(){var r=js(t.toBatchTensor(112,!0),[122.782,117.001,104.298]).div(Hi(256)),a=zi(rc(r,n.entry_flow.conv_in,[2,2]));return a=ac(a,n.entry_flow.reduction_block_0,!1),a=ac(a,n.entry_flow.reduction_block_1),Ts(e._numMainBlocks,0,1).forEach((function(t){a=function(t,e){var n=Sl(zi(t),e.separable_conv0,[1,1]);return n=Sl(zi(n),e.separable_conv1,[1,1]),n=Sl(zi(n),e.separable_conv2,[1,1]),n=si(n,t)}(a,n.middle_flow["main_block_"+t])})),a=ac(a,n.exit_flow.reduction_block),a=zi(Sl(a,n.exit_flow.separable_conv,[1,1]))}))},e.prototype.forward=function(t){return xs(this,void 0,void 0,(function(){var e;return ws(this,(function(n){switch(n.label){case 0:return e=this.forwardInput,[4,wl(t)];case 1:return[2,e.apply(this,[n.sent()])]}}))}))},e.prototype.getDefaultModelName=function(){return"tiny_xception_model"},e.prototype.extractParamsFromWeigthMap=function(t){return nc(t,this._numMainBlocks)},e.prototype.extractParams=function(t){return ec(t,this._numMainBlocks)},e}(Pl);!function(t){t.FEMALE="female",t.MALE="male"}(oc||(oc={}));var sc=function(t){function e(e){void 0===e&&(e=new ic(2));var n=t.call(this,"AgeGenderNet")||this;return n._faceFeatureExtractor=e,n}return vs(e,t),Object.defineProperty(e.prototype,"faceFeatureExtractor",{get:function(){return this._faceFeatureExtractor},enumerable:!0,configurable:!0}),e.prototype.runNet=function(t){var e=this,n=this.params;if(!n)throw new Error(this._name+" - load model before inference");return ii((function(){var r=t instanceof xl?e.faceFeatureExtractor.forwardInput(t):t,a=gi(r,[7,7],[2,2],"valid").as2D(r.shape[0],-1);return{age:Gl(a,n.fc.age).as1D(),gender:Gl(a,n.fc.gender)}}))},e.prototype.forwardInput=function(t){var e=this;return ii((function(){var n=e.runNet(t),r=n.age,a=n.gender;return{age:r,gender:Gi(a)}}))},e.prototype.forward=function(t){return xs(this,void 0,void 0,(function(){var e;return ws(this,(function(n){switch(n.label){case 0:return e=this.forwardInput,[4,wl(t)];case 1:return[2,e.apply(this,[n.sent()])]}}))}))},e.prototype.predictAgeAndGender=function(t){return xs(this,void 0,void 0,(function(){var e,n,r,a,o,i,s=this;return ws(this,(function(l){switch(l.label){case 0:return[4,wl(t)];case 1:return e=l.sent(),[4,this.forwardInput(e)];case 2:return n=l.sent(),r=Yi(n.age),a=Yi(n.gender),o=r.map((function(t,e){return{ageTensor:t,genderTensor:a[e]}})),[4,Promise.all(o.map((function(t){var e=t.ageTensor,n=t.genderTensor;return xs(s,void 0,void 0,(function(){var t,r,a,o,i;return ws(this,(function(s){switch(s.label){case 0:return[4,e.data()];case 1:return t=s.sent()[0],[4,n.data()];case 2:return r=s.sent()[0],o=(a=r>.5)?oc.MALE:oc.FEMALE,i=a?r:1-r,e.dispose(),n.dispose(),[2,{age:t,gender:o,genderProbability:i}]}}))}))})))];case 3:return i=l.sent(),n.age.dispose(),n.gender.dispose(),[2,e.isBatchInput?i:i[0]]}}))}))},e.prototype.getDefaultModelName=function(){return"age_gender_model"},e.prototype.dispose=function(e){void 0===e&&(e=!0),this.faceFeatureExtractor.dispose(e),t.prototype.dispose.call(this,e)},e.prototype.loadClassifierParams=function(t){var e=this.extractClassifierParams(t),n=e.params,r=e.paramMappings;this._params=n,this._paramMappings=r},e.prototype.extractClassifierParams=function(t){return function(t){var e=[],n=zl(t),r=n.extractWeights,a=n.getRemainingWeights,o=Dl(r,e),i=o(512,1,"fc/age"),s=o(512,2,"fc/gender");if(0!==a().length)throw new Error("weights remaing after extract: "+a().length);return{paramMappings:e,params:{fc:{age:i,gender:s}}}}(t)},e.prototype.extractParamsFromWeigthMap=function(t){var e=Vl(t),n=e.featureExtractorMap,r=e.classifierMap;return this.faceFeatureExtractor.loadFromWeightMap(n),function(t){var e=[],n=Ol(t,e);function r(t){return{weights:n(t+"/weights",2),bias:n(t+"/bias",1)}}var a={fc:{age:r("fc/age"),gender:r("fc/gender")}};return Ll(t,e),{params:a,paramMappings:e}}(r)},e.prototype.extractParams=function(t){var e=t.slice(0,t.length-1539),n=t.slice(t.length-1539);return this.faceFeatureExtractor.extractWeights(e),this.extractClassifierParams(n)},e}(Pl),lc=function(t){function e(){return null!==t&&t.apply(this,arguments)||this}return vs(e,t),e.prototype.postProcess=function(t,e,n){var r=n.map((function(t){var n=t.width,r=t.height,a=e/Math.max(r,n);return{width:n*a,height:r*a}})),a=r.length;return ii((function(){var n=function(t,e){return Ki([Si([68],t),Si([68],e)],1).as2D(1,136).as1D()},o=function(t,e){var n=r[t],a=n.width,o=n.height;return e(a,o)?Math.abs(a-o)/2:0};return t.mul(Si([a,136],e)).sub(Ki(Array.from(Array(a),(function(t,e){return n(function(t){return o(t,(function(t,e){return t<e}))}(e),function(t){return o(t,(function(t,e){return e<t}))}(e))})))).div(Ki(Array.from(Array(a),(function(t,e){return n(r[e].width,r[e].height)}))))}))},e.prototype.forwardInput=function(t){var e=this;return ii((function(){var n=e.runNet(t);return e.postProcess(n,t.inputSize,t.inputDimensions.map((function(t){return{height:t[0],width:t[1]}})))}))},e.prototype.forward=function(t){return xs(this,void 0,void 0,(function(){var e;return ws(this,(function(n){switch(n.label){case 0:return e=this.forwardInput,[4,wl(t)];case 1:return[2,e.apply(this,[n.sent()])]}}))}))},e.prototype.detectLandmarks=function(t){return xs(this,void 0,void 0,(function(){var e,n,r,a=this;return ws(this,(function(o){switch(o.label){case 0:return[4,wl(t)];case 1:return e=o.sent(),n=ii((function(){return Yi(a.forwardInput(e))})),[4,Promise.all(n.map((function(t,n){return xs(a,void 0,void 0,(function(){var r,a,o,i,s;return ws(this,(function(l){switch(l.label){case 0:return o=(a=Array).from,[4,t.data()];case 1:return r=o.apply(a,[l.sent()]),i=r.filter((function(t,e){return Ms(e)})),s=r.filter((function(t,e){return!Ms(e)})),[2,new Ks(Array(68).fill(0).map((function(t,e){return new Fs(i[e],s[e])})),{height:e.getInputHeight(n),width:e.getInputWidth(n)})]}}))}))})))];case 2:return r=o.sent(),n.forEach((function(t){return t.dispose()})),[2,e.isBatchInput?r:r[0]]}}))}))},e.prototype.getClassifierChannelsOut=function(){return 136},e}(Kl),cc=function(t){function e(e){return void 0===e&&(e=new Wl),t.call(this,"FaceLandmark68Net",e)||this}return vs(e,t),e.prototype.getDefaultModelName=function(){return"face_landmark_68_model"},e.prototype.getClassifierChannelsIn=function(){return 256},e}(lc);var uc=function(t){function e(){return t.call(this,"TinyFaceFeatureExtractor")||this}return vs(e,t),e.prototype.forwardInput=function(t){var e=this.params;if(!e)throw new Error("TinyFaceFeatureExtractor - load model before inference");return ii((function(){var n=Al(js(t.toBatchTensor(112,!0),[122.782,117.001,104.298]).div(Hi(255)),e.dense0,!0);return n=Al(n,e.dense1),n=Al(n,e.dense2),n=gi(n,[14,14],[2,2],"valid")}))},e.prototype.forward=function(t){return xs(this,void 0,void 0,(function(){var e;return ws(this,(function(n){switch(n.label){case 0:return e=this.forwardInput,[4,wl(t)];case 1:return[2,e.apply(this,[n.sent()])]}}))}))},e.prototype.getDefaultModelName=function(){return"face_feature_extractor_tiny_model"},e.prototype.extractParamsFromWeigthMap=function(t){return function(t){var e=[],n=ql(t,e).extractDenseBlock3Params,r={dense0:n("dense0",!0),dense1:n("dense1"),dense2:n("dense2")};return Ll(t,e),{params:r,paramMappings:e}}(t)},e.prototype.extractParams=function(t){return function(t){var e=[],n=zl(t),r=n.extractWeights,a=n.getRemainingWeights,o=jl(r,e).extractDenseBlock3Params,i=o(3,32,"dense0",!0),s=o(32,64,"dense1"),l=o(64,128,"dense2");if(0!==a().length)throw new Error("weights remaing after extract: "+a().length);return{paramMappings:e,params:{dense0:i,dense1:s,dense2:l}}}(t)},e}(Pl),dc=function(t){function e(e){return void 0===e&&(e=new uc),t.call(this,"FaceLandmark68TinyNet",e)||this}return vs(e,t),e.prototype.getDefaultModelName=function(){return"face_landmark_68_tiny_model"},e.prototype.getClassifierChannelsIn=function(){return 128},e}(lc);!function(t){function e(){return null!==t&&t.apply(this,arguments)||this}vs(e,t)}(cc);function pc(t,e,n,r,a){void 0===a&&(a="same");var o=e.conv,i=o.filters,s=o.bias,l=ki(t,i,n,a);return l=function(t,e){return si(ui(t,e.weights),e.biases)}(l=si(l,s),e.scale),r?zi(l):l}function hc(t,e){return pc(t,e,[1,1],!1)}function fc(t,e){return pc(t,e,[2,2],!0,"valid")}function gc(t,e){function n(n,r,a,o){var i=function(e,n,r){var a=t(e),o=a.length/(n*r*r);if(o%1!=0)throw new Error("depth has to be an integer: "+o+", weights.length: "+a.length+", numFilters: "+n+", filterSize: "+r);return ii((function(){return ti(Ji(a,[n,o,r,r]),[2,3,1,0])}))}(n,r,a),s=Ui(t(r));return e.push({paramPath:o+"/filters"},{paramPath:o+"/bias"}),{filters:i,bias:s}}function r(r,a,o,i){return{conv:n(r,a,o,i+"/conv"),scale:function(n,r){var a=Ui(t(n)),o=Ui(t(n));return e.push({paramPath:r+"/weights"},{paramPath:r+"/biases"}),{weights:a,biases:o}}(a,i+"/scale")}}return{extractConvLayerParams:r,extractResidualLayerParams:function(t,e,n,a,o){return void 0===o&&(o=!1),{conv1:r((o?.5:1)*t,e,n,a+"/conv1"),conv2:r(t,e,n,a+"/conv2")}}}}function mc(t,e){var n=Ol(t,e);function r(t){return{conv:{filters:n(t+"/conv/filters",4),bias:n(t+"/conv/bias",1)},scale:function(t){return{weights:n(t+"/scale/weights",1),biases:n(t+"/scale/biases",1)}}(t)}}return{extractConvLayerParams:r,extractResidualLayerParams:function(t){return{conv1:r(t+"/conv1"),conv2:r(t+"/conv2")}}}}function yc(t){var e=[],n=mc(t,e),r=n.extractConvLayerParams,a=n.extractResidualLayerParams,o=r("conv32_down"),i=a("conv32_1"),s=a("conv32_2"),l=a("conv32_3"),c=a("conv64_down"),u=a("conv64_1"),d=a("conv64_2"),p=a("conv64_3"),h=a("conv128_down"),f=a("conv128_1"),g=a("conv128_2"),m=a("conv256_down"),y=a("conv256_1"),v=a("conv256_2"),b=a("conv256_down_out"),x=t.fc;if(e.push({originalPath:"fc",paramPath:"fc"}),!function(t){return Es(t,2)}(x))throw new Error("expected weightMap[fc] to be a Tensor2D, instead have "+x);var w={conv32_down:o,conv32_1:i,conv32_2:s,conv32_3:l,conv64_down:c,conv64_1:u,conv64_2:d,conv64_3:p,conv128_down:h,conv128_1:f,conv128_2:g,conv256_down:m,conv256_1:y,conv256_2:v,conv256_down_out:b,fc:x};return Ll(t,e),{params:w,paramMappings:e}}function vc(t,e){var n=function(t,e){return pc(t,e,[1,1],!0)}(t,e.conv1);return n=hc(n,e.conv2),n=si(n,t),n=zi(n)}function bc(t,e){var n=fc(t,e.conv1);n=hc(n,e.conv2);var r=gi(t,2,2,"valid"),a=Ri(r.shape),o=r.shape[3]!==n.shape[3];if(r.shape[1]!==n.shape[1]||r.shape[2]!==n.shape[2]){var i=_s(n.shape);i[1]=1;var s=Ri(i),l=_s((n=mi([n,s],1)).shape);l[2]=1;var c=Ri(l);n=mi([n,c],2)}return r=o?mi([r,a],3):r,n=si(r,n),n=zi(n)}var xc=function(t){function e(){return t.call(this,"FaceRecognitionNet")||this}return vs(e,t),e.prototype.forwardInput=function(t){var e=this.params;if(!e)throw new Error("FaceRecognitionNet - load model before inference");return ii((function(){var n=fc(js(t.toBatchTensor(150,!0).toFloat(),[122.782,117.001,104.298]).div(Hi(256)),e.conv32_down);n=vc(n=Ni(n,3,2,"valid"),e.conv32_1),n=vc(n,e.conv32_2),n=vc(n,e.conv32_3),n=vc(n=bc(n,e.conv64_down),e.conv64_1),n=vc(n,e.conv64_2),n=vc(n,e.conv64_3),n=vc(n=bc(n,e.conv128_down),e.conv128_1),n=vc(n,e.conv128_2),n=vc(n=bc(n,e.conv256_down),e.conv256_1);var r=(n=bc(n=vc(n,e.conv256_2),e.conv256_down_out)).mean([1,2]);return Zo(r,e.fc)}))},e.prototype.forward=function(t){return xs(this,void 0,void 0,(function(){var e;return ws(this,(function(n){switch(n.label){case 0:return e=this.forwardInput,[4,wl(t)];case 1:return[2,e.apply(this,[n.sent()])]}}))}))},e.prototype.computeFaceDescriptor=function(t){return xs(this,void 0,void 0,(function(){var e,n,r,a=this;return ws(this,(function(o){switch(o.label){case 0:return[4,wl(t)];case 1:return e=o.sent(),n=ii((function(){return Yi(a.forwardInput(e))})),[4,Promise.all(n.map((function(t){return t.data()})))];case 2:return r=o.sent(),n.forEach((function(t){return t.dispose()})),[2,e.isBatchInput?r:r[0]]}}))}))},e.prototype.getDefaultModelName=function(){return"face_recognition_model"},e.prototype.extractParamsFromWeigthMap=function(t){return yc(t)},e.prototype.extractParams=function(t){return function(t){var e=zl(t),n=e.extractWeights,r=e.getRemainingWeights,a=[],o=gc(n,a),i=o.extractConvLayerParams,s=o.extractResidualLayerParams,l=i(4704,32,7,"conv32_down"),c=s(9216,32,3,"conv32_1"),u=s(9216,32,3,"conv32_2"),d=s(9216,32,3,"conv32_3"),p=s(36864,64,3,"conv64_down",!0),h=s(36864,64,3,"conv64_1"),f=s(36864,64,3,"conv64_2"),g=s(36864,64,3,"conv64_3"),m=s(147456,128,3,"conv128_down",!0),y=s(147456,128,3,"conv128_1"),v=s(147456,128,3,"conv128_2"),b=s(589824,256,3,"conv256_down",!0),x=s(589824,256,3,"conv256_1"),w=s(589824,256,3,"conv256_2"),_=s(589824,256,3,"conv256_down_out"),k=ii((function(){return ti(Xi(n(32768),[128,256]),[1,0])}));if(a.push({paramPath:"fc"}),0!==r().length)throw new Error("weights remaing after extract: "+r().length);return{params:{conv32_down:l,conv32_1:c,conv32_2:u,conv32_3:d,conv64_down:p,conv64_1:h,conv64_2:f,conv64_3:g,conv128_down:m,conv128_1:y,conv128_2:v,conv256_down:b,conv256_1:x,conv256_2:w,conv256_down_out:_,fc:k},paramMappings:a}}(t)},e}(Pl);function wc(t,e){var n={descriptor:e};return Object.assign({},t,n)}function _c(t,e){var n={age:e};return Object.assign({},t,n)}function kc(t,e,n){var r={gender:e,genderProbability:n};return Object.assign({},t,r)}var Ec=function(){function t(t){var e=void 0===t?{}:t,n=e.minFaceSize,r=e.scaleFactor,a=e.maxNumScales,o=e.scoreThresholds,i=e.scaleSteps;if(this._name="MtcnnOptions",this._minFaceSize=n||20,this._scaleFactor=r||.709,this._maxNumScales=a||10,this._scoreThresholds=o||[.6,.7,.7],this._scaleSteps=i,"number"!=typeof this._minFaceSize||this._minFaceSize<0)throw new Error(this._name+" - expected minFaceSize to be a number > 0");if("number"!=typeof this._scaleFactor||this._scaleFactor<=0||this._scaleFactor>=1)throw new Error(this._name+" - expected scaleFactor to be a number between 0 and 1");if("number"!=typeof this._maxNumScales||this._maxNumScales<0)throw new Error(this._name+" - expected maxNumScales to be a number > 0");if(!Array.isArray(this._scoreThresholds)||3!==this._scoreThresholds.length||this._scoreThresholds.some((function(t){return"number"!=typeof t})))throw new Error(this._name+" - expected scoreThresholds to be an array of numbers of length 3");if(this._scaleSteps&&(!Array.isArray(this._scaleSteps)||this._scaleSteps.some((function(t){return"number"!=typeof t}))))throw new Error(this._name+" - expected scaleSteps to be an array of numbers")}return Object.defineProperty(t.prototype,"minFaceSize",{get:function(){return this._minFaceSize},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"scaleFactor",{get:function(){return this._scaleFactor},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"maxNumScales",{get:function(){return this._maxNumScales},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"scoreThresholds",{get:function(){return this._scoreThresholds},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"scaleSteps",{get:function(){return this._scaleSteps},enumerable:!0,configurable:!0}),t}();function $c(t,e){function n(n,r,a,o,i){var s=Ji(t(n*r*a*a),[a,a,n,r]),l=Ui(t(r));return e.push({paramPath:o+"/filters"},{paramPath:o+"/"+(i?"batch_norm_offset":"bias")}),{filters:s,bias:l}}function r(t,e,r,a){var o=n(t,e,r,a,!0);return{filters:o.filters,batch_norm_offset:o.bias}}function a(n,a,o){return{depthwise_conv:function(n,r){var a=Ji(t(9*n),[3,3,n,1]),o=Ui(t(n)),i=Ui(t(n)),s=Ui(t(n)),l=Ui(t(n));return e.push({paramPath:r+"/filters"},{paramPath:r+"/batch_norm_scale"},{paramPath:r+"/batch_norm_offset"},{paramPath:r+"/batch_norm_mean"},{paramPath:r+"/batch_norm_variance"}),{filters:a,batch_norm_scale:o,batch_norm_offset:i,batch_norm_mean:s,batch_norm_variance:l}}(n,o+"/depthwise_conv"),pointwise_conv:r(n,a,1,o+"/pointwise_conv")}}return{extractMobilenetV1Params:function(){return{conv_0:r(3,32,3,"mobilenetv1/conv_0"),conv_1:a(32,64,"mobilenetv1/conv_1"),conv_2:a(64,128,"mobilenetv1/conv_2"),conv_3:a(128,128,"mobilenetv1/conv_3"),conv_4:a(128,256,"mobilenetv1/conv_4"),conv_5:a(256,256,"mobilenetv1/conv_5"),conv_6:a(256,512,"mobilenetv1/conv_6"),conv_7:a(512,512,"mobilenetv1/conv_7"),conv_8:a(512,512,"mobilenetv1/conv_8"),conv_9:a(512,512,"mobilenetv1/conv_9"),conv_10:a(512,512,"mobilenetv1/conv_10"),conv_11:a(512,512,"mobilenetv1/conv_11"),conv_12:a(512,1024,"mobilenetv1/conv_12"),conv_13:a(1024,1024,"mobilenetv1/conv_13")}},extractPredictionLayerParams:function(){return{conv_0:r(1024,256,1,"prediction_layer/conv_0"),conv_1:r(256,512,3,"prediction_layer/conv_1"),conv_2:r(512,128,1,"prediction_layer/conv_2"),conv_3:r(128,256,3,"prediction_layer/conv_3"),conv_4:r(256,128,1,"prediction_layer/conv_4"),conv_5:r(128,256,3,"prediction_layer/conv_5"),conv_6:r(256,64,1,"prediction_layer/conv_6"),conv_7:r(64,128,3,"prediction_layer/conv_7"),box_predictor_0:{box_encoding_predictor:n(512,12,1,"prediction_layer/box_predictor_0/box_encoding_predictor"),class_predictor:n(512,9,1,"prediction_layer/box_predictor_0/class_predictor")},box_predictor_1:{box_encoding_predictor:n(1024,24,1,"prediction_layer/box_predictor_1/box_encoding_predictor"),class_predictor:n(1024,18,1,"prediction_layer/box_predictor_1/class_predictor")},box_predictor_2:{box_encoding_predictor:n(512,24,1,"prediction_layer/box_predictor_2/box_encoding_predictor"),class_predictor:n(512,18,1,"prediction_layer/box_predictor_2/class_predictor")},box_predictor_3:{box_encoding_predictor:n(256,24,1,"prediction_layer/box_predictor_3/box_encoding_predictor"),class_predictor:n(256,18,1,"prediction_layer/box_predictor_3/class_predictor")},box_predictor_4:{box_encoding_predictor:n(256,24,1,"prediction_layer/box_predictor_4/box_encoding_predictor"),class_predictor:n(256,18,1,"prediction_layer/box_predictor_4/class_predictor")},box_predictor_5:{box_encoding_predictor:n(128,24,1,"prediction_layer/box_predictor_5/box_encoding_predictor"),class_predictor:n(128,18,1,"prediction_layer/box_predictor_5/class_predictor")}}}}}function Ic(t){var e=[],n=function(t,e){var n=Ol(t,e);function r(t,e,r){return{filters:n(t+"/Conv2d_"+e+"_pointwise/weights",4,r+"/filters"),batch_norm_offset:n(t+"/Conv2d_"+e+"_pointwise/convolution_bn_offset",1,r+"/batch_norm_offset")}}function a(t){var e="mobilenetv1/conv_"+t,a="MobilenetV1/Conv2d_"+t+"_depthwise",o=e+"/depthwise_conv",i=e+"/pointwise_conv";return{depthwise_conv:{filters:n(a+"/depthwise_weights",4,o+"/filters"),batch_norm_scale:n(a+"/BatchNorm/gamma",1,o+"/batch_norm_scale"),batch_norm_offset:n(a+"/BatchNorm/beta",1,o+"/batch_norm_offset"),batch_norm_mean:n(a+"/BatchNorm/moving_mean",1,o+"/batch_norm_mean"),batch_norm_variance:n(a+"/BatchNorm/moving_variance",1,o+"/batch_norm_variance")},pointwise_conv:r("MobilenetV1",t,i)}}function o(t,e){return{filters:n(t+"/weights",4,e+"/filters"),bias:n(t+"/biases",1,e+"/bias")}}function i(t){return{box_encoding_predictor:o("Prediction/BoxPredictor_"+t+"/BoxEncodingPredictor","prediction_layer/box_predictor_"+t+"/box_encoding_predictor"),class_predictor:o("Prediction/BoxPredictor_"+t+"/ClassPredictor","prediction_layer/box_predictor_"+t+"/class_predictor")}}return{extractMobilenetV1Params:function(){return{conv_0:r("MobilenetV1",0,"mobilenetv1/conv_0"),conv_1:a(1),conv_2:a(2),conv_3:a(3),conv_4:a(4),conv_5:a(5),conv_6:a(6),conv_7:a(7),conv_8:a(8),conv_9:a(9),conv_10:a(10),conv_11:a(11),conv_12:a(12),conv_13:a(13)}},extractPredictionLayerParams:function(){return{conv_0:r("Prediction",0,"prediction_layer/conv_0"),conv_1:r("Prediction",1,"prediction_layer/conv_1"),conv_2:r("Prediction",2,"prediction_layer/conv_2"),conv_3:r("Prediction",3,"prediction_layer/conv_3"),conv_4:r("Prediction",4,"prediction_layer/conv_4"),conv_5:r("Prediction",5,"prediction_layer/conv_5"),conv_6:r("Prediction",6,"prediction_layer/conv_6"),conv_7:r("Prediction",7,"prediction_layer/conv_7"),box_predictor_0:i(0),box_predictor_1:i(1),box_predictor_2:i(2),box_predictor_3:i(3),box_predictor_4:i(4),box_predictor_5:i(5)}}}}(t,e),r=n.extractMobilenetV1Params,a=n.extractPredictionLayerParams,o=t["Output/extra_dim"];if(e.push({originalPath:"Output/extra_dim",paramPath:"output_layer/extra_dim"}),!$s(o))throw new Error("expected weightMap['Output/extra_dim'] to be a Tensor3D, instead have "+o);var i={mobilenetv1:r(),prediction_layer:a(),output_layer:{extra_dim:o}};return Ll(t,e),{params:i,paramMappings:e}}function Mc(t,e,n){return ii((function(){var r=ki(t,e.filters,n,"same");return r=si(r,e.batch_norm_offset),_i(r,0,6)}))}function Pc(t,e){return ii((function(){var n=null,r=Mc(t,e.conv_0,[2,2]);if([e.conv_1,e.conv_2,e.conv_3,e.conv_4,e.conv_5,e.conv_6,e.conv_7,e.conv_8,e.conv_9,e.conv_10,e.conv_11,e.conv_12,e.conv_13].forEach((function(t,e){var a=e+1,o=function(t){return[2,4,6,12].some((function(e){return e===t}))?[2,2]:[1,1]}(a);r=Mc(r=function(t,e,n){return ii((function(){var r=Ei(t,e.filters,n,"same");return r=bi(r,e.batch_norm_mean,e.batch_norm_variance,e.batch_norm_offset,e.batch_norm_scale,.0010000000474974513),_i(r,0,6)}))}(r,t.depthwise_conv,o),t.pointwise_conv,[1,1]),11===a&&(n=r)})),null===n)throw new Error("mobileNetV1 - output of conv layer 11 is null");return{out:r,conv11:n}}))}function Sc(t,e,n){var r=t.arraySync(),a=Math.min(r[e][0],r[e][2]),o=Math.min(r[e][1],r[e][3]),i=Math.max(r[e][0],r[e][2]),s=Math.max(r[e][1],r[e][3]),l=Math.min(r[n][0],r[n][2]),c=Math.min(r[n][1],r[n][3]),u=Math.max(r[n][0],r[n][2]),d=Math.max(r[n][1],r[n][3]),p=(i-a)*(s-o),h=(u-l)*(d-c);if(p<=0||h<=0)return 0;var f=Math.max(a,l),g=Math.max(o,c),m=Math.min(i,u),y=Math.min(s,d),v=Math.max(m-f,0)*Math.max(y-g,0);return v/(p+h-v)}function Ac(t,e){var n=function(t){var e=Yi(ti(t,[1,0])),n=[Fi(e[2],e[0]),Fi(e[3],e[1])];return{sizes:n,centers:[si(e[0],ci(n[0],Hi(2))),si(e[1],ci(n[1],Hi(2)))]}}(t),r=n.sizes,a=n.centers,o=Yi(ti(e,[1,0])),i=ci(ui(Ii(ci(o[2],Hi(5))),r[0]),Hi(2)),s=si(ui(ci(o[0],Hi(10)),r[0]),a[0]),l=ci(ui(Ii(ci(o[3],Hi(5))),r[1]),Hi(2)),c=si(ui(ci(o[1],Hi(10)),r[1]),a[1]);return ti(Ki([Fi(s,i),Fi(c,l),si(s,i),si(c,l)]),[1,0])}function Tc(t,e){return ii((function(){var n=t.shape[0];return{boxPredictionEncoding:fi(Cl(t,e.box_encoding_predictor),[n,-1,1,4]),classPrediction:fi(Cl(t,e.class_predictor),[n,-1,3])}}))}var Cc,Lc=function(){function t(t){var e=void 0===t?{}:t,n=e.minConfidence,r=e.maxResults;if(this._name="SsdMobilenetv1Options",this._minConfidence=n||.5,this._maxResults=r||100,"number"!=typeof this._minConfidence||this._minConfidence<=0||this._minConfidence>=1)throw new Error(this._name+" - expected minConfidence to be a number between 0 and 1");if("number"!=typeof this._maxResults)throw new Error(this._name+" - expected maxResults to be a number")}return Object.defineProperty(t.prototype,"minConfidence",{get:function(){return this._minConfidence},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"maxResults",{get:function(){return this._maxResults},enumerable:!0,configurable:!0}),t}(),Fc=function(t){function e(){return t.call(this,"SsdMobilenetv1")||this}return vs(e,t),e.prototype.forwardInput=function(t){var e=this.params;if(!e)throw new Error("SsdMobilenetv1 - load model before inference");return ii((function(){var n=t.toBatchTensor(512,!1).toFloat(),r=Pc(Fi(ui(n,Hi(.007843137718737125)),Hi(1)),e.mobilenetv1),a=function(t,e,n){return ii((function(){var r=Mc(t,n.conv_0,[1,1]),a=Mc(r,n.conv_1,[2,2]),o=Mc(a,n.conv_2,[1,1]),i=Mc(o,n.conv_3,[2,2]),s=Mc(i,n.conv_4,[1,1]),l=Mc(s,n.conv_5,[2,2]),c=Mc(l,n.conv_6,[1,1]),u=Mc(c,n.conv_7,[2,2]),d=Tc(e,n.box_predictor_0),p=Tc(t,n.box_predictor_1),h=Tc(a,n.box_predictor_2),f=Tc(i,n.box_predictor_3),g=Tc(l,n.box_predictor_4),m=Tc(u,n.box_predictor_5);return{boxPredictions:mi([d.boxPredictionEncoding,p.boxPredictionEncoding,h.boxPredictionEncoding,f.boxPredictionEncoding,g.boxPredictionEncoding,m.boxPredictionEncoding],1),classPredictions:mi([d.classPrediction,p.classPrediction,h.classPrediction,f.classPrediction,g.classPrediction,m.classPrediction],1)}}))}(r.out,r.conv11,e.prediction_layer);return function(t,e,n){return ii((function(){var r=t.shape[0],a=Ac(fi(Pi(n.extra_dim,[r,1,1]),[-1,4]),fi(t,[-1,4]));a=fi(a,[r,a.shape[0]/r,4]);var o=yi(vi(e,[0,0,1],[-1,-1,-1])),i=vi(o,[0,0,0],[-1,-1,1]);return i=fi(i,[r,i.shape[1]]),{boxes:Yi(a),scores:Yi(i)}}))}(a.boxPredictions,a.classPredictions,e.output_layer)}))},e.prototype.forward=function(t){return xs(this,void 0,void 0,(function(){var e;return ws(this,(function(n){switch(n.label){case 0:return e=this.forwardInput,[4,wl(t)];case 1:return[2,e.apply(this,[n.sent()])]}}))}))},e.prototype.locateFaces=function(t,e){return void 0===e&&(e={}),xs(this,void 0,void 0,(function(){var n,r,a,o,i,s,l,c,u,d,p,h,f,g,m,y,v,b,x,w;return ws(this,(function(_){switch(_.label){case 0:return n=new Lc(e),r=n.maxResults,a=n.minConfidence,[4,wl(t)];case 1:for(o=_.sent(),i=this.forwardInput(o),s=i.boxes,l=i.scores,c=s[0],u=l[0],d=1;d<s.length;d++)s[d].dispose(),l[d].dispose();return f=(h=Array).from,[4,u.data()];case 2:return p=f.apply(h,[_.sent()]),.5,g=function(t,e,n,r,a){var o=t.shape[0],i=Math.min(n,o),s=e.map((function(t,e){return{score:t,boxIndex:e}})).filter((function(t){return t.score>a})).sort((function(t,e){return e.score-t.score})),l=[];return s.forEach((function(e){if(!(l.length>=i)){for(var n=e.score,o=l.length-1;o>=0;--o){var s=Sc(t,e.boxIndex,l[o]);if(0!==s&&(e.score*=s<=r?1:0,e.score<=a))break}n===e.score&&l.push(e.boxIndex)}})),l}(c,p,r,.5,a),m=o.getReshapedInputDimensions(0),y=o.inputSize,v=y/m.width,b=y/m.height,x=c.arraySync(),w=g.map((function(t){var e=[Math.max(0,x[t][0]),Math.min(1,x[t][2])].map((function(t){return t*b})),n=e[0],r=e[1],a=[Math.max(0,x[t][1]),Math.min(1,x[t][3])].map((function(t){return t*v})),i=a[0],s=a[1];return new Bs(p[t],new Ws(i,n,s-i,r-n),{height:o.getInputHeight(0),width:o.getInputWidth(0)})})),c.dispose(),u.dispose(),[2,w]}}))}))},e.prototype.getDefaultModelName=function(){return"ssd_mobilenetv1_model"},e.prototype.extractParamsFromWeigthMap=function(t){return Ic(t)},e.prototype.extractParams=function(t){return function(t){var e=[],n=zl(t),r=n.extractWeights,a=n.getRemainingWeights,o=$c(r,e),i=o.extractMobilenetV1Params,s=o.extractPredictionLayerParams,l=i(),c=s(),u={extra_dim:ni(r(20472),[1,5118,4])};if(e.push({paramPath:"output_layer/extra_dim"}),0!==a().length)throw new Error("weights remaing after extract: "+a().length);return{params:{mobilenetv1:l,prediction_layer:c,output_layer:u},paramMappings:e}}(t)},e}(Pl),Dc=(function(t){function e(){return null!==t&&t.apply(this,arguments)||this}vs(e,t)}(Fc),[new Fs(.738768,.874946),new Fs(2.42204,2.65704),new Fs(4.30971,7.04493),new Fs(10.246,4.59428),new Fs(12.6868,11.8741)]),Nc=[new Fs(1.603231,2.094468),new Fs(6.041143,7.080126),new Fs(2.882459,3.518061),new Fs(4.266906,5.178857),new Fs(9.041765,10.66308)],Rc=[117.001,114.697,97.404],Bc=function(t){return"number"==typeof t};function Oc(t){return ii((function(){var e=ui(t,Hi(.10000000149011612));return si(zi(Fi(t,e)),e)}))}function zc(t,e){return ii((function(){var n=Bi(t,[[0,0],[1,1],[1,1],[0,0]]);return n=ki(n,e.conv.filters,[1,1],"valid"),n=Fi(n,e.bn.sub),n=ui(n,e.bn.truediv),Oc(n=si(n,e.conv.bias))}))}function jc(t,e){return ii((function(){var n=Bi(t,[[0,0],[1,1],[1,1],[0,0]]);return n=qi(n,e.depthwise_filter,e.pointwise_filter,[1,1],"valid"),Oc(n=si(n,e.bias))}))}function Hc(t,e){var n=Fl(t,e);var r=Rl(t,e);return{extractConvParams:n,extractConvWithBatchNormParams:function(r,a,o){return{conv:n(r,a,3,o+"/conv"),bn:function(n,r){var a=Ui(t(n)),o=Ui(t(n));return e.push({paramPath:r+"/sub"},{paramPath:r+"/truediv"}),{sub:a,truediv:o}}(a,o+"/bn")}},extractSeparableConvParams:r}}function qc(t,e){var n=Ol(t,e);function r(t){return{filters:n(t+"/filters",4),bias:n(t+"/bias",1)}}return{extractConvParams:r,extractConvWithBatchNormParams:function(t){return{conv:r(t+"/conv"),bn:function(t){return{sub:n(t+"/sub",1),truediv:n(t+"/truediv",1)}}(t+"/bn")}},extractSeparableConvParams:Bl(n)}}!function(t){t[t.XS=224]="XS",t[t.SM=320]="SM",t[t.MD=416]="MD",t[t.LG=608]="LG"}(Cc||(Cc={}));var Wc=function(){function t(t){var e=void 0===t?{}:t,n=e.inputSize,r=e.scoreThreshold;if(this._name="TinyYolov2Options",this._inputSize=n||416,this._scoreThreshold=r||.5,"number"!=typeof this._inputSize||this._inputSize%32!=0)throw new Error(this._name+" - expected inputSize to be a number divisible by 32");if("number"!=typeof this._scoreThreshold||this._scoreThreshold<=0||this._scoreThreshold>=1)throw new Error(this._name+" - expected scoreThreshold to be a number between 0 and 1")}return Object.defineProperty(t.prototype,"inputSize",{get:function(){return this._inputSize},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"scoreThreshold",{get:function(){return this._scoreThreshold},enumerable:!0,configurable:!0}),t}(),Gc=function(t){function e(e){var n=t.call(this,"TinyYolov2")||this;return function(t){if(!t)throw new Error("invalid config: "+t);if("boolean"!=typeof t.withSeparableConvs)throw new Error("config.withSeparableConvs has to be a boolean, have: "+t.withSeparableConvs);if(!Bc(t.iouThreshold)||t.iouThreshold<0||t.iouThreshold>1)throw new Error("config.iouThreshold has to be a number between [0, 1], have: "+t.iouThreshold);if(!Array.isArray(t.classes)||!t.classes.length||!t.classes.every((function(t){return"string"==typeof t})))throw new Error("config.classes has to be an array class names: string[], have: "+JSON.stringify(t.classes));if(!Array.isArray(t.anchors)||!t.anchors.length||!t.anchors.map((function(t){return t||{}})).every((function(t){return Bc(t.x)&&Bc(t.y)})))throw new Error("config.anchors has to be an array of { x: number, y: number }, have: "+JSON.stringify(t.anchors));if(t.meanRgb&&(!Array.isArray(t.meanRgb)||3!==t.meanRgb.length||!t.meanRgb.every(Bc)))throw new Error("config.meanRgb has to be an array of shape [number, number, number], have: "+JSON.stringify(t.meanRgb))}(e),n._config=e,n}return vs(e,t),Object.defineProperty(e.prototype,"config",{get:function(){return this._config},enumerable:!0,configurable:!0}),Object.defineProperty(e.prototype,"withClassScores",{get:function(){return this.config.withClassScores||this.config.classes.length>1},enumerable:!0,configurable:!0}),Object.defineProperty(e.prototype,"boxEncodingSize",{get:function(){return 5+(this.withClassScores?this.config.classes.length:0)},enumerable:!0,configurable:!0}),e.prototype.runTinyYolov2=function(t,e){var n=zc(t,e.conv0);return n=zc(n=Ni(n,[2,2],[2,2],"same"),e.conv1),n=zc(n=Ni(n,[2,2],[2,2],"same"),e.conv2),n=zc(n=Ni(n,[2,2],[2,2],"same"),e.conv3),n=zc(n=Ni(n,[2,2],[2,2],"same"),e.conv4),n=zc(n=Ni(n,[2,2],[2,2],"same"),e.conv5),n=zc(n=Ni(n,[2,2],[1,1],"same"),e.conv6),Cl(n=zc(n,e.conv7),e.conv8,"valid",!1)},e.prototype.runMobilenet=function(t,e){var n=this.config.isFirstLayerConv2d?Oc(Cl(t,e.conv0,"valid",!1)):jc(t,e.conv0);return n=jc(n=Ni(n,[2,2],[2,2],"same"),e.conv1),n=jc(n=Ni(n,[2,2],[2,2],"same"),e.conv2),n=jc(n=Ni(n,[2,2],[2,2],"same"),e.conv3),n=jc(n=Ni(n,[2,2],[2,2],"same"),e.conv4),n=jc(n=Ni(n,[2,2],[2,2],"same"),e.conv5),n=Ni(n,[2,2],[1,1],"same"),n=e.conv6?jc(n,e.conv6):n,Cl(n=e.conv7?jc(n,e.conv7):n,e.conv8,"valid",!1)},e.prototype.forwardInput=function(t,e){var n=this,r=this.params;if(!r)throw new Error("TinyYolov2 - load model before inference");return ii((function(){var a=t.toBatchTensor(e,!1).toFloat();return a=(a=n.config.meanRgb?js(a,n.config.meanRgb):a).div(Hi(256)),n.config.withSeparableConvs?n.runMobilenet(a,r):n.runTinyYolov2(a,r)}))},e.prototype.forward=function(t,e){return xs(this,void 0,void 0,(function(){var n;return ws(this,(function(r){switch(r.label){case 0:return n=this.forwardInput,[4,wl(t)];case 1:return[4,n.apply(this,[r.sent(),e])];case 2:return[2,r.sent()]}}))}))},e.prototype.detect=function(t,e){return void 0===e&&(e={}),xs(this,void 0,void 0,(function(){var n,r,a,o,i,s,l,c,u,d,p,h,f,g=this;return ws(this,(function(m){switch(m.label){case 0:return n=new Wc(e),r=n.inputSize,a=n.scoreThreshold,[4,wl(t)];case 1:return o=m.sent(),[4,this.forwardInput(o,r)];case 2:return i=m.sent(),s=ii((function(){return Yi(i)[0].expandDims()})),l={width:o.getInputWidth(0),height:o.getInputHeight(0)},[4,this.extractBoxes(s,o.getReshapedInputDimensions(0),a)];case 3:return c=m.sent(),i.dispose(),s.dispose(),u=c.map((function(t){return t.box})),d=c.map((function(t){return t.score})),p=c.map((function(t){return t.classScore})),h=c.map((function(t){return g.config.classes[t.label]})),f=zs(u.map((function(t){return t.rescale(r)})),d,this.config.iouThreshold,!0),[2,f.map((function(t){return new Rs(d[t],p[t],h[t],u[t],l)}))]}}))}))},e.prototype.getDefaultModelName=function(){return""},e.prototype.extractParamsFromWeigthMap=function(t){return function(t,e){var n,r=[],a=qc(t,r),o=a.extractConvParams,i=a.extractConvWithBatchNormParams,s=a.extractSeparableConvParams;if(e.withSeparableConvs){var l=e.filterSizes&&e.filterSizes.length||9;n={conv0:e.isFirstLayerConv2d?o("conv0"):s("conv0"),conv1:s("conv1"),conv2:s("conv2"),conv3:s("conv3"),conv4:s("conv4"),conv5:s("conv5"),conv6:l>7?s("conv6"):void 0,conv7:l>8?s("conv7"):void 0,conv8:o("conv8")}}else n={conv0:i("conv0"),conv1:i("conv1"),conv2:i("conv2"),conv3:i("conv3"),conv4:i("conv4"),conv5:i("conv5"),conv6:i("conv6"),conv7:i("conv7"),conv8:o("conv8")};return Ll(t,r),{params:n,paramMappings:r}}(t,this.config)},e.prototype.extractParams=function(t){var n=this.config.filterSizes||e.DEFAULT_FILTER_SIZES,r=n?n.length:void 0;if(7!==r&&8!==r&&9!==r)throw new Error("TinyYolov2 - expected 7 | 8 | 9 convolutional filters, but found "+r+" filterSizes in config");return function(t,e,n,r){var a,o=zl(t),i=o.extractWeights,s=o.getRemainingWeights,l=[],c=Hc(i,l),u=c.extractConvParams,d=c.extractConvWithBatchNormParams,p=c.extractSeparableConvParams;if(e.withSeparableConvs){var h=r[0],f=r[1],g=r[2],m=r[3],y=r[4],v=r[5],b=r[6],x=r[7],w=r[8];a={conv0:e.isFirstLayerConv2d?u(h,f,3,"conv0"):p(h,f,"conv0"),conv1:p(f,g,"conv1"),conv2:p(g,m,"conv2"),conv3:p(m,y,"conv3"),conv4:p(y,v,"conv4"),conv5:p(v,b,"conv5"),conv6:x?p(b,x,"conv6"):void 0,conv7:w?p(x,w,"conv7"):void 0,conv8:u(w||x||b,5*n,1,"conv8")}}else{h=r[0],f=r[1],g=r[2],m=r[3],y=r[4],v=r[5],b=r[6],x=r[7],w=r[8];a={conv0:d(h,f,"conv0"),conv1:d(f,g,"conv1"),conv2:d(g,m,"conv2"),conv3:d(m,y,"conv3"),conv4:d(y,v,"conv4"),conv5:d(v,b,"conv5"),conv6:d(b,x,"conv6"),conv7:d(x,w,"conv7"),conv8:u(w,5*n,1,"conv8")}}if(0!==s().length)throw new Error("weights remaing after extract: "+s().length);return{params:a,paramMappings:l}}(t,this.config,this.boxEncodingSize,n)},e.prototype.extractBoxes=function(t,e,n){return xs(this,void 0,void 0,(function(){var r,a,o,i,s,l,c,u,d,p,h,f,g,m,y,v,b,x,w,_,k,E,$,I,M,P,S,A,T,C=this;return ws(this,(function(L){switch(L.label){case 0:return r=e.width,a=e.height,o=Math.max(r,a),i=o/r,s=o/a,l=t.shape[1],c=this.config.anchors.length,u=ii((function(){var e=t.reshape([l,l,c,C.boxEncodingSize]);return[e.slice([0,0,0,0],[l,l,c,4]),e.slice([0,0,0,4],[l,l,c,1]),C.withClassScores?Gi(e.slice([0,0,0,5],[l,l,c,C.config.classes.length]),3):Hi(0)]})),d=u[0],p=u[1],h=u[2],f=[],[4,p.array()];case 1:return g=L.sent(),[4,d.array()];case 2:m=L.sent(),y=0,L.label=3;case 3:if(!(y<l))return[3,12];v=0,L.label=4;case 4:if(!(v<l))return[3,11];b=0,L.label=5;case 5:return b<c?(x=Hs(g[y][v][b][0]),!n||x>n?(w=(v+Hs(m[y][v][b][0]))/l*i,_=(y+Hs(m[y][v][b][1]))/l*s,k=Math.exp(m[y][v][b][2])*this.config.anchors[b].x/l*i,E=Math.exp(m[y][v][b][3])*this.config.anchors[b].y/l*s,$=w-k/2,I=_-E/2,M={row:y,col:v,anchor:b},this.withClassScores?[4,this.extractPredictedClass(h,M)]:[3,7]):[3,9]):[3,10];case 6:return T=L.sent(),[3,8];case 7:T={classScore:1,label:0},L.label=8;case 8:S=(P=T).classScore,A=P.label,f.push(bs({box:new Ns($,I,$+k,I+E),score:x,classScore:x*S,label:A},M)),L.label=9;case 9:return b++,[3,5];case 10:return v++,[3,4];case 11:return y++,[3,3];case 12:return d.dispose(),p.dispose(),h.dispose(),[2,f]}}))}))},e.prototype.extractPredictedClass=function(t,e){return xs(this,void 0,void 0,(function(){var n,r,a,o;return ws(this,(function(i){switch(i.label){case 0:return n=e.row,r=e.col,a=e.anchor,[4,t.array()];case 1:return o=i.sent(),[2,Array(this.config.classes.length).fill(0).map((function(t,e){return o[n][r][a][e]})).map((function(t,e){return{classScore:t,label:e}})).reduce((function(t,e){return t.classScore>e.classScore?t:e}))]}}))}))},e.DEFAULT_FILTER_SIZES=[3,16,32,64,128,256,512,1024,1024],e}(Pl),Vc=function(t){function e(e){void 0===e&&(e=!0);var n=Object.assign({},{withSeparableConvs:e,iouThreshold:.4,classes:["face"]},e?{anchors:Nc,meanRgb:Rc}:{anchors:Dc,withClassScores:!0});return t.call(this,n)||this}return vs(e,t),Object.defineProperty(e.prototype,"withSeparableConvs",{get:function(){return this.config.withSeparableConvs},enumerable:!0,configurable:!0}),Object.defineProperty(e.prototype,"anchors",{get:function(){return this.config.anchors},enumerable:!0,configurable:!0}),e.prototype.locateFaces=function(t,e){return xs(this,void 0,void 0,(function(){return ws(this,(function(n){switch(n.label){case 0:return[4,this.detect(t,e)];case 1:return[2,n.sent().map((function(t){return new Bs(t.score,t.relativeBox,{width:t.imageWidth,height:t.imageHeight})}))]}}))}))},e.prototype.getDefaultModelName=function(){return this.withSeparableConvs?"tiny_yolov2_separable_conv_model":"tiny_yolov2_model"},e.prototype.extractParamsFromWeigthMap=function(e){return t.prototype.extractParamsFromWeigthMap.call(this,e)},e}(Gc),Kc=function(t){function e(){var e=null!==t&&t.apply(this,arguments)||this;return e._name="TinyFaceDetectorOptions",e}return vs(e,t),e}(Wc),Uc=function(){function t(){}return t.prototype.then=function(t){return xs(this,void 0,void 0,(function(){var e;return ws(this,(function(n){switch(n.label){case 0:return e=t,[4,this.run()];case 1:return[2,e.apply(void 0,[n.sent()])]}}))}))},t.prototype.run=function(){return xs(this,void 0,void 0,(function(){return ws(this,(function(t){throw new Error("ComposableTask - run is not implemented")}))}))},t}();function Xc(t,e,n,r,a){return void 0===a&&(a=function(t){return t.alignedRect}),xs(this,void 0,void 0,(function(){var o,i,s,l,c;return ws(this,(function(u){switch(u.label){case 0:return o=t.map((function(t){return Zl(t)?a(t):t.detection})),(s=r)?[3,5]:e instanceof Ua?[4,kl(e,o)]:[3,2];case 1:return l=u.sent(),[3,4];case 2:return[4,_l(e,o)];case 3:l=u.sent(),u.label=4;case 4:s=l,u.label=5;case 5:return[4,n(i=s)];case 6:return c=u.sent(),i.forEach((function(t){return t instanceof Ua&&t.dispose()})),[2,c]}}))}))}function Jc(t,e,n,r,a){return xs(this,void 0,void 0,(function(){var o=this;return ws(this,(function(i){return[2,Xc([t],e,(function(t){return xs(o,void 0,void 0,(function(){return ws(this,(function(e){return[2,n(t[0])]}))}))}),r,a)]}))}))}function Yc(t){var e=zl(t),n=e.extractWeights,r=e.getRemainingWeights,a=[],o=function(t,e){var n=Fl(t,e),r=Dl(t,e);function a(n,r){var a=Ui(t(n));return e.push({paramPath:r}),a}function o(t,e,r){return void 0===r&&(r=!1),{conv1:n(t[0],t[1],3,e+"/conv1"),prelu1_alpha:a(t[1],e+"/prelu1_alpha"),conv2:n(t[1],t[2],3,e+"/conv2"),prelu2_alpha:a(t[2],e+"/prelu2_alpha"),conv3:n(t[2],t[3],r?2:3,e+"/conv3"),prelu3_alpha:a(t[3],e+"/prelu3_alpha")}}return{extractPNetParams:function(){var t=o([3,10,16,32],"pnet"),e=n(32,2,1,"pnet/conv4_1"),r=n(32,4,1,"pnet/conv4_2");return bs(bs({},t),{conv4_1:e,conv4_2:r})},extractRNetParams:function(){var t=o([3,28,48,64],"rnet",!0),e=r(576,128,"rnet/fc1"),n=a(128,"rnet/prelu4_alpha"),i=r(128,2,"rnet/fc2_1"),s=r(128,4,"rnet/fc2_2");return bs(bs({},t),{fc1:e,prelu4_alpha:n,fc2_1:i,fc2_2:s})},extractONetParams:function(){var t=o([3,32,64,64],"onet"),e=n(64,128,2,"onet/conv4"),i=a(128,"onet/prelu4_alpha"),s=r(1152,256,"onet/fc1"),l=a(256,"onet/prelu5_alpha"),c=r(256,2,"onet/fc2_1"),u=r(256,4,"onet/fc2_2"),d=r(256,10,"onet/fc2_3");return bs(bs({},t),{conv4:e,prelu4_alpha:i,fc1:s,prelu5_alpha:l,fc2_1:c,fc2_2:u,fc2_3:d})}}}(n,a),i=o.extractPNetParams,s=o.extractRNetParams,l=o.extractONetParams,c=i(),u=s(),d=l();if(0!==r().length)throw new Error("weights remaing after extract: "+r().length);return{params:{pnet:c,rnet:u,onet:d},paramMappings:a}}function Qc(t){var e=[],n=function(t,e){var n=Ol(t,e);function r(t){return{filters:n(t+"/weights",4,t+"/filters"),bias:n(t+"/bias",1)}}function a(t){return{weights:n(t+"/weights",2),bias:n(t+"/bias",1)}}function o(t){return n(t,1)}function i(t){return{conv1:r(t+"/conv1"),prelu1_alpha:o(t+"/prelu1_alpha"),conv2:r(t+"/conv2"),prelu2_alpha:o(t+"/prelu2_alpha"),conv3:r(t+"/conv3"),prelu3_alpha:o(t+"/prelu3_alpha")}}return{extractPNetParams:function(){var t=i("pnet"),e=r("pnet/conv4_1"),n=r("pnet/conv4_2");return bs(bs({},t),{conv4_1:e,conv4_2:n})},extractRNetParams:function(){var t=i("rnet"),e=a("rnet/fc1"),n=o("rnet/prelu4_alpha"),r=a("rnet/fc2_1"),s=a("rnet/fc2_2");return bs(bs({},t),{fc1:e,prelu4_alpha:n,fc2_1:r,fc2_2:s})},extractONetParams:function(){var t=i("onet"),e=r("onet/conv4"),n=o("onet/prelu4_alpha"),s=a("onet/fc1"),l=o("onet/prelu5_alpha"),c=a("onet/fc2_1"),u=a("onet/fc2_2"),d=a("onet/fc2_3");return bs(bs({},t),{conv4:e,prelu4_alpha:n,fc1:s,prelu5_alpha:l,fc2_1:c,fc2_2:u,fc2_3:d})}}}(t,e),r=n.extractPNetParams,a=n.extractRNetParams,o=n.extractONetParams,i=r(),s=a(),l=o();return Ll(t,e),{params:{pnet:i,rnet:s,onet:l},paramMappings:e}}function Zc(t,e){var n=e[0],r=e[1];return{height:Math.floor(n*t),width:Math.floor(r*t)}}var tu=function(t){function e(e,n,r,a){return t.call(this,{left:e,top:n,right:r,bottom:a},!0)||this}return vs(e,t),e}(Ds);function eu(t){return ii((function(){return ui(Fi(t,Hi(127.5)),Hi(.0078125))}))}function nu(t,e){return ii((function(){return si(zi(t),ui(e,Ci(zi(Ci(t)))))}))}function ru(t,e,n){return void 0===n&&(n=!1),ii((function(){var r=Cl(t,e.conv1,"valid");return r=nu(r,e.prelu1_alpha),r=nu(r=Cl(r=Ni(r,n?[2,2]:[3,3],[2,2],"same"),e.conv2,"valid"),e.prelu2_alpha),r=nu(r=Cl(r=n?r:Ni(r,[3,3],[2,2],"valid"),e.conv3,"valid"),e.prelu3_alpha)}))}function au(t,e,n,r,a){a.stage1=[];var o=e.map((function(e){return ii((function(){var n={scale:e},a=function(t,e){return ii((function(){var n=Zc(e,t.shape.slice(1)),r=n.height,a=n.width,o=eu(ms.resizeBilinear(t,[r,a]));return ti(o,[0,2,1,3])}))}(t,e),o=Date.now(),i=function(t,e){return ii((function(){var n=ru(t,e,!0),r=Cl(n,e.conv4_1,"valid"),a=Mi(Li(r,3),3);return{prob:Gi(Fi(r,a),3),regions:Cl(n,e.conv4_2,"valid")}}))}(a,r),s=i.prob,l=i.regions;return n.pnet=Date.now()-o,{scoresTensor:Yi(Yi(s,3)[1])[0],regionsTensor:Yi(l)[0],scale:e,statsForScale:n}}))})).map((function(t){var e=t.scoresTensor,r=t.regionsTensor,o=t.scale,i=t.statsForScale,s=function(t,e,n,r){for(var a=[],o=t.arraySync(),i=0;i<t.shape[0];i++)for(var s=0;s<t.shape[1];s++)o[i][s]>=r&&a.push(new Fs(s,i));return a.map((function(t){var r=new Ns(Math.round((2*t.y+1)/n),Math.round((2*t.x+1)/n),Math.round((2*t.y+12)/n),Math.round((2*t.x+12)/n)),a=o[t.y][t.x],i=e.arraySync();return{cell:r,score:a,region:new tu(i[t.y][t.x][0],i[t.y][t.x][1],i[t.y][t.x][2],i[t.y][t.x][3])}}))}(e,r,o,n);if(e.dispose(),r.dispose(),!s.length)return a.stage1.push(i),[];var l=Date.now(),c=zs(s.map((function(t){return t.cell})),s.map((function(t){return t.score})),.5);return i.nms=Date.now()-l,i.numBoxes=c.length,a.stage1.push(i),c.map((function(t){return s[t]}))})).reduce((function(t,e){return t.concat(e)}),[]),i=[],s=[];if(o.length>0){var l=Date.now(),c=zs(o.map((function(t){return t.cell})),o.map((function(t){return t.score})),.7);a.stage1_nms=Date.now()-l,s=c.map((function(t){return o[t].score})),i=c.map((function(t){return o[t]})).map((function(t){var e=t.cell,n=t.region;return new Ns(e.left+n.left*e.width,e.top+n.top*e.height,e.right+n.right*e.width,e.bottom+n.bottom*e.height).toSquare().round()}))}return{boxes:i,scores:s}}function ou(t,e,n){var r=n.width,a=n.height;return xs(this,void 0,void 0,(function(){var n,o,i,s=this;return ws(this,(function(l){switch(l.label){case 0:return n=cl(t),[4,Promise.all(e.map((function(e){return xs(s,void 0,void 0,(function(){var r,a,o,i,s,l,c,u;return ws(this,(function(d){return r=e.padAtBorders(t.height,t.width),a=r.y,o=r.ey,i=r.x,s=r.ex,l=i-1,c=a-1,u=n.getImageData(l,c,s-l,o-c),[2,sl.isNodejs()?yl(u):createImageBitmap(u)]}))}))})))];case 1:return o=l.sent(),i=[],o.forEach((function(t){var e=cl(ml({width:r,height:a}));e.drawImage(t,0,0,r,a);for(var n=e.getImageData(0,0,r,a).data,o=[],s=0;s<n.length;s+=4)o.push(n[s+2]),o.push(n[s+1]),o.push(n[s]);i.push(o)})),[2,i.map((function(t){return ii((function(){return eu(ti(Ji(t,[1,r,a,3]),[0,2,1,3]).toFloat())}))}))]}}))}))}function iu(t,e,n,r,a){return xs(this,void 0,void 0,(function(){var o,i,s,l,c,u,d,p,h,f,g,m,y,v;return ws(this,(function(b){switch(b.label){case 0:return o=Date.now(),[4,ou(t,e,{width:24,height:24})];case 1:return i=b.sent(),a.stage2_extractImagePatches=Date.now()-o,o=Date.now(),s=i.map((function(t){var e=function(t,e){return ii((function(){var n=ru(t,e),r=nu(Gl(fi(n,[n.shape[0],e.fc1.weights.shape[0]]),e.fc1),e.prelu4_alpha),a=Gl(r,e.fc2_1),o=Mi(Li(a,1),1),i=Gi(Fi(a,o),1),s=Gl(r,e.fc2_2);return{scores:Yi(i,1)[1],regions:s}}))}(t,r);return t.dispose(),e})),a.stage2_rnet=Date.now()-o,l=s.length>1?mi(s.map((function(t){return t.scores}))):s[0].scores,d=(u=Array).from,[4,l.data()];case 2:return c=d.apply(u,[b.sent()]),l.dispose(),p=c.map((function(t,e){return{score:t,idx:e}})).filter((function(t){return t.score>n})).map((function(t){return t.idx})),h=p.map((function(t){return e[t]})),f=p.map((function(t){return c[t]})),g=[],m=[],h.length>0&&(o=Date.now(),y=zs(h,f,.7),a.stage2_nms=Date.now()-o,v=y.map((function(t){var e=s[p[t]].regions.arraySync();return new tu(e[0][0],e[0][1],e[0][2],e[0][3])})),m=y.map((function(t){return f[t]})),g=y.map((function(t,e){return h[t].calibrate(v[e])}))),s.forEach((function(t){t.regions.dispose(),t.scores.dispose()})),[2,{boxes:g,scores:m}]}}))}))}function su(t,e,n,r,a){return xs(this,void 0,void 0,(function(){var o,i,s,l,c,u,d,p,h,f,g,m,y,v,b;return ws(this,(function(x){switch(x.label){case 0:return o=Date.now(),[4,ou(t,e,{width:48,height:48})];case 1:return i=x.sent(),a.stage3_extractImagePatches=Date.now()-o,o=Date.now(),s=i.map((function(t){var e=function(t,e){return ii((function(){var n=ru(t,e);n=nu(n=Cl(n=Ni(n,[2,2],[2,2],"same"),e.conv4,"valid"),e.prelu4_alpha);var r=nu(Gl(fi(n,[n.shape[0],e.fc1.weights.shape[0]]),e.fc1),e.prelu5_alpha),a=Gl(r,e.fc2_1),o=Mi(Li(a,1),1),i=Gi(Fi(a,o),1),s=Gl(r,e.fc2_2),l=Gl(r,e.fc2_3);return{scores:Yi(i,1)[1],regions:s,points:l}}))}(t,r);return t.dispose(),e})),a.stage3_onet=Date.now()-o,l=s.length>1?mi(s.map((function(t){return t.scores}))):s[0].scores,d=(u=Array).from,[4,l.data()];case 2:return c=d.apply(u,[x.sent()]),l.dispose(),p=c.map((function(t,e){return{score:t,idx:e}})).filter((function(t){return t.score>n})).map((function(t){return t.idx})),h=p.map((function(t){var e=s[t].regions.arraySync();return new tu(e[0][0],e[0][1],e[0][2],e[0][3])})),f=p.map((function(t,n){return e[t].calibrate(h[n])})),g=p.map((function(t){return c[t]})),m=[],y=[],v=[],f.length>0&&(o=Date.now(),b=zs(f,g,.7,!1),a.stage3_nms=Date.now()-o,m=b.map((function(t){return f[t]})),y=b.map((function(t){return g[t]})),v=b.map((function(t,e){return Array(5).fill(0).map((function(n,r){var a=s[t].points.arraySync();return new Fs(a[0][r]*(m[e].width+1)+m[e].left,a[0][r+5]*(m[e].height+1)+m[e].top)}))}))),s.forEach((function(t){t.regions.dispose(),t.scores.dispose(),t.points.dispose()})),[2,{boxes:m,scores:y,points:v}]}}))}))}var lu=function(t){function e(){return t.call(this,"Mtcnn")||this}return vs(e,t),e.prototype.load=function(e){return xs(this,void 0,void 0,(function(){return ws(this,(function(n){return console.warn("mtcnn is deprecated and will be removed soon"),[2,t.prototype.load.call(this,e)]}))}))},e.prototype.loadFromDisk=function(e){return xs(this,void 0,void 0,(function(){return ws(this,(function(n){return console.warn("mtcnn is deprecated and will be removed soon"),[2,t.prototype.loadFromDisk.call(this,e)]}))}))},e.prototype.forwardInput=function(t,e){return void 0===e&&(e={}),xs(this,void 0,void 0,(function(){var n,r,a,o,i,s,l,c,u,d,p,h,f,g,m,y,v,b,x,w,_;return ws(this,(function(k){switch(k.label){case 0:if(!(n=this.params))throw new Error("Mtcnn - load model before inference");if(!(r=t.canvases[0]))throw new Error("Mtcnn - inputCanvas is not defined, note that passing tensors into Mtcnn.forwardInput is not supported yet.");return a={},o=Date.now(),i=ii((function(){return function(t){return ii((function(){return Ki(Yi(t,3).reverse(),3)}))}(Mi(oi(r)).toFloat())})),s=function(t){return i.dispose(),a.total=Date.now()-o,t},l=i.shape.slice(1),c=l[0],u=l[1],d=new Ec(e),p=d.minFaceSize,h=d.scaleFactor,f=d.maxNumScales,g=d.scoreThresholds,m=d.scaleSteps,y=(m||function(t,e,n){for(var r=n[0],a=n[1],o=12/t,i=[],s=Math.min(r,a)*o,l=0;s>=12;)i.push(o*Math.pow(e,l)),s*=e,l+=1;return i}(p,h,[c,u])).filter((function(t){var e=Zc(t,[c,u]);return Math.min(e.width,e.height)>12})).slice(0,f),a.scales=y,a.pyramid=y.map((function(t){return Zc(t,[c,u])})),v=Date.now(),[4,au(i,y,g[0],n.pnet,a)];case 1:return b=k.sent(),a.total_stage1=Date.now()-v,b.boxes.length?(a.stage2_numInputBoxes=b.boxes.length,v=Date.now(),[4,iu(r,b.boxes,g[1],n.rnet,a)]):[2,s({results:[],stats:a})];case 2:return x=k.sent(),a.total_stage2=Date.now()-v,x.boxes.length?(a.stage3_numInputBoxes=x.boxes.length,v=Date.now(),[4,su(r,x.boxes,g[2],n.onet,a)]):[2,s({results:[],stats:a})];case 3:return w=k.sent(),a.total_stage3=Date.now()-v,_=w.boxes.map((function(t,e){return tc(Qs({},new Bs(w.scores[e],new Ws(t.left/u,t.top/c,t.width/u,t.height/c),{height:c,width:u})),new Vs(w.points[e].map((function(e){return e.sub(new Fs(t.left,t.top)).div(new Fs(t.width,t.height))})),{width:t.width,height:t.height}))})),[2,s({results:_,stats:a})]}}))}))},e.prototype.forward=function(t,e){return void 0===e&&(e={}),xs(this,void 0,void 0,(function(){var n;return ws(this,(function(r){switch(r.label){case 0:return n=this.forwardInput,[4,wl(t)];case 1:return[4,n.apply(this,[r.sent(),e])];case 2:return[2,r.sent().results]}}))}))},e.prototype.forwardWithStats=function(t,e){return void 0===e&&(e={}),xs(this,void 0,void 0,(function(){var n;return ws(this,(function(r){switch(r.label){case 0:return n=this.forwardInput,[4,wl(t)];case 1:return[2,n.apply(this,[r.sent(),e])]}}))}))},e.prototype.getDefaultModelName=function(){return"mtcnn_model"},e.prototype.extractParamsFromWeigthMap=function(t){return Qc(t)},e.prototype.extractParams=function(t){return Yc(t)},e}(Pl),cu=[new Fs(1.603231,2.094468),new Fs(6.041143,7.080126),new Fs(2.882459,3.518061),new Fs(4.266906,5.178857),new Fs(9.041765,10.66308)],uu=[117.001,114.697,97.404],du=function(t){function e(){var e={withSeparableConvs:!0,iouThreshold:.4,classes:["face"],anchors:cu,meanRgb:uu,isFirstLayerConv2d:!0,filterSizes:[3,16,32,64,128,256,512]};return t.call(this,e)||this}return vs(e,t),Object.defineProperty(e.prototype,"anchors",{get:function(){return this.config.anchors},enumerable:!0,configurable:!0}),e.prototype.locateFaces=function(t,e){return xs(this,void 0,void 0,(function(){return ws(this,(function(n){switch(n.label){case 0:return[4,this.detect(t,e)];case 1:return[2,n.sent().map((function(t){return new Bs(t.score,t.relativeBox,{width:t.imageWidth,height:t.imageHeight})}))]}}))}))},e.prototype.getDefaultModelName=function(){return"tiny_face_detector_model"},e.prototype.extractParamsFromWeigthMap=function(e){return t.prototype.extractParamsFromWeigthMap.call(this,e)},e}(Gc),pu={ssdMobilenetv1:new Fc,tinyFaceDetector:new du,tinyYolov2:new Vc,mtcnn:new lu,faceLandmark68Net:new cc,faceLandmark68TinyNet:new dc,faceRecognitionNet:new xc,faceExpressionNet:new Jl,ageGenderNet:new sc},hu=function(t){function e(e,n,r){var a=t.call(this)||this;return a.parentTask=e,a.input=n,a.extractedFaces=r,a}return vs(e,t),e}(Uc),fu=function(t){function e(){return null!==t&&t.apply(this,arguments)||this}return vs(e,t),e.prototype.run=function(){return xs(this,void 0,void 0,(function(){var t,e,n=this;return ws(this,(function(r){switch(r.label){case 0:return[4,this.parentTask];case 1:return[4,Xc(t=r.sent(),this.input,(function(t){return xs(n,void 0,void 0,(function(){return ws(this,(function(e){switch(e.label){case 0:return[4,Promise.all(t.map((function(t){return pu.faceExpressionNet.predictExpressions(t)})))];case 1:return[2,e.sent()]}}))}))}),this.extractedFaces)];case 2:return e=r.sent(),[2,t.map((function(t,n){return Yl(t,e[n])}))]}}))}))},e.prototype.withAgeAndGender=function(){return new bu(this,this.input)},e}(hu),gu=function(t){function e(){return null!==t&&t.apply(this,arguments)||this}return vs(e,t),e.prototype.run=function(){return xs(this,void 0,void 0,(function(){var t,e;return ws(this,(function(n){switch(n.label){case 0:return[4,this.parentTask];case 1:return(t=n.sent())?[4,Jc(t,this.input,(function(t){return pu.faceExpressionNet.predictExpressions(t)}),this.extractedFaces)]:[2];case 2:return e=n.sent(),[2,Yl(t,e)]}}))}))},e.prototype.withAgeAndGender=function(){return new xu(this,this.input)},e}(hu),mu=function(t){function e(){return null!==t&&t.apply(this,arguments)||this}return vs(e,t),e.prototype.withAgeAndGender=function(){return new wu(this,this.input)},e.prototype.withFaceDescriptors=function(){return new Eu(this,this.input)},e}(fu),yu=function(t){function e(){return null!==t&&t.apply(this,arguments)||this}return vs(e,t),e.prototype.withAgeAndGender=function(){return new _u(this,this.input)},e.prototype.withFaceDescriptor=function(){return new $u(this,this.input)},e}(gu),vu=function(t){function e(e,n,r){var a=t.call(this)||this;return a.parentTask=e,a.input=n,a.extractedFaces=r,a}return vs(e,t),e}(Uc),bu=function(t){function e(){return null!==t&&t.apply(this,arguments)||this}return vs(e,t),e.prototype.run=function(){return xs(this,void 0,void 0,(function(){var t,e,n=this;return ws(this,(function(r){switch(r.label){case 0:return[4,this.parentTask];case 1:return[4,Xc(t=r.sent(),this.input,(function(t){return xs(n,void 0,void 0,(function(){return ws(this,(function(e){switch(e.label){case 0:return[4,Promise.all(t.map((function(t){return pu.ageGenderNet.predictAgeAndGender(t)})))];case 1:return[2,e.sent()]}}))}))}),this.extractedFaces)];case 2:return e=r.sent(),[2,t.map((function(t,n){var r=e[n],a=r.age;return _c(kc(t,r.gender,r.genderProbability),a)}))]}}))}))},e.prototype.withFaceExpressions=function(){return new fu(this,this.input)},e}(vu),xu=function(t){function e(){return null!==t&&t.apply(this,arguments)||this}return vs(e,t),e.prototype.run=function(){return xs(this,void 0,void 0,(function(){var t,e,n,r,a;return ws(this,(function(o){switch(o.label){case 0:return[4,this.parentTask];case 1:return(t=o.sent())?[4,Jc(t,this.input,(function(t){return pu.ageGenderNet.predictAgeAndGender(t)}),this.extractedFaces)]:[2];case 2:return e=o.sent(),n=e.age,r=e.gender,a=e.genderProbability,[2,_c(kc(t,r,a),n)]}}))}))},e.prototype.withFaceExpressions=function(){return new gu(this,this.input)},e}(vu),wu=function(t){function e(){return null!==t&&t.apply(this,arguments)||this}return vs(e,t),e.prototype.withFaceExpressions=function(){return new mu(this,this.input)},e.prototype.withFaceDescriptors=function(){return new Eu(this,this.input)},e}(bu),_u=function(t){function e(){return null!==t&&t.apply(this,arguments)||this}return vs(e,t),e.prototype.withFaceExpressions=function(){return new yu(this,this.input)},e.prototype.withFaceDescriptor=function(){return new $u(this,this.input)},e}(xu),ku=function(t){function e(e,n){var r=t.call(this)||this;return r.parentTask=e,r.input=n,r}return vs(e,t),e}(Uc),Eu=function(t){function e(){return null!==t&&t.apply(this,arguments)||this}return vs(e,t),e.prototype.run=function(){return xs(this,void 0,void 0,(function(){var t;return ws(this,(function(e){switch(e.label){case 0:return[4,this.parentTask];case 1:return[4,Xc(t=e.sent(),this.input,(function(t){return Promise.all(t.map((function(t){return pu.faceRecognitionNet.computeFaceDescriptor(t)})))}),null,(function(t){return t.landmarks.align(null,{useDlibAlignment:!0})}))];case 2:return[2,e.sent().map((function(e,n){return wc(t[n],e)}))]}}))}))},e.prototype.withFaceExpressions=function(){return new mu(this,this.input)},e.prototype.withAgeAndGender=function(){return new wu(this,this.input)},e}(ku),$u=function(t){function e(){return null!==t&&t.apply(this,arguments)||this}return vs(e,t),e.prototype.run=function(){return xs(this,void 0,void 0,(function(){var t,e;return ws(this,(function(n){switch(n.label){case 0:return[4,this.parentTask];case 1:return(t=n.sent())?[4,Jc(t,this.input,(function(t){return pu.faceRecognitionNet.computeFaceDescriptor(t)}),null,(function(t){return t.landmarks.align(null,{useDlibAlignment:!0})}))]:[2];case 2:return e=n.sent(),[2,wc(t,e)]}}))}))},e.prototype.withFaceExpressions=function(){return new yu(this,this.input)},e.prototype.withAgeAndGender=function(){return new _u(this,this.input)},e}(ku),Iu=function(t){function e(e,n,r){var a=t.call(this)||this;return a.parentTask=e,a.input=n,a.useTinyLandmarkNet=r,a}return vs(e,t),Object.defineProperty(e.prototype,"landmarkNet",{get:function(){return this.useTinyLandmarkNet?pu.faceLandmark68TinyNet:pu.faceLandmark68Net},enumerable:!0,configurable:!0}),e}(Uc),Mu=function(t){function e(){return null!==t&&t.apply(this,arguments)||this}return vs(e,t),e.prototype.run=function(){return xs(this,void 0,void 0,(function(){var t,e,n,r,a,o=this;return ws(this,(function(i){switch(i.label){case 0:return[4,this.parentTask];case 1:return t=i.sent(),e=t.map((function(t){return t.detection})),this.input instanceof Ua?[4,kl(this.input,e)]:[3,3];case 2:return r=i.sent(),[3,5];case 3:return[4,_l(this.input,e)];case 4:r=i.sent(),i.label=5;case 5:return n=r,[4,Promise.all(n.map((function(t){return o.landmarkNet.detectLandmarks(t)})))];case 6:return a=i.sent(),n.forEach((function(t){return t instanceof Ua&&t.dispose()})),[2,t.map((function(t,e){return tc(t,a[e])}))]}}))}))},e.prototype.withFaceExpressions=function(){return new mu(this,this.input)},e.prototype.withAgeAndGender=function(){return new wu(this,this.input)},e.prototype.withFaceDescriptors=function(){return new Eu(this,this.input)},e}(Iu),Pu=function(t){function e(){return null!==t&&t.apply(this,arguments)||this}return vs(e,t),e.prototype.run=function(){return xs(this,void 0,void 0,(function(){var t,e,n,r,a;return ws(this,(function(o){switch(o.label){case 0:return[4,this.parentTask];case 1:return(t=o.sent())?(e=t.detection,this.input instanceof Ua?[4,kl(this.input,[e])]:[3,3]):[2];case 2:return r=o.sent(),[3,5];case 3:return[4,_l(this.input,[e])];case 4:r=o.sent(),o.label=5;case 5:return n=r,[4,this.landmarkNet.detectLandmarks(n[0])];case 6:return a=o.sent(),n.forEach((function(t){return t instanceof Ua&&t.dispose()})),[2,tc(t,a)]}}))}))},e.prototype.withFaceExpressions=function(){return new yu(this,this.input)},e.prototype.withAgeAndGender=function(){return new _u(this,this.input)},e.prototype.withFaceDescriptor=function(){return new $u(this,this.input)},e}(Iu),Su=function(t){function e(e,n){void 0===n&&(n=new Lc);var r=t.call(this)||this;return r.input=e,r.options=n,r}return vs(e,t),e}(Uc),Au=function(t){function e(){return null!==t&&t.apply(this,arguments)||this}return vs(e,t),e.prototype.run=function(){return xs(this,void 0,void 0,(function(){var t,e,n,r;return ws(this,(function(a){switch(a.label){case 0:return e=(t=this).input,(n=t.options)instanceof Ec?[4,pu.mtcnn.forward(e,n)]:[3,2];case 1:return[2,a.sent().map((function(t){return t.detection}))];case 2:if(!(r=n instanceof Kc?function(t){return pu.tinyFaceDetector.locateFaces(t,n)}:n instanceof Lc?function(t){return pu.ssdMobilenetv1.locateFaces(t,n)}:n instanceof Wc?function(t){return pu.tinyYolov2.locateFaces(t,n)}:null))throw new Error("detectFaces - expected options to be instance of TinyFaceDetectorOptions | SsdMobilenetv1Options | MtcnnOptions | TinyYolov2Options");return[2,r(e)]}}))}))},e.prototype.runAndExtendWithFaceDetections=function(){var t=this;return new Promise((function(e){return xs(t,void 0,void 0,(function(){var t;return ws(this,(function(n){switch(n.label){case 0:return[4,this.run()];case 1:return t=n.sent(),[2,e(t.map((function(t){return Qs({},t)})))]}}))}))}))},e.prototype.withFaceLandmarks=function(t){return void 0===t&&(t=!1),new Mu(this.runAndExtendWithFaceDetections(),this.input,t)},e.prototype.withFaceExpressions=function(){return new fu(this.runAndExtendWithFaceDetections(),this.input)},e.prototype.withAgeAndGender=function(){return new bu(this.runAndExtendWithFaceDetections(),this.input)},e}(Su),Tu=function(t){function e(){return null!==t&&t.apply(this,arguments)||this}return vs(e,t),e.prototype.run=function(){return xs(this,void 0,void 0,(function(){var t,e;return ws(this,(function(n){switch(n.label){case 0:return[4,new Au(this.input,this.options)];case 1:return t=n.sent(),e=t[0],t.forEach((function(t){t.score>e.score&&(e=t)})),[2,e]}}))}))},e.prototype.runAndExtendWithFaceDetection=function(){var t=this;return new Promise((function(e){return xs(t,void 0,void 0,(function(){var t;return ws(this,(function(n){switch(n.label){case 0:return[4,this.run()];case 1:return t=n.sent(),[2,e(t?Qs({},t):void 0)]}}))}))}))},e.prototype.withFaceLandmarks=function(t){return void 0===t&&(t=!1),new Pu(this.runAndExtendWithFaceDetection(),this.input,t)},e.prototype.withFaceExpressions=function(){return new gu(this.runAndExtendWithFaceDetection(),this.input)},e.prototype.withAgeAndGender=function(){return new xu(this.runAndExtendWithFaceDetection(),this.input)},e}(Su);!function(){function t(t,e){void 0===e&&(e=.6),this._distanceThreshold=e;var n=Array.isArray(t)?t:[t];if(!n.length)throw new Error("FaceRecognizer.constructor - expected atleast one input");var r=1,a=function(){return"person "+r++};this._labeledDescriptors=n.map((function(t){if(t instanceof Js)return t;if(t instanceof Float32Array)return new Js(a(),[t]);if(t.descriptor&&t.descriptor instanceof Float32Array)return new Js(a(),[t.descriptor]);throw new Error("FaceRecognizer.constructor - expected inputs to be of type LabeledFaceDescriptors | WithFaceDescriptor<any> | Float32Array | Array<LabeledFaceDescriptors | WithFaceDescriptor<any> | Float32Array>")}))}Object.defineProperty(t.prototype,"labeledDescriptors",{get:function(){return this._labeledDescriptors},enumerable:!0,configurable:!0}),Object.defineProperty(t.prototype,"distanceThreshold",{get:function(){return this._distanceThreshold},enumerable:!0,configurable:!0}),t.prototype.computeMeanDistance=function(t,e){return e.map((function(e){return function(t,e){if(t.length!==e.length)throw new Error("euclideanDistance: arr1.length !== arr2.length");var n=Array.from(t),r=Array.from(e);return Math.sqrt(n.map((function(t,e){return t-r[e]})).reduce((function(t,e){return t+Math.pow(e,2)}),0))}(e,t)})).reduce((function(t,e){return t+e}),0)/(e.length||1)},t.prototype.matchDescriptor=function(t){var e=this;return this.labeledDescriptors.map((function(n){var r=n.descriptors,a=n.label;return new Us(a,e.computeMeanDistance(t,r))})).reduce((function(t,e){return t.distance<e.distance?t:e}))},t.prototype.findBestMatch=function(t){var e=this.matchDescriptor(t);return e.distance<this.distanceThreshold?e:new Us("unknown",e.distance)},t.prototype.toJSON=function(){return{distanceThreshold:this.distanceThreshold,labeledDescriptors:this.labeledDescriptors.map((function(t){return t.toJSON()}))}},t.fromJSON=function(e){return new t(e.labeledDescriptors.map((function(t){return Js.fromJSON(t)})),e.distanceThreshold)}}();function Cu(t){let e;return{c(){e=g("button"),e.textContent="Loading",x(e,"class","button is-warning is-loading center")},m(t,n){h(t,e,n)},d(t){t&&f(e)}}}function Lu(e){let n,a,o,i,s,l,c,u,d,v,_,k,E,$,I,P=e[5]&&Cu();return{c(){n=g("div"),a=g("button"),o=g("span"),o.innerHTML='<i class="fa-solid fa-video"></i>',i=y(),s=g("span"),l=m(e[3]),c=y(),P&&P.c(),u=y(),d=g("div"),v=g("video"),v.innerHTML='<track kind="caption"/>',_=y(),k=g("canvas"),x(o,"class","icon"),x(a,"class","button are-medium center is-danger"),x(v,"id","inputVideo"),x(v,"class","svelte-wxwald"),x(k,"id","overlay"),x(k,"class","svelte-wxwald"),x(d,"class","videoContent svelte-wxwald"),z(()=>e[10].call(d))},m(t,r){h(t,n,r),p(n,a),p(a,o),p(a,i),p(a,s),p(s,l),p(n,c),P&&P.m(n,null),p(n,u),p(n,d),p(d,v),e[8](v),p(d,_),p(d,k),e[9](k),E=function(t,e){"static"===getComputedStyle(t).position&&(t.style.position="relative");const n=g("iframe");n.setAttribute("style","display: block; position: absolute; top: 0; left: 0; width: 100%; height: 100%; overflow: hidden; border: 0; opacity: 0; pointer-events: none; z-index: -1;"),n.setAttribute("aria-hidden","true"),n.tabIndex=-1;const r=M();let a;return r?(n.src="data:text/html,<script>onresize=function(){parent.postMessage(0,'*')}<\/script>",a=b(window,"message",t=>{t.source===n.contentWindow&&e()})):(n.src="about:blank",n.onload=()=>{a=b(n.contentWindow,"resize",e)}),p(t,n),()=>{(r||a&&n.contentWindow)&&a(),f(n)}}(d,e[10].bind(d)),$||(I=[b(a,"click",e[6]),b(v,"loadedmetadata",e[7])],$=!0)},p(t,[e]){8&e&&w(l,t[3]),t[5]?P||(P=Cu(),P.c(),P.m(n,u)):P&&(P.d(1),P=null)},i:t,o:t,d(t){t&&f(n),P&&P.d(),e[8](null),e[9](null),E(),$=!1,r(I)}}}function Fu(t,e,n){const r=new Kc({inputSize:512,scoreThreshold:.5});let a,o,i,s="Juste pour voir!",l=null,c=null,u=!1,d=!1;return[a,o,i,s,l,u,async()=>{var t;n(5,u=!0),await pu.tinyFaceDetector.load("./weights/"),await(t="./weights/",pu.faceExpressionNet.load(t)),d?(c.getTracks().forEach((function(t){t.stop(),n(3,s="Juste pour voir!")})),n(4,l.hidden=!0,l),n(2,i.hidden=!0,i),d=!1,n(5,u=!1)):(c=await navigator.mediaDevices.getUserMedia({video:!0,audio:!1}),n(4,l.srcObject=c,l),l.play(),d=!0,n(4,l.hidden=!1,l),n(2,i.hidden=!1,i),n(3,s="Ok j'ai vu!"))},async function t(){const e=await function(t,e){return void 0===e&&(e=new Lc),new Tu(t,e)}(l,r).withFaceExpressions();if(e){const t=function t(e,n){var r=new ks(n.width,n.height),a=r.width,o=r.height;if(a<=0||o<=0)throw new Error("resizeResults - invalid dimensions: "+JSON.stringify({width:a,height:o}));if(Array.isArray(e))return e.map((function(e){return t(e,{width:a,height:o})}));if(Zl(e)){var i=e.detection.forSize(a,o),s=e.unshiftedLandmarks.forSize(i.box.width,i.box.height);return tc(Qs(e,i),s)}return Ys(e)?Qs(e,e.detection.forSize(a,o)):e instanceof Gs||e instanceof Bs?e.forSize(a,o):e}(e,function(t,e,n){void 0===n&&(n=!1);var r=n?gl(e):e,a=r.width,o=r.height;return t.width=a,t.height=o,{width:a,height:o}}(i,{width:o,height:a})),r=.05;s=i,c=t,(Array.isArray(c)?c:[c]).forEach((function(t){var e=t instanceof Bs?t.score:Ys(t)?t.detection.score:void 0,n=t instanceof Bs?t.box:Ys(t)?t.detection.box:new Ds(t),r=e?""+Ps(e):void 0;new hl(n,{label:r}).draw(s)})),Ql(i,t,r),n(5,u=!1)}var s,c;d&&setTimeout(()=>t())},function(t){D[t?"unshift":"push"](()=>{l=t,n(4,l)})},function(t){D[t?"unshift":"push"](()=>{i=t,n(2,i)})},function(){o=this.clientWidth,a=this.clientHeight,n(1,o),n(0,a)}]}class Du extends nt{constructor(t){super(),et(this,t,Fu,Lu,o,{})}}function Nu(t){let e,n,o,i,s,l,c,u,d,m,v,w,_,E,$,I,M,P,S,A,T,C,L,F,D,N,R,B,O,j,H,q,W,G,V,K,U,tt,et,nt,rt,at,ot,it,st,lt;return z(t[3]),R=new Du({}),{c(){e=g("div"),n=g("div"),o=g("div"),i=g("div"),s=g("div"),l=g("div"),c=g("article"),u=g("h2"),u.textContent="Obtenir son profil d'apprenant",d=y(),m=g("div"),v=g("button"),v.innerHTML='<span class="icon"><i class="fa-solid fa-address-card"></i></span> \n                                  <span>Faire le test</span>',w=y(),_=g("article"),E=g("p"),E.textContent="DataTrainX",$=y(),I=g("p"),I.textContent="A travers la saisie d’un questionnaire (Kolb) nous cherchons à déterminer un profil d’apprenant dans le projet DataTrainx. L’utilisateur sera enregistré en vidéo et une comparaison sera effectuée avec les émotions que vous aurez exprimées.",M=y(),P=g("div"),S=g("button"),S.innerHTML='<span class="icon"><i class="fa-solid fa-circle-info"></i></span> \n                                  <span>En savoir plus</span>',A=y(),T=g("div"),C=g("article"),L=g("p"),L.textContent="Capture vidéo",F=y(),D=g("p"),D.textContent="Prêt à capturer vos émotions ?",N=y(),Y(R.$$.fragment),B=y(),O=g("div"),O.innerHTML='<article class="tile is-child notification is-danger svelte-gh4brt"><p class="title">Protection de votre image</p> \n                      <p class="">Des données collectés uniquement à des fins de recherche en partenaria avec l&#39;IPST CNAM de l&#39;université de Toulouse. DataTrainX est un projet d&#39;étude personnel dans le cadre de mon mémoire d&#39;ingénieur. Les données sont collectés sur mon propre serveur, il n&#39;y a aucun autre intermédiaire et les données transitent de manière cryptée!</p></article>',j=y(),H=g("div"),q=g("article"),W=g("div"),G=g("p"),G.textContent="Réseau neuronal convolutif",V=y(),K=g("div"),U=g("p"),U.textContent="En apprentissage automatique, un réseau de neurones convolutifs, appellé aussi CNN, est un type de réseau de neurones artificiels, dans lequel le motif de connexion entre les neurones est inspiré par le cortex visuel des animaux. Les neurones de cette région du cerveau sont arrangés de sorte qu'ils correspondent à des régions qui se chevauchent lors du pavage du champ visuel.",tt=y(),et=g("p"),et.textContent="Leur fonctionnement est inspiré par les processus biologiques, ils consistent en un empilage multicouche de perceptrons, dont le but est de prétraiter de petites quantités d'informations.",nt=y(),rt=g("p"),rt.textContent="Les réseaux neuronaux convolutifs ont de larges applications dans la reconnaissance d'image et vidéo, les systèmes de recommandation et le traitement du langage naturel.",at=y(),ot=g("button"),ot.innerHTML='<span class="icon"><i class="fas fa-eye"></i></span> \n                              <span>Comment ça marche ?</span>',x(u,"class","svelte-gh4brt"),x(v,"class","button are-medium center is-link is-rounded"),x(m,"class","buttons are-medium"),x(c,"class","tile is-child notification is-primary svelte-gh4brt"),x(E,"class","title logo-text"),x(S,"class","button are-medium right is-warning is-light"),x(P,"class","buttons"),x(_,"class","tile is-child notification is-warning svelte-gh4brt"),x(l,"class","tile is-parent is-vertical"),x(L,"class","title"),x(D,"class","subtitle"),x(C,"class","tile is-child notification is-info svelte-gh4brt"),x(T,"class","tile is-parent"),x(s,"class","tile"),x(O,"class","tile is-parent"),x(i,"class","tile is-vertical is-8"),x(G,"class","title"),x(ot,"class","button is-primary"),x(ot,"id","explain-button"),x(K,"class","content"),x(W,"class","content"),x(q,"class","tile is-child notification is-success svelte-gh4brt"),x(H,"class","tile is-parent"),x(o,"class","tile is-ancestor svelte-gh4brt"),k(o,"height",t[1]-Ru+"px"),x(n,"class","container"),x(e,"id","presentation"),x(e,"class","start jumbotron text-center svelte-gh4brt"),k(e,"height",t[1]-Ru+"px"),k(e,"left",t[2]+"px")},m(r,f){h(r,e,f),p(e,n),p(n,o),p(o,i),p(i,s),p(s,l),p(l,c),p(c,u),p(c,d),p(c,m),p(m,v),p(l,w),p(l,_),p(_,E),p(_,$),p(_,I),p(_,M),p(_,P),p(P,S),p(s,A),p(s,T),p(T,C),p(C,L),p(C,F),p(C,D),p(C,N),Q(R,C,null),p(i,B),p(i,O),p(o,j),p(o,H),p(H,q),p(q,W),p(W,G),p(W,V),p(W,K),p(K,U),p(K,tt),p(K,et),p(K,nt),p(K,rt),p(K,at),p(K,ot),it=!0,st||(lt=[b(window,"resize",t[3]),b(v,"click",kt.set("trainX1")),b(S,"click",t[4]),b(ot,"click",(function(){a(_t.set(-t[0]))&&_t.set(-t[0]).apply(this,arguments)}))],st=!0)},p(n,[r]){t=n,(!it||2&r)&&k(o,"height",t[1]-Ru+"px"),(!it||2&r)&&k(e,"height",t[1]-Ru+"px"),(!it||4&r)&&k(e,"left",t[2]+"px")},i(t){it||(X(R.$$.fragment,t),it=!0)},o(t){J(R.$$.fragment,t),it=!1},d(t){t&&f(e),Z(R),st=!1,r(lt)}}}let Ru=50;function Bu(t,e,n){let r,a,o;_t.subscribe(t=>{n(2,o=t)});return[r,a,o,function(){n(1,a=window.innerHeight),n(0,r=window.innerWidth)},()=>Se({element:"#article"})]}class Ou extends nt{constructor(t){super(),et(this,t,Bu,Nu,o,{})}}function zu(e){let n,r,a,o,i,s,l,c,u,d;return a=new Ou({}),s=new ra({}),u=new Ce({}),{c(){n=g("main"),r=g("section"),Y(a.$$.fragment),o=y(),i=g("section"),Y(s.$$.fragment),l=y(),c=g("section"),Y(u.$$.fragment),x(r,"id","main"),x(i,"id","cnn"),x(i,"class","svelte-1nuj68o"),x(c,"id","article")},m(t,e){h(t,n,e),p(n,r),Q(a,r,null),p(n,o),p(n,i),Q(s,i,null),p(n,l),p(n,c),Q(u,c,null),d=!0},p:t,i(t){d||(X(a.$$.fragment,t),X(s.$$.fragment,t),X(u.$$.fragment,t),d=!0)},o(t){J(a.$$.fragment,t),J(s.$$.fragment,t),J(u.$$.fragment,t),d=!1},d(t){t&&f(n),Z(a),Z(s),Z(u)}}}function ju(t){return[]}class Hu extends nt{constructor(t){super(),et(this,t,ju,zu,o,{})}}function qu(e){let n;return{c(){n=g("header"),n.innerHTML='<div id="logo"><div id="logo-text">DataTrainX</div> \n        <div id="svg-logo-tagline">Outil de recherche des singularités cognitives d’un étudiant!</div></div> \n\n    <div class="icons"><div class="icon" title="Open-source code"><a target="_blank" href="https://github.com/davy-blavette/DatatrainX"><i class="fa-brands fa-github"></i></a></div></div>',x(n,"id","header")},m(t,e){h(t,n,e)},p:t,i:t,o:t,d(t){t&&f(n)}}}class Wu extends nt{constructor(t){super(),et(this,t,null,qu,o,{})}}function Gu(e){let n;return{c(){n=g("footer"),n.innerHTML='<div class="content has-text-centered"><span class="logo-text svelte-nt5w17">DataTrainX</span> \n        <span class="version svelte-nt5w17">Version 0.6.1</span> \n        <p>By <a href="https://jgthms.com" class="svelte-nt5w17">Davy Blavette</a>. The source code is licensed\n            <a href="http://opensource.org/licenses/mit-license.php" class="svelte-nt5w17">MIT</a>. The website content\n            is licensed <a href="http://creativecommons.org/licenses/by-nc-sa/4.0/" class="svelte-nt5w17">CC BY NC SA 4.0</a>.</p> \n        <div class="icon svelte-nt5w17" title="Open-source code"><a target="_blank" href="https://github.com/davy-blavette/DatatrainX" class="svelte-nt5w17"><i class="fa-brands fa-github"></i></a></div></div>',x(n,"class","footer svelte-nt5w17")},m(t,e){h(t,n,e)},p:t,i:t,o:t,d(t){t&&f(n)}}}class Vu extends nt{constructor(t){super(),et(this,t,null,Gu,o,{})}}function Ku(e){let n,r,a,o,i,s;return n=new Wu({}),a=new Hu({}),i=new Vu({}),{c(){Y(n.$$.fragment),r=y(),Y(a.$$.fragment),o=y(),Y(i.$$.fragment)},m(t,e){Q(n,t,e),h(t,r,e),Q(a,t,e),h(t,o,e),Q(i,t,e),s=!0},p:t,i(t){s||(X(n.$$.fragment,t),X(a.$$.fragment,t),X(i.$$.fragment,t),s=!0)},o(t){J(n.$$.fragment,t),J(a.$$.fragment,t),J(i.$$.fragment,t),s=!1},d(t){Z(n,t),t&&f(r),Z(a,t),t&&f(o),Z(i,t)}}}return new class extends nt{constructor(t){super(),et(this,t,null,Ku,o,{})}}({target:document.body,props:{}})}();
 //# sourceMappingURL=bundle.js.map

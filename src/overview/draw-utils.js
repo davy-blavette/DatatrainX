@@ -4,7 +4,7 @@ import { overviewConfig } from '../config.js';
 const nodeLength = overviewConfig.nodeLength;
 
 /**
- * Compute the [minimum, maximum] of a 1D or 2D array.
+ * Compute the [minimum, maximum] of datatrainx 1D or 2D array.
  * @param {[number]} array 
  */
 export  const getExtent = (array) => {

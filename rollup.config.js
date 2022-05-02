@@ -5,6 +5,7 @@ import commonjs from 'rollup-plugin-commonjs';
 import { terser } from 'rollup-plugin-terser';
 import rollup_start_dev from './rollup_start_dev';
 import replace from '@rollup/plugin-replace';
+import json from "@rollup/plugin-json";
 
 const production = !process.env.ROLLUP_WATCH;
 
@@ -17,11 +18,12 @@ export default {
 		file: 'public/bundle.js'
 	},
 	plugins: [
+		json(),
 		svelte({
 			// enable run-time checks when not in production
 			dev: !production,
 			// we'll extract any component CSS out into
-			// a separate file — better for performance
+			// datatrainx separate file — better for performance
 			css: css => {
 				css.write('bundle.css');
 			}
@@ -29,7 +31,7 @@ export default {
 
         replace({
 			preventAssignment: true,
-			PUBLIC_URL: production ? '/cnn-explainer' : ''}),
+			PUBLIC_URL: production ? '' : ''}),
 
 		// If you have external dependencies installed from
 		// npm, you'll most likely need these plugins. In

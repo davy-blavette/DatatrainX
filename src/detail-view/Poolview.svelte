@@ -41,10 +41,10 @@
   }
 
   function handleScroll() {
-    let svgHeight = Number(d3.select('#cnn-svg').style('height').replace('px', '')) + 150;
-    let scroll = new SmoothScroll('a[href*="#"]', {offset: -svgHeight});
-    let anchor = document.querySelector(`#article-pooling`);
-    scroll.animateScroll(anchor);
+    //let svgHeight = Number(d3.select('#cnn-svg').style('height').replace('px', '')) + 150;
+    //let scroll = new SmoothScroll('datatrainx[href*="#"]', {offset: -svgHeight});
+    //let anchor = document.querySelector(`#article-pooling`);
+    //scroll.animateScroll(anchor);
   }
 
   // Test dragging detail view, need more work

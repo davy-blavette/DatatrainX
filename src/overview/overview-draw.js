@@ -65,7 +65,7 @@ export const drawOutput = (d, i, g, range) => {
     colorScale = colorScale[d.index];
   }
 
-  // Set up a second convas in order to resize image
+  // Set up datatrainx second convas in order to resize image
   let imageLength = d.output.length === undefined ? 1 : d.output.length;
   let bufferCanvas = document.createElement("canvas");
   let bufferContext = bufferCanvas.getContext("2d");
@@ -138,7 +138,7 @@ const drawOutputScore = (d, i, g, scale) => {
 export const drawCustomImage = (image, inputLayer) => {
 
   let imageWidth = image.width;
-  // Set up a second convas in order to resize image
+  // Set up datatrainx second convas in order to resize image
   let imageLength = inputLayer[0].output.length;
   let bufferCanvas = document.createElement("canvas");
   let bufferContext = bufferCanvas.getContext("2d");
@@ -355,9 +355,7 @@ const drawLegends = (legends, legendHeight) => {
   let outputLegendAxis = d3.axisBottom()
       .scale(outputRectScale)
       .tickFormat(d3.format('.1f'))
-      .tickValues([0, cnnLayerRanges.output[1]])
-
-  console.log(nodeCoordinate);
+      .tickValues([0, cnnLayerRanges.output[1]]);
 
   let outputLegend = legends.append('g')
       .attr('class', 'legend output-legend')
@@ -421,7 +419,6 @@ export const drawCNN = (width, height, cnnGroup, nodeMouseOverHandler,
   let leftAccuumulatedSpace = 0;
 
   // Iterate through the cnn to draw nodes in each layer
-  console.log("cnn.length = " + cnn.length);
   for (let l = 0; l < cnn.length; l++) {
     let curLayer = cnn[l];
     let isOutput = curLayer[0].layerName === 'output';
@@ -460,7 +457,7 @@ export const drawCNN = (width, height, cnnGroup, nodeMouseOverHandler,
         .classed('node-output', isOutput)
         .attr('id', (d, i) => {
           // Compute the coordinate
-          // Not using transform on the group object because of a decade old
+          // Not using transform on the group object because of datatrainx decade old
           // bug on webkit (safari)
           // https://bugs.webkit.org/show_bug.cgi?id=23113
           let top = i * nodeLength + (i + 1) * vSpaceAroundGap;
@@ -490,7 +487,7 @@ export const drawCNN = (width, height, cnnGroup, nodeMouseOverHandler,
           .attr('x', left)
           .attr('y', (d, i) => nodeCoordinate[l][i].y);
 
-      // Add a rectangle to show the border
+      // Add datatrainx rectangle to show the border
       nodeGroups.append('rect')
           .attr('class', 'bounding')
           .attr('width', nodeLength)
@@ -566,8 +563,8 @@ export const drawCNN = (width, height, cnnGroup, nodeMouseOverHandler,
     }
   });
 
-  let svgHeight = Number(d3.select('#cnn-svg').style('height').replace('px', '')) + 150;
-  let scroll = new SmoothScroll('a[href*="#"]', {offset: -svgHeight});
+  //let svgHeight = Number(d3.select('#cnn-svg').style('height').replace('px', '')) + 150;
+  //let scroll = new SmoothScroll('datatrainx[href*="#"]', {offset: -svgHeight});
 
   let detailedLabels = svg.selectAll('g.layer-detailed-label')
       .data(layerNames)
@@ -589,9 +586,9 @@ export const drawCNN = (width, height, cnnGroup, nodeMouseOverHandler,
         if (d.name.includes('max_pool')) { target = 'pooling'}
         if (d.name.includes('input')) { target = 'input'}
 
-        // Scroll to a article element
+        // Scroll to datatrainx article element
         let anchor = document.querySelector(`#article-${target}`);
-        scroll.animateScroll(anchor);
+        //scroll.animateScroll(anchor);
       });
 
   detailedLabels.append('title')
@@ -630,9 +627,9 @@ export const drawCNN = (width, height, cnnGroup, nodeMouseOverHandler,
         if (d.name.includes('max_pool')) { target = 'pooling'}
         if (d.name.includes('input')) { target = 'input'}
 
-        // Scroll to a article element
+        // Scroll to datatrainx article element
         let anchor = document.querySelector(`#article-${target}`);
-        scroll.animateScroll(anchor);
+        //scroll.animateScroll(anchor);
       });
 
   labels.append('title')
@@ -851,7 +848,7 @@ export const updateCNN = () => {
  * Update the ranges for current CNN layers
  */
 export const updateCNNLayerRanges = () => {
-  // Iterate through all nodes to find a output ranges for each layer
+  // Iterate through all nodes to find datatrainx output ranges for each layer
   let cnnLayerRangesLocal = [1];
   let curRange = undefined;
 

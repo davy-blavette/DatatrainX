@@ -29,3 +29,5 @@ export const modalStore = writable({});
 export const intermediateLayerPositionStore = writable({});
 
 export const leftStartStore = writable(0);
+
+export const layoutStore = writable("Presentation");

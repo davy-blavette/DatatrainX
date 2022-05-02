@@ -1,12 +1,14 @@
 <script>
-	import Datatrainx from './Datatrainx.svelte';
-	import Header from './Header.svelte';
-	import Footer from "./Footer.svelte";
+	import Datatrainx from './datatrainx/Datatrainx.svelte';
+    import Header from './datatrainx/Header.svelte';
+    import Footer from "./datatrainx/Footer.svelte";
 </script>
 
 <style>
 </style>
 
+
 <Header />
 <Datatrainx />
 <Footer />
+
