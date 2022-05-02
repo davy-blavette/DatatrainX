@@ -19,3 +19,4 @@
 /dataset/fer2013/v3
 /dataset/fer2013/data/img
 /*.pem
+/node_modules
