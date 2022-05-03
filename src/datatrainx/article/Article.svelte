@@ -1,12 +1,7 @@
 <script>
     import * as animateScroll from "svelte-scrollto";
-    import {leftStartStore} from "../../stores";
+    import {layoutStore} from "../../stores";
 
-    let leftStartValue;
-
-    leftStartStore.subscribe(value => {
-        leftStartValue = value;
-    });
 
 </script>
 
@@ -55,7 +50,7 @@
                 <p>Nous avons adaptés le projet <a href="https://poloclub.github.io/cnn-explainer/" target="_blank">CNN Explainer</a> pour en comprendre le principe sur un dataset fer2013.</p>
                 <div class="buttons">
 
-                    <button class="button is-primary" id="explain-button" on:click={() => animateScroll.scrollTo({element: "#header", onDone: (element, offset) => {leftStartStore.set(-innerWidth)}})}>
+                    <button class="button is-primary" id="explain-button" on:click={() => animateScroll.scrollTo({element: "#header", onDone: (element, offset) => {layoutStore.setLayout("cnn")}}) }>
                             <span class="icon">
                               <i class="fas fa-eye"></i>
                             </span>

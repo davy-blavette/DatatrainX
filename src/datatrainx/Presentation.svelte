@@ -1,7 +1,7 @@
 <script>
 
     import * as animateScroll from "svelte-scrollto";
-    import {leftStartStore, layoutStore} from "../stores";
+    import {layoutStore} from "../stores";
     import Faceapi from "./Faceapi.svelte";
 
     let innerWidth;
@@ -9,25 +9,8 @@
     let clientHeight;
     let top = 50;
 
-    let leftStartValue;
-
-    leftStartStore.subscribe(value => {
-        leftStartValue = value;
-    });
-
-
 </script>
 <style>
-    .start {
-        width: 100%;
-        padding: 0;
-        margin: auto;
-        position: absolute;
-        transition: left 2s;
-        left: 0px;
-        background-color: #3b065e;
-        z-index: 9;
-    }
     .tile.is-ancestor {
         margin-top: 0;
     }
@@ -42,8 +25,6 @@
     }
 </style>
 <svelte:window bind:innerHeight bind:innerWidth   />
-
-<div id="presentation" class="start jumbotron text-center"  style="height: {innerHeight - top}px; left:{leftStartValue}px">
   <div class="container">
       <div class="tile is-ancestor"  style="height: {innerHeight - top}px;">
           <div class="tile is-vertical is-8">
@@ -52,7 +33,7 @@
                       <article class="tile is-child notification is-primary">
                           <h2>Obtenir son profil d'apprenant</h2>
                           <div class="buttons are-medium">
-                              <button class="button are-medium center is-link is-rounded"  on:click={layoutStore.set("trainX1")}>
+                              <button class="button are-medium center is-link is-rounded"  on:click ={() => layoutStore.setLayout("trainx1")}>
                                 <span class="icon">
                                   <i class="fa-solid fa-address-card"></i>
                                 </span>
@@ -96,7 +77,7 @@
                           <p>En apprentissage automatique, un réseau de neurones convolutifs, appellé aussi CNN, est un type de réseau de neurones artificiels, dans lequel le motif de connexion entre les neurones est inspiré par le cortex visuel des animaux. Les neurones de cette région du cerveau sont arrangés de sorte qu'ils correspondent à des régions qui se chevauchent lors du pavage du champ visuel.</p>
                           <p>Leur fonctionnement est inspiré par les processus biologiques, ils consistent en un empilage multicouche de perceptrons, dont le but est de prétraiter de petites quantités d'informations.</p>
                           <p>Les réseaux neuronaux convolutifs ont de larges applications dans la reconnaissance d'image et vidéo, les systèmes de recommandation et le traitement du langage naturel.</p>
-                          <button class="button is-primary" id="explain-button" on:click={leftStartStore.set(-innerWidth)}>
+                          <button class="button is-primary" id="explain-button" on:click ={() => layoutStore.setLayout("cnn")}>
                             <span class="icon">
                               <i class="fas fa-eye"></i>
                             </span>
@@ -107,9 +88,8 @@
               </article>
           </div>
       </div>
-
   </div>
-</div>
+
 
 
 

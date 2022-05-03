@@ -1,12 +1,35 @@
 <script>
-
+    import {layoutStore} from "../stores";
 </script>
+
+<style>
+
+    #header {
+        height: 50px;
+        display: flex;
+        padding: 0 20px;
+        align-items: center;
+        background: #3273dc;
+        justify-content: space-between;
+    }
+
+    #logo {
+        display: flex;
+        align-items: center;
+        cursor: pointer;
+    }
+
+    #header i{
+        color: white;
+        font-size: 1.5em;
+    }
+</style>
 
 
 <header id="header">
 
     <div id="logo">
-        <div id="logo-text">
+        <div id="logo-text" on:click ={() => layoutStore.setLayout("presentation")}>
             DataTrainX
         </div>
         <div id="svg-logo-tagline">

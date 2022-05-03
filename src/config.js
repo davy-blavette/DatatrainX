@@ -1,5 +1,8 @@
 /* global d3 */
 
+
+
+
 const layerColorScales = {
   input: [d3.interpolateGreys, d3.interpolateGreys, d3.interpolateGreys],
   conv: d3.interpolateRdBu,
@@ -30,3 +33,5 @@ export const overviewConfig = {
   overlayRectOffset: 12,
   classLists: ['Colère', 'Dégoût', 'Peur', 'Joyeux', 'Triste', 'Surprise', 'Neutre']
 };
+
+

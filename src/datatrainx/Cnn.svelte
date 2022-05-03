@@ -9,7 +9,7 @@
     needRedrawStore, cnnLayerMinMaxStore, detailedModeStore,
     shouldIntermediateAnimateStore, isInSoftmaxStore, softmaxDetailViewStore,
     hoverInfoStore, allowsSoftmaxAnimationStore, modalStore,
-    intermediateLayerPositionStore, leftStartStore
+    intermediateLayerPositionStore, layoutStore
   } from '../stores.js';
 
   // Svelte views
@@ -43,10 +43,6 @@
     drawOutput, drawCNN, updateCNN, updateCNNLayerRanges, drawCustomImage
   } from '../overview/overview-draw.js';
 
-  // DataTrainX
-  function afficheStart() {
-    leftStartStore.update(n => 0);
-  }
 
   // View bindings
   let overviewComponent;
@@ -1544,7 +1540,7 @@
 
     <div class="right-control">
 
-        <button class="button is-success is-very-small is-activated" on:click={afficheStart}>
+        <button class="button is-success is-very-small is-activated" on:click ={() => layoutStore.setLayout("presentation")}>
         <span class="icon">
           <i class="fa-solid fa-address-card"></i>
         </span>

@@ -2,7 +2,7 @@
 
 
     import * as faceapi from 'datatrainX';
-
+    import {layoutStore} from "../stores";
 
     // ssd_mobilenetv1 options
     //let minConfidence = 0.5
@@ -22,6 +22,12 @@
     let loading = false;
     let playVideo = false;
 
+
+    let layoutValue;
+
+    layoutStore.subscribe(value => {
+        layoutValue = value;
+    });
 
     const videoCam = async () => {
 
@@ -75,6 +81,9 @@
 
     }
 
+    if(layoutValue !== "presentation"){
+        videoCam();
+    }
 
 </script>
 
@@ -102,14 +111,16 @@
 </style>
 
 <div>
+    {#if layoutValue == "presentation"}
     <button class="button are-medium center is-danger" on:click={videoCam}>
             <span class="icon">
                 <i class="fa-solid fa-video"></i>
             </span>
         <span>{msgButton}</span>
     </button>
-    {#if loading}
-    <button class="button is-warning is-loading center">Loading</button>
+        {#if loading}
+        <button class="button is-warning is-loading center">Loading</button>
+        {/if}
     {/if}
     <div class="videoContent" bind:clientWidth bind:clientHeight>
         <video id="inputVideo" on:loadedmetadata="{onPlay}"  bind:this={videoSource}>
