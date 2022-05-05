@@ -1,7 +1,7 @@
 {
   "name": "datatrainx",
   "version": "1.0.0",
-  "description": "JavaScript API for face detection and face recognition in the browser with tensorflow.js",
+  "description": "JavaScript API for face detection and face recognition in the browser with tensorflow.js. Adaptation to face-api.js of justadudewhohacks.",
   "devDependencies": {},
   "module": "./build/es6/index.js",
   "main": "./build/commonjs/index.js",
@@ -35,7 +35,7 @@
     "tensorflow",
     "tf"
   ],
-  "author": "Davy Blavette",
+  "author": "Davy Blavette, justadudewhohacks",
   "license": "MIT",
   "bugs": {
     "url": "https://github.com/davy-blavette/datatrainX/issues"

@@ -11,6 +11,10 @@
         align-items: center;
         background: #3273dc;
         justify-content: space-between;
+        position: fixed;
+        width: 100%;
+        z-index: 99;
+        top: 0px;
     }
 
     #logo {
@@ -23,6 +27,7 @@
         color: white;
         font-size: 1.5em;
     }
+
 </style>
 
 
@@ -32,7 +37,7 @@
         <div id="logo-text" on:click ={() => layoutStore.setLayout("presentation")}>
             DataTrainX
         </div>
-        <div id="svg-logo-tagline">
+        <div id="svg-logo-tagline" class="is-hidden-mobile">
             Outil de recherche des singularités cognitives d’un étudiant!
         </div>
     </div>

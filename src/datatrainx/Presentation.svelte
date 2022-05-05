@@ -69,7 +69,7 @@
                   </article>
               </div>
           </div>
-          <div class="tile is-parent">
+          <div class="tile is-parent is-vertical">
               <article class="tile is-child notification is-success">
                   <div class="content">
                       <p class="title">Réseau neuronal convolutif</p>

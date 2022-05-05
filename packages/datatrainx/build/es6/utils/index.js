@@ -1,5 +1,5 @@
 import * as tf from '@tensorflow/tfjs-core';
-import { Point } from '../classes';
+import { Point } from '../classes/Point';
 import { Dimensions } from '../classes/Dimensions';
 export function isTensor(tensor, dim) {
     return tensor instanceof tf.Tensor && tensor.shape.length === dim;

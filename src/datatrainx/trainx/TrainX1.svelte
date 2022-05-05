@@ -1,6 +1,7 @@
 <script>
     import {layoutStore} from "../../stores";
     import Faceapi from "../Faceapi.svelte";
+    import ChartStream from "./ChartStream.svelte";
 </script>
 <style>
     h2{
@@ -12,8 +13,8 @@
 </style>
 <section class="hero is-link is-fullheight-with-navbar">
     <div class="hero-body container">
-        <div class="columns center is-vcentered">
-            <div class="column">
+        <div class="columns center is-vcentered is-multiline">
+            <div class="column is-half">
                 <p>A travers la saisie d’un questionnaire (Kolb) nous cherchons à déterminer un profil d’apprenant dans le projet DataTrainx.<br>
                     L’utilisateur sera enregistré en vidéo et une comparaison sera effectuée avec les émotions que vous aurez exprimées.</p>
                 <div class="buttons are-medium">
@@ -25,10 +26,14 @@
                     </button>
                 </div>
             </div>
-            <div class="column">
+            <div class="column is-half">
                 <Faceapi/>
             </div>
+            <div class="column">
+                <ChartStream/>
+            </div>
         </div>
+
 
     </div>
 </section>

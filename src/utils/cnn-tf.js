@@ -1,4 +1,6 @@
-/* global tf */
+
+
+import * as tf from '@tensorflow/tfjs';
 
 // Network input image size
 const networkInputSize = 48;
@@ -87,7 +89,7 @@ const constructCNNFromOutputs = (allOutputs, model, inputImageTensor) => {
     let curLayerNodes = [];
     let curLayerType;
 
-    console.log("name >> " + layer.name);
+    //console.log("name >> " + layer.name);
     // Identify layer type based on the layer name
     if (layer.name.includes('conv')) {
       curLayerType = nodeType.CONV;

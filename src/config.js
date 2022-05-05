@@ -1,8 +1,4 @@
 /* global d3 */
-
-
-
-
 const layerColorScales = {
   input: [d3.interpolateGreys, d3.interpolateGreys, d3.interpolateGreys],
   conv: d3.interpolateRdBu,
@@ -34,4 +30,12 @@ export const overviewConfig = {
   classLists: ['Colère', 'Dégoût', 'Peur', 'Joyeux', 'Triste', 'Surprise', 'Neutre']
 };
 
+export let dataExpression = {
+  colere:[],
+  degout:[],
+  peur:[],
+  joie:[],
+  triste:[],
+  surprise:[]
+};
 

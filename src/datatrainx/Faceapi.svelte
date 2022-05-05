@@ -1,8 +1,10 @@
 <script>
 
-
     import * as faceapi from 'datatrainX';
-    import {layoutStore} from "../stores";
+    import {layoutStore, videoStore} from "../stores";
+    import {dataExpression} from "../config";
+
+
 
     // ssd_mobilenetv1 options
     //let minConfidence = 0.5
@@ -20,14 +22,18 @@
     let videoSource = null;
     let stream = null;
     let loading = false;
-    let playVideo = false;
-
-
     let layoutValue;
+    let playVideo;
+
+    videoStore.subscribe(value => {
+        playVideo = value;
+    });
 
     layoutStore.subscribe(value => {
         layoutValue = value;
     });
+
+
 
     const videoCam = async () => {
 
@@ -35,25 +41,15 @@
         //await faceapi.nets.ssdMobilenetv1.load('./weights/');
         await faceapi.nets.tinyFaceDetector.load('./weights/');
         await faceapi.loadFaceExpressionModel('./weights/')
+        stream = await navigator.mediaDevices.getUserMedia({video: true,audio:false});
+        videoSource.srcObject = stream;
+        videoSource.play();
+        videoSource.hidden = false;
+        myCanvas.hidden = false;
+        msgButton = "Ok j'ai vu!";
+        loading = false;
+        videoStore.set(true);
 
-        if(!playVideo){
-            stream = await navigator.mediaDevices.getUserMedia({video: true,audio:false});
-            videoSource.srcObject = stream;
-            videoSource.play();
-            playVideo = true;
-            videoSource.hidden = false;
-            myCanvas.hidden = false;
-            msgButton = "Ok j'ai vu!";
-        }else{
-            stream.getTracks().forEach(function(track) {
-                track.stop();
-                msgButton = "Juste pour voir!";
-            });
-            videoSource.hidden = true;
-            myCanvas.hidden = true;
-            playVideo = false;
-            loading = false;
-        }
 
     };
 
@@ -62,8 +58,37 @@
 
         const result = await faceapi.detectSingleFace(videoSource, options).withFaceExpressions();
 
+        //console.log(result.expressions);
         if (result) {
-
+            const now = Date.now();
+            //console.log(dataExpression.peur);
+            //'Neutre', 'Joyeux', 'Triste', 'Colère', 'Peur', 'Dégoût', 'Surprise
+            dataExpression.peur.push({
+                x: now,
+                y:Object.values(result)[1]["Peur"],
+            });
+            dataExpression.joie.push({
+                x: now,
+                y:Object.values(result)[1]["Joyeux"],
+            });
+            dataExpression.degout.push({
+                x: now,
+                y:Object.values(result)[1]["Dégoût"],
+            });
+            dataExpression.surprise.push({
+                x: now,
+                y:Object.values(result)[1]["Surprise"],
+            });
+            dataExpression.triste.push({
+                x: now,
+                y:Object.values(result)[1]["Triste"],
+            });
+            dataExpression.colere.push({
+                x: now,
+                y:Object.values(result)[1]["Colère"],
+            });
+//            console.log(Object.values(result)[1]);
+//            console.log(Object.values(result)[1]["Neutre"]);
 
             const dims = faceapi.matchDimensions(myCanvas, {width: clientWidth, height: clientHeight});
 
@@ -72,18 +97,37 @@
 
             faceapi.draw.drawDetections(myCanvas, resizedResult);
             faceapi.draw.drawFaceExpressions(myCanvas, resizedResult, minConfidence);
-            loading = false;
+
         }
 
         if(playVideo){
             setTimeout(() => onPlay());
+        }else{
+            stream.getTracks().forEach(function(track) {
+                track.stop();
+                msgButton = "Juste pour voir!";
+            });
+            videoSource.hidden = true;
+            myCanvas.hidden = true;
+            videoStore.set(false);
+            loading = false;
         }
 
     }
 
     if(layoutValue !== "presentation"){
         videoCam();
-    }
+    };
+
+    const stateVideo = async () => {
+        if(playVideo){
+            videoStore.set(false);
+        }else{
+            videoCam();
+        }
+
+    };
+
 
 </script>
 
@@ -112,7 +156,7 @@
 
 <div>
     {#if layoutValue == "presentation"}
-    <button class="button are-medium center is-danger" on:click={videoCam}>
+    <button class="button are-medium center is-danger" on:click={stateVideo}>
             <span class="icon">
                 <i class="fa-solid fa-video"></i>
             </span>

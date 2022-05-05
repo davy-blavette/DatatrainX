@@ -20,8 +20,11 @@
     "@tensorflow/tfjs-node": "^3.16.0",
     "@types/seedrandom": "^3.0.2",
     "canvas": "^2.9.1",
+    "chart.js": "^3.7.1",
+    "chartjs-adapter-luxon": "^1.1.0",
+    "chartjs-plugin-streaming": "^2.0.0",
+    "luxon": "^2.3.2",
     "node-fetch": "^3.2.3",
-    "seedrandom": "^2.4.4",
     "sirv-cli": "^2.0.2",
     "svelte-scrollto": "^0.2.0"
   },

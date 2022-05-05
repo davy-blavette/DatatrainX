@@ -9,7 +9,7 @@
     import TrainX1 from "./trainx/TrainX1.svelte";
     import TrainX2 from "./trainx/TrainX2.svelte";
 
-    import {layoutStore} from "../stores";
+    import {layoutStore, videoStore} from "../stores";
 
     //Layout DataTrainX
     export const views = {
@@ -20,22 +20,30 @@
     };
 
     let layoutValue;
+    let playVideo;
     let viewportComponent = null;
 
 
     layoutStore.subscribe(value => {
         layoutValue = value;
     });
-
+    videoStore.subscribe(value => {
+        playVideo = value;
+    });
 
     function updateViewportComponent() {
+        videoStore.set(false);
         viewportComponent = views[layoutValue]
     }
     updateViewportComponent();
 </script>
 
 <style>
-
+#main{
+    padding: 1em;
+    background-color: #3b065e;
+    margin-top: 50px;
+}
 </style>
 <main>
     {#if viewportComponent == views[layoutValue]}

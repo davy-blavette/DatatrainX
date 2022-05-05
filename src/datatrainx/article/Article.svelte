@@ -48,8 +48,7 @@
                     </div>
                 </div>
                 <p>Nous avons adaptés le projet <a href="https://poloclub.github.io/cnn-explainer/" target="_blank">CNN Explainer</a> pour en comprendre le principe sur un dataset fer2013.</p>
-                <div class="buttons">
-
+                <div class="buttons center">
                     <button class="button is-primary" id="explain-button" on:click={() => animateScroll.scrollTo({element: "#header", onDone: (element, offset) => {layoutStore.setLayout("cnn")}}) }>
                             <span class="icon">
                               <i class="fas fa-eye"></i>
@@ -60,7 +59,7 @@
                 <p>L’idée est de se concentrer sur la démarche que privilégie chaque individu pour appréhender l’acte d’apprendre. Certains styles seraient plus adaptés dans certains contextes que d’autres. Tout dépend du point de vue de l’apprenant face à la situation d’apprentissage et de sa motivation.</p>
                 <p>Bien que des auteurs comme Jean Houssaye démontrent que ce qui semble essentiel c’est de différencier la pédagogie bien plus que des typologies destinées à connaître individuellement les apprenants et à dresser leur profil, il parait néanmoins intéressant de les utiliser comme complémentarité à un panel d’outil diversifié que peut utiliser le formateur.</p>
                 <h3>Le modèle de l’apprentissage expérientiel de Kolb</h3>
-                <p>Les modèles de styles d’apprentissage individualisés ont donc pour objectif de définir un type d’apprenant afin de permettre aux enseignants d’adapter leurs méthodes d’apprentissage. Peu d’études ont réussi à valider le concept de styles d’apprentissage en éducation.</p>
+                <p>Les modèles de styles d’apprentissage individualisés ont donc pour objectif de définir un type d’apprenant afin de permettre aux enseignants d’adapter leurs méthodes d’apprentissage.</p>
                 <p>Peu d’études ont réussi à valider le concept de styles d’apprentissage en éducation. L’étude de Pashler et al indique bien une corrélation entre typologies et les préférences exprimées par certains individus sur la façon dont ils préfèrent recevoir de l’information mais contredit le fait selon laquelle l’apprenant apprendrait mieux en apprenant avec une méthode jugée comme appropriée à son style d’apprentissage</p>
                 <p>Nombreux sont les scientifiques qui parle de mythe ou invitent les professionnels de l’éducation et d’apprentissage à faire preuve de scepticisme devant ces concepts. Le modèle de Kolb n’échappe pas non plus aux critiques mais il est de loin celui qui a connu la plus large diffusion et celui qui est à la base de modèle d’autres chercheurs.</p>
                 <p>Il est inspiré des travaux de psychologue reconnu comme John Dewey, Kurt Lewin et Jean Piaget. Il est plutôt approprié pour les apprentissages de disciplines académiques relativement abstraites, mais moins adaptés pour la plupart des apprentissages professionnels.</p>
@@ -79,6 +78,14 @@
                 <p>Dans l’hypothèse où nous aurions des résultats significatifs entre expression et typologie, nous pourrions considérer que le profil émotionnel même de l’émotion détermine la typologie d’apprentissage et donc envisager, par exemple, une orientation du logiciel vers l’adaptative learning, c’est-à-dire une interaction entre l’IA et l’utilisateur dans la proposition des supports pédagogique.</p>
                 <p>L’objet de ce projet, a pour orientation de se focaliser concrètement sur les moyens fonctionnels informatique à mettre en œuvre pour ce type d’application. Nous n’approfondirons pas l’aspect psychologique, qui se limitera au test de Kolb et à la résolution d’un Puzzle, l’objectif étant de démontrer comment mettre en place l’architecture fonctionnelle, logicielle et matérielle pour arriver à un résultat applicatif de la reconnaissance faciale de l’émotion.</p>
                 <p>Les résultats d’ordre psychologique à prendre en considération sur l’objectif de cette application auront donc une part importante de subjectivité clairement assumé.</p>
+                <div class="buttons center">
+                    <button class="button is-primary" id="explain-button" on:click={() => animateScroll.scrollTo({element: "#header", onDone: (element, offset) => {layoutStore.setLayout("presentation")}}) }>
+                            <span class="icon">
+                              <i class="fa-solid fa-angles-up"></i>
+                            </span>
+                        <span>Faire le test</span>
+                    </button>
+                </div>
             </article>
         </div>
     </div>

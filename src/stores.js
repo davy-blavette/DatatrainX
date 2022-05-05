@@ -1,6 +1,4 @@
 import {writable} from 'svelte/store';
-import Presentation from "./datatrainx/Presentation.svelte";
-import TrainX1 from "./datatrainx/trainx/TrainX1.svelte";
 
 export const cnnStore = writable([]);
 export const svgStore = writable(undefined);
@@ -31,6 +29,7 @@ export const modalStore = writable({});
 export const intermediateLayerPositionStore = writable({});
 
 export const leftStartStore = writable(0);
+export const videoStore = writable(false);
 
 function createLayout() {
     const { subscribe, set } = writable("presentation");

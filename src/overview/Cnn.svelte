@@ -1554,7 +1554,7 @@
         </button>
 
 
-        <button class="button blue-button is-very-small"
+        <button class="is-hidden-mobile button blue-button is-very-small "
         id="detailed-button"
         disabled={disableControl}
         class:is-activated={detailedMode}
@@ -1567,7 +1567,7 @@
         </span>
       </button>
 
-      <div class="control is-very-small has-icons-left"
+      <div class="control is-very-small has-icons-left is-hidden-mobile"
         title="Change color scale range">
         <span class="icon is-left">
           <i class="fas fa-palette"></i>
