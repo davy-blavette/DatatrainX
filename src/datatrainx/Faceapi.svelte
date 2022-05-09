@@ -36,9 +36,7 @@
 
 
     const videoCam = async () => {
-
         loading = true;
-        //await faceapi.nets.ssdMobilenetv1.load('./weights/');
         await faceapi.nets.tinyFaceDetector.load('./weights/');
         await faceapi.loadFaceExpressionModel('./weights/')
         stream = await navigator.mediaDevices.getUserMedia({video: true,audio:false});
@@ -49,20 +47,13 @@
         msgButton = "Ok j'ai vu!";
         loading = false;
         videoStore.set(true);
-
-
     };
 
 
     async function onPlay() {
-
         const result = await faceapi.detectSingleFace(videoSource, options).withFaceExpressions();
-
-        //console.log(result.expressions);
         if (result) {
             const now = Date.now();
-            //console.log(dataExpression.peur);
-            //'Neutre', 'Joyeux', 'Triste', 'Colère', 'Peur', 'Dégoût', 'Surprise
             dataExpression.peur.push({
                 x: now,
                 y:Object.values(result)[1]["Peur"],
@@ -87,19 +78,12 @@
                 x: now,
                 y:Object.values(result)[1]["Colère"],
             });
-//            console.log(Object.values(result)[1]);
-//            console.log(Object.values(result)[1]["Neutre"]);
-
             const dims = faceapi.matchDimensions(myCanvas, {width: clientWidth, height: clientHeight});
-
             const resizedResult = faceapi.resizeResults(result, dims);
             const minConfidence = 0.05;
-
             faceapi.draw.drawDetections(myCanvas, resizedResult);
             faceapi.draw.drawFaceExpressions(myCanvas, resizedResult, minConfidence);
-
         }
-
         if(playVideo){
             setTimeout(() => onPlay());
         }else{
@@ -127,7 +111,6 @@
         }else{
             videoCam();
         }
-
     };
 
 
@@ -175,6 +158,5 @@
         </video>
         <canvas id="overlay" bind:this={myCanvas} />
     </div>
-
 </div>
 

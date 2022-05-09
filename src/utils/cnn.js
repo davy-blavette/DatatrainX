@@ -136,7 +136,7 @@ const constructNNFromJSON = (nnJSON, inputImageArray) => {
 export const constructNN = (inputImageFile) => {
   // Load the saved model file
   return new Promise((resolve, reject) => {
-    fetch('PUBLIC_URL/assets/data/nn_10.json')
+    fetch('PUBLIC_URL/weights/fer_tinyVGG/model.json')
       .then(response => {
         response.json().then(nnJSON => {
           getInputImageArray(inputImageFile)

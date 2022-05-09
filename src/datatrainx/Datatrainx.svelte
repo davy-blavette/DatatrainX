@@ -5,7 +5,7 @@
     import Presentation from "./Presentation.svelte";
     import Cnn from './Cnn.svelte';
     import Article from "./article/Article.svelte";
-    import Layout from "./trainx/Layout.svelte";
+    import Layout from "./Layout.svelte";
     import TrainX1 from "./trainx/TrainX1.svelte";
     import TrainX2 from "./trainx/TrainX2.svelte";
 

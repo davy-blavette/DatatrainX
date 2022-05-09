@@ -21,3 +21,6 @@
 /*.pem
 /node_modules
 /.idea
+/build.bat
+/start_dev.bat
+/start_prod.bat

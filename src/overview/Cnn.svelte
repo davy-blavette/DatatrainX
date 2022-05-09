@@ -1121,7 +1121,7 @@
       .attr("d", "M-5,-10L10,0L-5,10");
 
     console.time('Construct cnn');
-    model = await loadTrainedModel('PUBLIC_URL/assets/data/fer_tinyVGG/model.json');
+    model = await loadTrainedModel('PUBLIC_URL/weights/fer_tinyVGG/model.json');
     cnn = await constructCNN(`PUBLIC_URL/assets/img/${selectedImage}`, model);
     console.timeEnd('Construct cnn');
     cnnStore.set(cnn);
