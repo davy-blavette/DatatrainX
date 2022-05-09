@@ -65,7 +65,7 @@
               <div class="tile is-parent">
                   <article class="tile is-child notification is-danger">
                       <p class="title">Protection de votre image</p>
-                      <p class="">Des données collectés uniquement à des fins de recherche en partenaria avec l'IPST CNAM de l'université de Toulouse. DataTrainX est un projet d'étude personnel dans le cadre de mon mémoire d'ingénieur. Les données sont collectés sur mon propre serveur, il n'y a aucun autre intermédiaire et les données transitent de manière cryptée!</p>
+                      <p class="">Des données collectés uniquement à des fins de recherche en partenariat avec l'IPST CNAM de l'université de Toulouse. DataTrainX est un projet d'étude personnel dans le cadre de mon mémoire d'ingénieur. Les données sont collectés sur mon propre serveur, il n'y a aucun autre intermédiaire et les données transitent de manière cryptée!</p>
                   </article>
               </div>
           </div>

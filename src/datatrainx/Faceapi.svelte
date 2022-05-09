@@ -107,10 +107,12 @@
                 track.stop();
                 msgButton = "Juste pour voir!";
             });
-            videoSource.hidden = true;
-            myCanvas.hidden = true;
             videoStore.set(false);
             loading = false;
+            if(videoSource){
+                videoSource.hidden = true;
+                myCanvas.hidden = true;
+            }
         }
 
     }
@@ -142,7 +144,7 @@
         position: relative;
         background-position: center;
         background-image: url("./assets/img/video.png");
-        background-size: 50%;
+        background-size: 150px;
         background-repeat: no-repeat;
         min-width: 200px;
 
@@ -150,6 +152,7 @@
 
     #inputVideo{
         width: 100%;
+        max-height: 300px;
     }
 
 </style>

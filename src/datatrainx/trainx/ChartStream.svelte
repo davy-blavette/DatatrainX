@@ -5,6 +5,7 @@
 
     import ChartStreaming from "chartjs-plugin-streaming";
     import {dataExpression} from "../../config";
+    import {chartStore, videoStore} from "../../stores";
 
     Chart.register(...registerables);
     Chart.register(LuxonAdapter);
@@ -12,7 +13,6 @@
 
     let ctx;
     let chartCanvas;
-
 
 
     onMount(async (promise) => {
@@ -25,14 +25,8 @@
             return Math.floor(Math.random() * (max - min + 1)) + min
         };
 
-        const onRefresh = (chart) => {
-            const now = Date.now();
-            chart.data.datasets.forEach((dataset) => {
-                dataset.data.push({
-                    x: now,
-                    y: rand(-100, 100),
-                });
-            });
+        const onDestroy = (chart) => {
+            Chart.destroy();
         };
 
         const data = {
@@ -82,7 +76,7 @@
             ],
         };
 
-        const chart = new Chart(ctx, {
+        const dataChart = new Chart(ctx, {
             type: "line",
             data: data,
             options: {
@@ -108,7 +102,12 @@
                 },
             },
         });
+
+        chartStore.set(dataChart);
+
     });
+
+
 
 </script>
 <style>

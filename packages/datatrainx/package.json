@@ -1,7 +1,7 @@
 {
   "name": "datatrainx",
   "version": "1.0.0",
-  "description": "JavaScript API for face detection and face recognition in the browser with tensorflow.js. Adaptation to face-api.js of justadudewhohacks.",
+  "description": "JavaScript API for face detection and face recognition in the browser with tensorflow.js. Adaptation to face-api.js 0.22.2, of justadudewhohacks.",
   "devDependencies": {},
   "module": "./build/es6/index.js",
   "main": "./build/commonjs/index.js",

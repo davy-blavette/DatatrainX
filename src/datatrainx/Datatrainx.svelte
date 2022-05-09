@@ -9,7 +9,8 @@
     import TrainX1 from "./trainx/TrainX1.svelte";
     import TrainX2 from "./trainx/TrainX2.svelte";
 
-    import {layoutStore, videoStore} from "../stores";
+    import {chartStore, layoutStore, videoStore} from "../stores";
+    import {Chart} from "chart.js";
 
     //Layout DataTrainX
     export const views = {
@@ -21,6 +22,7 @@
 
     let layoutValue;
     let playVideo;
+    let playChart;
     let viewportComponent = null;
 
 
@@ -30,10 +32,16 @@
     videoStore.subscribe(value => {
         playVideo = value;
     });
+    chartStore.subscribe(value => {
+        playChart = value;
+    });
 
     function updateViewportComponent() {
         videoStore.set(false);
-        viewportComponent = views[layoutValue]
+        if (typeof playChart.destroy === "function") {
+            playChart.destroy();
+        }
+        viewportComponent = views[layoutValue];
     }
     updateViewportComponent();
 </script>
