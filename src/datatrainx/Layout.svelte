@@ -5,8 +5,6 @@
 <style>
     .start {
         background-color: #3b065e;
-        overflow-y: auto;
-        overflow-x: hidden;
         scrollbar-width: auto;
         scrollbar-color: #8f54a0 #3b065e;
     }
@@ -27,6 +25,6 @@
     }
 </style>
 
-<div class="layout start jumbotron text-center hero is-fullheight-with-navbar">
+<div class="layout container start jumbotron text-center hero is-fullheight-with-navbar">
     <slot></slot>
 </div>

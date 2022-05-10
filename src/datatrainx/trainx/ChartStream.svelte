@@ -4,7 +4,7 @@
     import * as LuxonAdapter from "chartjs-adapter-luxon";
 
     import ChartStreaming from "chartjs-plugin-streaming";
-    import {dataExpression} from "../../config";
+    import {dataExpression} from "../../data";
     import {chartStore, videoStore} from "../../stores";
 
     Chart.register(...registerables);

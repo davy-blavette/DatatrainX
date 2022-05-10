@@ -2,7 +2,7 @@
 
     import * as faceapi from 'datatrainX';
     import {layoutStore, videoStore} from "../stores";
-    import {dataExpression} from "../config";
+    import {dataExpression} from "../data";
 
 
 
@@ -123,19 +123,13 @@
         top: 0;
         left: 0;
     }
-    .videoContent{
-        position: relative;
-        background-position: center;
-        background-image: url("./assets/img/video.png");
-        background-size: 150px;
-        background-repeat: no-repeat;
-        min-width: 200px;
-
-    }
 
     #inputVideo{
         width: 100%;
-        max-height: 300px;
+        background-position: center;
+        background-image: url("./assets/img/video.png");
+        background-size: contain;
+        background-repeat: no-repeat;
     }
 
 </style>

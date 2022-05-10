@@ -30,14 +30,7 @@ export const overviewConfig = {
   classLists: ['Colère', 'Dégoût', 'Peur', 'Joyeux', 'Triste', 'Surprise', 'Neutre']
 };
 
-export let dataExpression = {
-  colere:[],
-  degout:[],
-  peur:[],
-  joie:[],
-  triste:[],
-  surprise:[]
-};
+
 function generate_token(length){
   //edit the token allowed characters
   let a = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890".split("");
@@ -49,4 +42,3 @@ function generate_token(length){
   return b.join("");
 }
 
-export let userToken = generate_token(16);

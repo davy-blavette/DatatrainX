@@ -24,16 +24,15 @@
         margin-bottom: 8px;
     }
 </style>
-<svelte:window bind:innerHeight bind:innerWidth   />
   <div class="container">
-      <div class="tile is-ancestor"  style="height: {innerHeight - top}px;">
+      <div class="tile is-ancestor">
           <div class="tile is-vertical is-8">
               <div class="tile">
                   <div class="tile is-parent is-vertical">
                       <article class="tile is-child notification is-primary">
                           <h2>Obtenir son profil d'apprenant</h2>
                           <div class="buttons are-medium">
-                              <button class="button are-medium center is-link is-rounded"  on:click ={() => layoutStore.setLayout("trainx1")}>
+                              <button class="button are-medium center is-link is-rounded"  on:click ={() => layoutStore.setLayout("start")}>
                                 <span class="icon">
                                   <i class="fa-solid fa-address-card"></i>
                                 </span>

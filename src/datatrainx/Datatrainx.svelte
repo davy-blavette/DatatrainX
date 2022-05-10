@@ -1,23 +1,20 @@
 <script>
 
-    import { fade, fly } from 'svelte/transition'
-
+    import {fly } from 'svelte/transition';
     import Presentation from "./Presentation.svelte";
     import Cnn from './Cnn.svelte';
     import Article from "./article/Article.svelte";
     import Layout from "./Layout.svelte";
-    import TrainX1 from "./trainx/TrainX1.svelte";
-    import TrainX2 from "./trainx/TrainX2.svelte";
+    import Start from "./trainx/Start.svelte";
 
     import {chartStore, layoutStore, videoStore} from "../stores";
     import {Chart} from "chart.js";
 
-    //Layout DataTrainX
+    //Layout DataTrainX presentation
     export const views = {
         presentation: Presentation,
         cnn: Cnn,
-        trainx1: TrainX1,
-        trainx2: TrainX2
+        start: Start
     };
 
     let layoutValue;

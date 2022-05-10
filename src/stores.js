@@ -29,6 +29,7 @@ export const modalStore = writable({});
 export const intermediateLayerPositionStore = writable({});
 
 export const leftStartStore = writable(0);
+export const kolbStore = writable(0);
 export const videoStore = writable(false);
 export const chartStore = writable({});
 
@@ -41,3 +42,4 @@ function createLayout() {
 }
 
 export const layoutStore = createLayout();
+export const layoutTrainxStore = createLayout();
