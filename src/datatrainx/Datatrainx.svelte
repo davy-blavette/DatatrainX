@@ -6,15 +6,16 @@
     import Article from "./article/Article.svelte";
     import Layout from "./Layout.svelte";
     import Start from "./trainx/Start.svelte";
+    import OpenData from "./trainx/OpenData.svelte";
 
     import {chartStore, layoutStore, videoStore} from "../stores";
-    import {Chart} from "chart.js";
 
     //Layout DataTrainX presentation
     export const views = {
         presentation: Presentation,
         cnn: Cnn,
-        start: Start
+        start: Start,
+        opendata:OpenData
     };
 
     let layoutValue;

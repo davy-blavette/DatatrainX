@@ -7,11 +7,13 @@
     import ChartStream from "./ChartStream.svelte";
     import Token from "./Token.svelte";
     import Kolb from "./Kolb.svelte";
+    import Test from "./Test.svelte";
 
     //Layout DataTrainX profile
     export const views = {
         token: Token,
-        kolb: Kolb
+        kolb: Kolb,
+        test: Test
     };
 
     let layoutValue = "token";
@@ -58,32 +60,31 @@
         }
     }
 </style>
-<section class="hero is-link is-fullheight-with-navbar">
-    <div class="hero-body container">
-        <div class="columns trainx center is-vcentered is-multiline">
-            <div class="column">
-                <div class="columns notification is-info">
-                {#if viewportComponent == views[layoutValue]}
-                    <div class="column is-two-thirds" on:outroend={updateViewportComponent} transition:fly="{{ y: 200, duration: 1000 }}">
-                        <slot>
-                            <svelte:component this={viewportComponent}/>
-                        </slot>
+
+<div class="hero-body container">
+    <div class="columns trainx center is-vcentered is-multiline">
+        <div class="column is-full">
+            <div class="columns notification is-info">
+            {#if viewportComponent == views[layoutValue]}
+                <div class="column is-two-thirds" on:outroend={updateViewportComponent} transition:fly="{{ y: 200, duration: 1000 }}">
+                    <slot>
+                        <svelte:component this={viewportComponent}/>
+                    </slot>
+                </div>
+            {/if}
+                <div class="column is-one-third">
+                    <div class="tile is-parent">
+                        <Faceapi/>
                     </div>
-                {/if}
-                    <div class="column is-one-third">
-                        <div class="tile is-parent">
-                            <Faceapi/>
-                        </div>
-                        <div class="token tile is-parent has-text-right">
-                            <i class="fa-solid fa-video"></i>
-                            {userToken}
-                        </div>
+                    <div class="token tile is-parent has-text-right">
+                        <i class="fa-solid fa-video"></i>
+                        {userToken}
                     </div>
                 </div>
-            <div class="column">
-                <ChartStream/>
             </div>
         </div>
+        <div class="column">
+            <ChartStream/>
+        </div>
     </div>
-</section>
-
+</div>

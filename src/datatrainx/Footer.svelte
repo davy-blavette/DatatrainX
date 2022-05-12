@@ -39,7 +39,7 @@
 <footer class="footer">
     <div class="content has-text-centered">
         <span class="logo-text">DataTrainX</span>
-        <span class="version">Version 0.6.7</span>
+        <span class="version">Version 0.6.8</span>
         <p>
             By <a href="https://fr.linkedin.com/in/davy-blavette-8876b952">Davy Blavette</a>. The source code is licensed
             <a href="http://opensource.org/licenses/mit-license.php">MIT</a>. The website content

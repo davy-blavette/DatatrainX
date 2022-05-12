@@ -1,6 +1,6 @@
 <script>
     import {layoutTrainxStore} from "../../stores";
-    import {userToken} from "../../config";
+    import {userToken} from "../../data";
 
 </script>
 
