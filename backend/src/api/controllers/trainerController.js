@@ -1,6 +1,7 @@
 let mongoose = require("mongoose");
 const Trainer = require("../models/Trainer");
 
+//list all trainer
 exports.allTrainer = async (req, res) => {
   try {
     let posts = await Trainer.find();
@@ -10,6 +11,7 @@ exports.allTrainer = async (req, res) => {
   }
 };
 
+//save trainer
 exports.assTrainer = async (req, res) => {
   try {
     const post = new Trainer({
@@ -25,6 +27,7 @@ exports.assTrainer = async (req, res) => {
   }
 };
 
+//delete trainer
 exports.deleteTrainer = async (req, res) => {
   try {
     const id = req.params.trainerId; //params yg di routes :blogId
@@ -35,6 +38,7 @@ exports.deleteTrainer = async (req, res) => {
   }
 };
 
+//update trainer
 exports.updateTrainer = async (req, res) => {
   try {
     const id = req.params.trainerId;

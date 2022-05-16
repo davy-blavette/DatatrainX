@@ -2,6 +2,7 @@
     import {fly } from 'svelte/transition';
     import {kolbStore} from "../../stores";
     import {questions} from "../../kolb";
+    import {baseUrl, userToken} from "../../data";
 
 
     let checked = null;
@@ -16,6 +17,26 @@
     });
 
 
+    let method;
+    let data = {
+        _id: userToken
+    };
+    let addToken = async () => {
+
+        URL = `${baseUrl}`;
+        method = "POST";
+
+        const res = await fetch(URL, {
+            method,
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(data)
+        });
+        const post = res.json();
+        dispatch("postCreated", post);
+
+    };
 
 </script>
 <style>

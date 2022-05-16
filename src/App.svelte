@@ -1,7 +1,7 @@
 <script>
 	import Datatrainx from './datatrainx/Datatrainx.svelte';
-    import Header from './datatrainx/Header.svelte';
-    import Footer from "./datatrainx/Footer.svelte";
+    import Header from './datatrainx/layout/Header.svelte';
+    import Footer from "./datatrainx/layout/Footer.svelte";
 </script>
 
 <style>

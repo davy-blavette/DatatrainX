@@ -2,7 +2,7 @@
 
     import * as animateScroll from "svelte-scrollto";
     import {layoutStore} from "../stores";
-    import Faceapi from "./Faceapi.svelte";
+    import Faceapi from "./utils/Faceapi.svelte";
 
 </script>
 <style>
@@ -17,6 +17,13 @@
         font-size: 1.5em;
         font-weight: bold;
         margin-bottom: 8px;
+    }
+    .link{
+        text-decoration: underline;
+        cursor: pointer;
+    }
+    .link:hover{
+        font-weight: bold;
     }
 </style>
   <div class="container">
@@ -59,7 +66,7 @@
               <div class="tile is-parent">
                   <article class="tile is-child notification is-danger">
                       <p class="title">Protection de votre image</p>
-                      <p class="">Des données collectés uniquement à des fins de recherche en partenariat avec l'IPST CNAM de l'université de Toulouse. DataTrainX est un projet d'étude personnel dans le cadre de mon mémoire d'ingénieur. Les données sont collectés sur mon propre serveur, il n'y a aucun autre intermédiaire et les données transitent de manière cryptée!Les données anonymisées sont disponibles en <span on:click ={() => layoutStore.setLayout("opendata")}>OpenData</span>.</p>
+                      <p class="">Des données collectés uniquement à des fins de recherche en partenariat avec l'IPST CNAM de l'université de Toulouse. DataTrainX est un projet d'étude personnel dans le cadre de mon mémoire d'ingénieur. Les données sont collectés sur mon propre serveur, il n'y a aucun autre intermédiaire et les données transitent de manière cryptée!<br>Les données de resultats sont anonymisées et disponibles en <span class="link" on:click ={() => layoutStore.setLayout("opendata")}>OpenData</span>.</p>
                   </article>
               </div>
           </div>

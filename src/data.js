@@ -1,4 +1,5 @@
 
+export const baseUrl = "http://localhost:4000/trainer";
 
 export let dataExpression = {
     colere:[],

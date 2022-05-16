@@ -4,9 +4,9 @@
     import Presentation from "./Presentation.svelte";
     import Cnn from './Cnn.svelte';
     import Article from "./article/Article.svelte";
-    import Layout from "./Layout.svelte";
+    import Layout from "./layout/Layout.svelte";
     import Start from "./trainx/Start.svelte";
-    import OpenData from "./trainx/OpenData.svelte";
+    import OpenData from "./OpenData.svelte";
 
     import {chartStore, layoutStore, videoStore} from "../stores";
 
