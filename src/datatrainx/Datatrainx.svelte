@@ -6,6 +6,7 @@
     import Article from "./article/Article.svelte";
     import Layout from "./layout/Layout.svelte";
     import Start from "./trainx/Start.svelte";
+    import ResultatKolb from "./resultat/ResultatKolb.svelte";
     import OpenData from "./OpenData.svelte";
 
     import {chartStore, layoutStore, videoStore} from "../stores";
@@ -15,7 +16,8 @@
         presentation: Presentation,
         cnn: Cnn,
         start: Start,
-        opendata:OpenData
+        opendata:OpenData,
+        resultatKolb:ResultatKolb
     };
 
     let layoutValue;
@@ -48,12 +50,19 @@
 #main{
     padding: 1em;
     background-color: #3b065e;
-    margin-top: 50px;
 }
+
+@media only screen and (max-width: 600px) {
+    #main{
+        padding: 1em 0;
+        background-color: #3b065e;
+    }
+}
+
 </style>
 <main>
     {#if viewportComponent == views[layoutValue]}
-    <section id='main' class="" on:outroend={updateViewportComponent} transition:fly="{{ y: 200, duration: 1000 }}">
+    <section id='main' class="hero is-fullheight" on:outroend={updateViewportComponent} transition:fly="{{ y: 200, duration: 1000 }}">
         <Layout>
             <svelte:component this={viewportComponent}/>
         </Layout>

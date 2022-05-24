@@ -14,23 +14,21 @@ exports.allTrainer = async (req, res) => {
 //save trainer
 exports.assTrainer = async (req, res) => {
   try {
-    const post = new Trainer({
-      title: req.body.title,
-      content: req.body.content,
-      category: req.body.category,
-      author: req.body.author
+    const trainer = new Trainer({
+      token: req.body.token
     });
-    let newTrainer = await post.save();
+    let newTrainer = await trainer.save();
     res.status(200).json({ data: newTrainer });
   } catch (err) {
     res.status(500).json({ error: err });
   }
+  console.log("New trainer");
 };
 
 //delete trainer
 exports.deleteTrainer = async (req, res) => {
   try {
-    const id = req.params.trainerId; //params yg di routes :blogId
+    const id = req.params.trainerId; //params yg di routes :trainerId
     let result = await Trainer.remove({ _id: id });
     res.status(200).json(result);
   } catch (err) {
@@ -40,6 +38,17 @@ exports.deleteTrainer = async (req, res) => {
 
 //update trainer
 exports.updateTrainer = async (req, res) => {
+  try {
+    const id = req.params.trainerId;
+    let result = await Trainer.findByIdAndUpdate(id, req.body);
+    res.status(200).json(result);
+  } catch (err) {
+    res.status(500).json(err);
+  }
+};
+
+//update kolb expressions
+exports.updateTrainerKolb = async (req, res) => {
   try {
     const id = req.params.trainerId;
     let result = await Trainer.findByIdAndUpdate(id, req.body);

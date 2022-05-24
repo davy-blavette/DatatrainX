@@ -1,7 +1,7 @@
 <script>
 
     import * as faceapi from 'datatrainX';
-    import {layoutStore, videoStore} from "../../stores";
+    import {layoutStore, videoStore, timeStore, fpsStore} from "../../stores";
     import {dataExpression} from "../../data";
 
 
@@ -24,6 +24,7 @@
     let loading = false;
     let layoutValue;
     let playVideo;
+    let forwardTimes = [];
 
     videoStore.subscribe(value => {
         playVideo = value;
@@ -49,11 +50,20 @@
         videoStore.set(true);
     };
 
+    function updateTimeStats(timeInMs) {
+        forwardTimes = [timeInMs].concat(forwardTimes).slice(0, 30)
+        const avgTimeInMs = forwardTimes.reduce((total, t) => total + t) / forwardTimes.length;
+        timeStore.set(`${Math.round(avgTimeInMs)} ms`);
+        fpsStore.set(`${faceapi.utils.round(1000 / avgTimeInMs)} fps`);
+    }
 
     async function onPlay() {
+        const now = Date.now();
         const result = await faceapi.detectSingleFace(videoSource, options).withFaceExpressions();
+        updateTimeStats(Date.now() - now);
         if (result) {
-            const now = Date.now();
+
+
             dataExpression.peur.push({
                 x: now,
                 y:Object.values(result)[1]["Peur"],

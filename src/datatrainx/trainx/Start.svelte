@@ -1,24 +1,38 @@
 <script>
 
     import {fly } from 'svelte/transition';
-    import {layoutTrainxStore} from "../../stores";
+    import {fpsStore, layoutStore, layoutTrainxStore, timeStore, titleTestStore, videoStore} from "../../stores";
     import {userToken} from "../../data";
     import Faceapi from "../utils/Faceapi.svelte";
     import ChartStream from "../utils/ChartStream.svelte";
     import Token from "./Token.svelte";
     import Kolb from "./Kolb.svelte";
-    import Test from "../OpenDataForm.svelte";
 
     //Layout DataTrainX profile
     export const views = {
         token: Token,
-        kolb: Kolb,
-        test: Test
+        kolb: Kolb
     };
 
     let layoutValue = "token";
     let viewportComponent = layoutValue;
+    let titleTest;
+    let time = 0;
+    let fps = 0;
+
+    timeStore.subscribe(value => {
+        time = value;
+    });
+
+    fpsStore.subscribe(value => {
+        fps = value;
+    });
+    titleTestStore.subscribe(value => {
+        titleTest = value;
+    });
+
     layoutTrainxStore.setLayout(layoutValue);
+
 
     layoutTrainxStore.subscribe(value => {
         layoutValue = value;
@@ -59,6 +73,7 @@
             visibility: hidden;
         }
     }
+
 </style>
 
 
@@ -78,7 +93,7 @@
                 </div>
                 <div class="token tile is-parent has-text-right">
                     <i class="fa-solid fa-video"></i>
-                    {userToken}
+                    {time} - {fps} - {userToken} - {titleTest}
                 </div>
             </div>
         </div>

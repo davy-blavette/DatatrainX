@@ -1,13 +1,14 @@
 
-export const baseUrl = "http://localhost:4000/trainer";
-
+export const baseUrl = "https://datatrainx.akairnet.fr:4000/trainer";
+export let kolbReponse = [];
 export let dataExpression = {
     colere:[],
     degout:[],
     peur:[],
     joie:[],
     triste:[],
-    surprise:[]
+    surprise:[],
+    neutre:[]
 };
 
 export let userToken = generate_token(16);

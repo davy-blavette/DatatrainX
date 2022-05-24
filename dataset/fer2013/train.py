@@ -126,6 +126,7 @@ def matrix(path):
 
     acc = round((count / len(y)) * 100, 2)
 
+    print("count:" + str(count) + "/len(y):" + str(len(y)))
     print("Predicted and true label values saved")
     print("Accuracy on test set :" + str(acc) + "%")
 
@@ -153,7 +154,7 @@ def main():
     global log, modelName, width, height, filters, num_labels, batch_size, epochs, labels
 
     # train, choose your model
-    modelName = "tinyVGG"
+    modelName = "deep"
     # model config epoch, batch_size, filters
     model = {"cnn": [300, 256, 64],
              "dcnn": [300, 256, 64],
@@ -175,9 +176,9 @@ def main():
 
     # first step preprocessing
     # preprocessing()
-    train()
+    # train()
     matrix('./weights/')
-    convertModel()
+    # convertModel()
 
 
 if __name__ == '__main__':

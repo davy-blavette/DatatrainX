@@ -30,8 +30,12 @@ export const intermediateLayerPositionStore = writable({});
 
 export const leftStartStore = writable(0);
 export const kolbStore = writable(0);
+export const fpsStore = writable("");
+export const timeStore = writable("");
 export const videoStore = writable(false);
 export const chartStore = writable({});
+export const titleTestStore = writable("Test de Kolb");
+export const userIdtStore = writable("");
 
 function createLayout() {
     const { subscribe, set } = writable("presentation");

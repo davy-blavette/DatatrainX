@@ -25,6 +25,10 @@
     .link:hover{
         font-weight: bold;
     }
+    p{
+        text-align: justify;
+        margin-bottom: 1em;
+    }
 </style>
   <div class="container">
       <div class="tile is-ancestor">

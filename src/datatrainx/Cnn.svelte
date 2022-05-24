@@ -1277,11 +1277,11 @@
   }
 
   .control-container {
-    padding: 5px 20px;
     display: flex;
     align-items: center;
     justify-content: space-between;
     width: 100%;
+    margin-bottom: 0.5em;
   }
 
   .right-control {
@@ -1292,6 +1292,8 @@
     display: flex;
     align-items: center;
   }
+
+
 
   .control > .select > #level-select {
     padding-left: 4em;
@@ -1482,7 +1484,18 @@
     opacity: 0.8;
     cursor: pointer;
   }
-
+  @media only screen and (max-width: 600px) {
+    .left-control {
+      text-align: center;
+      padding: 1em 0;
+      width: 100%;
+    }
+    .image-container {
+      width: 36px;
+      height: 36px;
+      margin: 0 3px;
+    }
+  }
 </style>
 
 <div class="overview"
@@ -1490,7 +1503,7 @@
 
   <div class="control-container">
 
-    <div class="left-control">
+    <div class="left-control is-block-mobile">
       {#each imageOptions as image, i}
         <div class="image-container"
           on:click={disableControl ? () => {} : imageOptionClicked}
@@ -1526,7 +1539,7 @@
 
         </div>
       {/if}
-      <button class="button is-very-small is-link is-light"
+      <button class="button is-very-small is-link is-light is-hidden-mobile"
         id="hover-label"
         style="opacity:{hoverInfo.show ? 1 : 0}">
         <span class="icon" style="margin-right: 5px;">
@@ -1538,7 +1551,7 @@
       </button>
     </div>
 
-    <div class="right-control">
+    <div class="right-control is-hidden-mobile">
 
         <button class="button is-success is-very-small is-activated" on:click ={() => layoutStore.setLayout("presentation")}>
         <span class="icon">

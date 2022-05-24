@@ -47,7 +47,7 @@
 <footer class="footer">
     <div class="content has-text-centered">
         <span class="logo-text">DataTrainX</span>
-        <span class="version">Version 0.7.0</span>
+        <span class="version">Version 0.8.0</span>
         <span class="link" on:click={() => animateScroll.scrollTo({element: "#header", onDone: (element, offset) => {layoutStore.setLayout("opendata")}})}>OpenData</span>
         <p>
             By <a href="https://fr.linkedin.com/in/davy-blavette-8876b952">Davy Blavette</a>. The source code is licensed

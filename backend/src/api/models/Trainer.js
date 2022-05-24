@@ -1,20 +1,24 @@
-let mongoose = require("mongoose");
-let trainerSchema = mongoose.Schema({
-  title: {
+const dataExpressionSchema = require("./DataExpression");
+const resultatSchema = require("./resultats/Kolb");
+const mongoose = require("mongoose");
+const { Schema } = require("mongoose");
+
+const trainerSchema = new Schema({
+  token: {
     type: String,
     required: true
   },
-  content: {
-    type: String,
-    required: true
-  },
-  category: {
-    type: String,
-    required: true
-  },
-  author: {
-    type: String,
-    required: true
+  kolb: {
+    dataExpression: dataExpressionSchema,
+    reponse: {
+      type: Array,
+      required: false
+    },
+    resultat: [resultatSchema],
+    created: {
+      type: Date,
+      default: Date.now()
+    }
   },
   created: {
     type: Date,
@@ -22,5 +26,6 @@ let trainerSchema = mongoose.Schema({
   }
 });
 
-let Trainer = mongoose.model("Trainer", trainerSchema);
+const Trainer = mongoose.model("Trainer", trainerSchema);
+
 module.exports = Trainer;

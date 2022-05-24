@@ -1,5 +1,3 @@
-
-
 import * as tf from '@tensorflow/tfjs';
 
 // Network input image size

@@ -30,20 +30,240 @@
 	<title>DataTrainX</title>
 
 	<link rel='icon' type='image/png' href='/assets/img/favicon.png'>
-	<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@0.8.0/css/bulma.min.css" />
-	<link href="https://fonts.googleapis.com/css?family=Neucha&display=swap" rel="stylesheet">
 
+	<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@0.8.0/css/bulma.min.css" />
 	<link rel='stylesheet' href='/bundle.css'>
 	<link rel='stylesheet' href='/main.css'>
 	<link rel='stylesheet' href='/radio.min.css'>
 
 	<script src="https://d3js.org/d3.v5.js"></script>
 	<script src="https://kit.fontawesome.com/b549804156.js" crossorigin="anonymous"></script>
-	<script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
-	<script id="MathJax-script" src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
-	<script defer src='/bundle.js'></script>
+
+
+	<script>
+
+		file = "/bundle.js";
+		tag = document.createElement('script');
+		tag.setAttribute("type","text/javascript");
+		tag.setAttribute("src", file);
+		tag.onload = function() {
+			document.getElementById("loader").remove();
+		}
+		document.getElementsByTagName('head')[0].appendChild(tag);
+	</script>
 </head>
 
 <body>
+<div id="loader" >
+	<style>
+		* {
+			padding: 0;
+			margin: 0;
+			outline: 0;
+			border: 0;
+			box-sizing: border-box;
+		}
+
+		html, body {
+			width: 100%;
+			height: 100%;
+			overflow: hidden;
+		}
+
+		body {
+			background: linear-gradient(45deg, #6fc7b5 0%, #13bdce 20%, #0094d9 40%, #5a3694 60%, #ee4d74 80%, #f58c58 100%);
+			background-size: 600%;
+			background-position: 0% 100%;
+			-webkit-animation: gradient 7s ease-in-out infinite;
+			animation: gradient 7s ease-in-out infinite;
+			position: absolute;
+			left: 0;
+		}
+
+		.loading {
+			width: 100%;
+			height: 100%;
+		}
+		.loading * {
+			position: absolute;
+			left: 50%;
+			top: 50%;
+			transform: translate3d(-50%, -50%, 0) rotate(0deg);
+		}
+		.loading p {
+			margin-top: 40px;
+			color: white;
+		}
+		.loading p span{
+			display: contents;
+
+		}
+		.loading .logo {
+			background-image: url("data:image/svg+xml, %3Csvg width='300.5' height='37.5' viewBox='0 0 300.5 37.5' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M0 37.5V12.9h7.3v17.95h22.1a4.317 4.317 0 0 0 .85-.078q1.066-.214 1.525-1.022.625-1.1.625-2.8v-14.1q.091-3.353-2.282-3.667a3.941 3.941 0 0 0-.518-.033H0V2.5h31.75a8.706 8.706 0 0 1 3.604.794 10.032 10.032 0 0 1 .121.056q1.825.85 3 2.475T39.7 9.55v19.6a9.228 9.228 0 0 1-.53 2.955 8.446 8.446 0 0 1-.595 1.295q-1.075 1.9-2.925 3a7.885 7.885 0 0 1-3.549 1.078 9.615 9.615 0 0 1-.651.022H0Zm50.65-25h23.5v25h-7.3V19.15H52.8a3.21 3.21 0 0 0-1.226.216q-1.65.678-1.574 3.484v4.1a7.6 7.6 0 0 0 .087 1.188q.101.635.317 1.159a4.031 4.031 0 0 0 .221.453q.556.979 2.002 1.087a5.006 5.006 0 0 0 .373.013h10.5v6.65H51a8.579 8.579 0 0 1-2.61-.387 7.601 7.601 0 0 1-1.59-.713q-1.85-1.1-2.95-3t-1.15-4.25v-9.6q.05-2.1 1.225-3.725t3-2.475a8.852 8.852 0 0 1 3.104-.827 8.432 8.432 0 0 1 .621-.023Zm49.45 0h23.5v25h-7.3V19.15h-14.05a3.21 3.21 0 0 0-1.226.216q-1.65.678-1.574 3.484v4.1a7.6 7.6 0 0 0 .087 1.188q.101.635.317 1.159a4.031 4.031 0 0 0 .221.453q.556.979 2.002 1.087a5.006 5.006 0 0 0 .373.013h10.5v6.65h-12.5a8.579 8.579 0 0 1-2.61-.387 7.601 7.601 0 0 1-1.59-.713q-1.85-1.1-2.95-3t-1.15-4.25v-9.6q.05-2.1 1.225-3.725t3-2.475a8.852 8.852 0 0 1 3.104-.827 8.432 8.432 0 0 1 .621-.023Zm90.65 0h23.5v25h-7.3V19.15H192.9a3.21 3.21 0 0 0-1.226.216q-1.65.678-1.574 3.484v4.1a7.6 7.6 0 0 0 .087 1.188q.101.635.317 1.159a4.031 4.031 0 0 0 .221.453q.556.979 2.002 1.087a5.006 5.006 0 0 0 .373.013h10.5v6.65h-12.5a8.579 8.579 0 0 1-2.61-.387 7.601 7.601 0 0 1-1.59-.713q-1.85-1.1-2.95-3t-1.15-4.25v-9.6q.05-2.1 1.225-3.725t3-2.475a8.852 8.852 0 0 1 3.104-.827 8.432 8.432 0 0 1 .621-.023ZM282 15.45l3.85 4.55 14.65 17.5h-9.1l-10.1-12.05-10.15 12.05H262L276.7 20 262 2.5h9.15L282 15.45ZM87.45 30.85h1.7v6.65h-3.7q-2.35 0-4.25-1.1t-2.975-3a8.37 8.37 0 0 1-1.066-3.812 10.007 10.007 0 0 1-.009-.438V0h7.3v9.8h3.45v7.3h-3.45v9.85a7.6 7.6 0 0 0 .087 1.188q.101.635.317 1.159a4.031 4.031 0 0 0 .221.453q.556.979 2.002 1.087a5.006 5.006 0 0 0 .373.013Zm33.65-21V2.5h39.65v7.35H121.1Zm45.45 2.6h13.25v6.65h-11.25a4.414 4.414 0 0 0-.85.076q-.467.092-.817.294a1.914 1.914 0 0 0-.708.705 4.188 4.188 0 0 0-.427 1.07q-.198.771-.198 1.755v14.5h-7.3V20.8a8.842 8.842 0 0 1 .463-2.891 8.09 8.09 0 0 1 .612-1.359q1.075-1.9 2.975-3a8.242 8.242 0 0 1 3.886-1.093 9.823 9.823 0 0 1 .364-.007Zm82.15 6.7h-10.5V12.5h12.5a8.579 8.579 0 0 1 2.61.387 7.601 7.601 0 0 1 1.59.713q1.85 1.1 2.95 3t1.15 4.25V37.5h-7.3V23.05q0-1.75-.625-2.825-.544-.936-1.941-1.057a5.029 5.029 0 0 0-.434-.018ZM224.55 37.5h-7.3v-25h7.3v25Zm10.3 0h-7.3v-25h7.3v25Zm-97.55 0V13.6h7.3v23.9h-7.3Zm154.1-35h9.1l-12.75 15.2-4.55-5.45 8.2-9.75Zm-66.85 0v7h-7.3v-7h7.3Z' vector-effect='non-scaling-stroke' stroke-linecap='round' fill-rule='evenodd' font-size='12' stroke='%23fff' stroke-width='.945' style='stroke:%23fff;stroke-width:.25mm;fill:%23fff'/%3E%3C/svg%3E%0A");
+			background-repeat: no-repeat;
+			background-position: center;
+			width: 300px;
+			height: 100%;
+		}
+		.loading .dots.animate .dot {
+			-webkit-animation: loading-block 3.5s ease-in-out infinite;
+			animation: loading-block 3.5s ease-in-out infinite;
+		}
+		.loading .dots.animate .dot:after {
+			-webkit-animation: loading-dot 3.5s ease-in-out infinite;
+			animation: loading-dot 3.5s ease-in-out infinite;
+		}
+		.loading .dots .dot {
+			width: 300px;
+			height: 300px;
+		}
+		.loading .dots .dot:after {
+			content: "";
+			display: inline-block;
+			width: 60px;
+			height: 60px;
+			background-color: #fff;
+			position: absolute;
+			transform: scale(0.17);
+		}
+		.loading .dots .dot:nth-child(1) {
+			top: 133px;
+			left: -290px;
+			-webkit-animation-delay: 0s;
+			animation-delay: 0s;
+		}
+		.loading .dots .dot:nth-child(1):after {
+			transform-origin: top right;
+			top: 0;
+			right: 0;
+			width: 147px;
+			height: 44px;
+			-webkit-animation-delay: 0s;
+			animation-delay: 0s;
+		}
+		.loading .dots .dot:nth-child(2) {
+			top: -161px;
+			left: -215px;
+			-webkit-animation-delay: 0.25s;
+			animation-delay: 0.25s;
+		}
+		.loading .dots .dot:nth-child(2):after {
+			transform-origin: bottom right;
+			bottom: 0;
+			right: 0;
+			width: 46px;
+			-webkit-animation-delay: 0.25s;
+			animation-delay: 0.25s;
+		}
+		.loading .dots .dot:nth-child(3) {
+			top: -159px;
+			left: -139px;
+			-webkit-animation-delay: 0.5s;
+			animation-delay: 0.5s;
+		}
+		.loading .dots .dot:nth-child(3):after {
+			transform-origin: bottom right;
+			bottom: 0;
+			right: 0;
+			height: 30px;
+			width: 220px;
+			-webkit-animation-delay: 0.5s;
+			animation-delay: 0.5s;
+		}
+		.loading .dots .dot:nth-child(4) {
+			top: 133px;
+			left: 217px;
+			-webkit-animation-delay: 0.75s;
+			animation-delay: 0.75s;
+		}
+		.loading .dots .dot:nth-child(4):after {
+			transform-origin: top left;
+			top: 0;
+			left: 0;
+			width: 30px;
+			height: 30px;
+			-webkit-animation-delay: 0.75s;
+			animation-delay: 0.75s;
+		}
+		.loading .dots .dot:nth-child(5) {
+			top: -161px;
+			left: 292px;
+			-webkit-animation-delay: 1s;
+			animation-delay: 1s;
+		}
+		.loading .dots .dot:nth-child(5):after {
+			transform-origin: bottom left;
+			bottom: 0;
+			left: 0;
+			-webkit-animation-delay: 1s;
+			animation-delay: 1s;
+		}
+
+		@-webkit-keyframes loading-block {
+			71.4285714286%, 100% {
+				transform: translate3d(-50%, -50%, 0) rotate(360deg);
+			}
+		}
+
+		@keyframes loading-block {
+			71.4285714286%, 100% {
+				transform: translate3d(-50%, -50%, 0) rotate(360deg);
+			}
+		}
+		@-webkit-keyframes loading-dot {
+			0%, 71.4285714286%, 100% {
+				transform: scale(0.17);
+			}
+			35.7142857143% {
+				transform: scale(1);
+			}
+		}
+		@keyframes loading-dot {
+			0%, 71.4285714286%, 100% {
+				transform: scale(0.17);
+			}
+			35.7142857143% {
+				transform: scale(1);
+			}
+		}
+		@-webkit-keyframes gradient {
+			50% {
+				background-position: 100% 0%;
+			}
+		}
+		@keyframes gradient {
+			50% {
+				background-position: 100% 0%;
+			}
+		}
+	</style>
+	<div class='loading'>
+		<div class='logo'>
+		</div>
+		<p>LOADING <span id="progress"></span></p>
+		<div class='dots animate'>
+			<div class='dot'></div>
+			<div class='dot'></div>
+			<div class='dot'></div>
+			<div class='dot'></div>
+			<div class='dot'></div>
+		</div>
+	</div>
+	<script>
+		let p = 0;
+		function timeout_trigger() {
+			let progress = document.getElementById("progress");
+			if(progress){
+				progress.innerText = p+"%";
+				if(p!=100) {
+					setTimeout('timeout_trigger()', 400);
+				}
+				p++;
+			}
+		}
+		timeout_trigger();
+	</script>
+</div>
+
 </body>
 </html>

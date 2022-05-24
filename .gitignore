@@ -26,3 +26,7 @@
 /start_prod.bat
 /backend/node_modules
 /backend/start_dev.bat
+/public/bundle.css
+/public/bundle.css.map
+/public/bundle.js
+/public/bundle.js.map

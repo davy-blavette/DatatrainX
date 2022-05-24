@@ -17,6 +17,9 @@
         font-size: 13px;
         margin-top: 5px;
     }
+    p{
+        text-align: justify;
+    }
 </style>
 
 <div class="container">
