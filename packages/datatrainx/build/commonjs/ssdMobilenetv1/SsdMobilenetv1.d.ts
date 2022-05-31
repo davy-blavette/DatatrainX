@@ -1,4 +1,3 @@
-import * as tf from '@tensorflow/tfjs-core';
 import { FaceDetection } from '../classes/FaceDetection';
 import { NetInput, TNetInput } from '../dom';
 import { NeuralNetwork } from '../NeuralNetwork';

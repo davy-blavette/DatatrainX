@@ -1,5 +1,5 @@
 import { __awaiter, __generator } from "tslib";
-import * as tf from '@tensorflow/tfjs-core';
+
 import { createCanvas, createCanvasFromMedia, getContext2dOrThrow } from '../dom';
 import { env } from '../env';
 import { normalize } from './normalize';

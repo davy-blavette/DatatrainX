@@ -1,5 +1,5 @@
 import { __extends } from "tslib";
-import * as tf from '@tensorflow/tfjs-core';
+
 import { fullyConnectedLayer } from '../common/fullyConnectedLayer';
 import { NetInput } from '../dom';
 import { NeuralNetwork } from '../NeuralNetwork';

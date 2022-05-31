@@ -16,11 +16,11 @@
     "tslib": "^2.3.1"
   },
   "dependencies": {
-    "@tensorflow/tfjs-node-gpu": "^3.17.0",
     "canvas": "^2.9.1",
     "chart.js": "^3.7.1",
     "chartjs-adapter-luxon": "^1.1.0",
     "chartjs-plugin-streaming": "^2.0.0",
+    "lz-string": "^1.4.4",
     "node-fetch": "^3.2.3",
     "sirv-cli": "^2.0.2",
     "svelte-json-tree": "^1.0.0",

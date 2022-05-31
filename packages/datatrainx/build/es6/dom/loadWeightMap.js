@@ -1,5 +1,5 @@
 import { __awaiter, __generator } from "tslib";
-import * as tf from '@tensorflow/tfjs-core';
+
 import { getModelUris } from '../common/getModelUris';
 import { fetchJson } from './fetchJson';
 export function loadWeightMap(uri, defaultModelName) {

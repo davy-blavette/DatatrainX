@@ -1,5 +1,5 @@
 import { __awaiter, __extends, __generator } from "tslib";
-import * as tf from '@tensorflow/tfjs-core';
+
 import { toNetInput } from '../dom';
 import { FaceFeatureExtractor } from '../faceFeatureExtractor/FaceFeatureExtractor';
 import { FaceProcessor } from '../faceProcessor/FaceProcessor';

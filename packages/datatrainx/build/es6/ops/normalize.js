@@ -1,5 +1,5 @@
 import { __spreadArrays } from "tslib";
-import * as tf from '@tensorflow/tfjs-core';
+
 export function normalize(x, meanRgb) {
     return tf.tidy(function () {
         var r = meanRgb[0], g = meanRgb[1], b = meanRgb[2];

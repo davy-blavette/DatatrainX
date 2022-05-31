@@ -1,5 +1,5 @@
 import { __awaiter, __generator } from "tslib";
-import * as tf from '@tensorflow/tfjs-core';
+
 import { nonMaxSuppression } from '../ops';
 import { extractImagePatches } from './extractImagePatches';
 import { MtcnnBox } from './MtcnnBox';

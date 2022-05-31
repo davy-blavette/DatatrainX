@@ -1,4 +1,3 @@
-import * as tf from '@tensorflow/tfjs-core';
 import { NetInput, TNetInput } from '../dom';
 import { NeuralNetwork } from '../NeuralNetwork';
 import { IMtcnnOptions } from './MtcnnOptions';

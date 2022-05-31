@@ -1,4 +1,4 @@
-import * as tf from '@tensorflow/tfjs-core';
+
 import { env } from '../env';
 import { padToSquare } from '../ops/padToSquare';
 import { computeReshapedDimensions, isTensor3D, isTensor4D, range } from '../utils';

@@ -4,7 +4,7 @@
     import * as LuxonAdapter from "chartjs-adapter-luxon";
 
     import ChartStreaming from "chartjs-plugin-streaming";
-    import {dataExpression} from "../../data";
+    import {streamExpression} from "../../database/data";
     import {chartStore, videoStore} from "../../stores";
 
     Chart.register(...registerables);
@@ -36,42 +36,42 @@
                     backgroundColor: "#FF6B6B",
                     borderColor: "#FF6B6B",
                     cubicInterpolationMode: "monotone",
-                    data: dataExpression.colere,
+                    data: streamExpression.colere,
                 },
                 {
                     label: "Dégoût",
                     backgroundColor: "#FFD93D",
                     borderColor: "#FFD93D",
                     cubicInterpolationMode: "monotone",
-                    data: dataExpression.degout,
+                    data: streamExpression.degout,
                 },
                 {
                     label: "Peur",
                     backgroundColor: "#6BCB77",
                     borderColor: "#6BCB77",
                     cubicInterpolationMode: "monotone",
-                    data: dataExpression.peur,
+                    data: streamExpression.peur,
                 },
                 {
                     label: "Joie",
                     backgroundColor: "#4D96FF",
                     borderColor: "#4D96FF",
                     cubicInterpolationMode: "monotone",
-                    data: dataExpression.joie,
+                    data: streamExpression.joie,
                 },
                 {
                     label: "Triste",
                     backgroundColor: "#AB46D2",
                     borderColor: "#AB46D2",
                     cubicInterpolationMode: "monotone",
-                    data: dataExpression.triste,
+                    data: streamExpression.triste,
                 },
                 {
                     label: "Surprise",
                     backgroundColor: "#FF6FB5",
                     borderColor: "#FF6FB5",
                     cubicInterpolationMode: "monotone",
-                    data: dataExpression.surprise,
+                    data: streamExpression.surprise,
                 }
             ],
         };

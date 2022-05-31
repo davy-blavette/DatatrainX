@@ -1,5 +1,5 @@
 import { __awaiter, __generator } from "tslib";
-import * as tf from '@tensorflow/tfjs-core';
+
 import { env } from '../env';
 import { isTensor4D } from '../utils';
 export function imageTensorToCanvas(imgTensor, canvas) {

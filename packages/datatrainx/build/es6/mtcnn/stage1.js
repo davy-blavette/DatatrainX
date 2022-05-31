@@ -1,4 +1,4 @@
-import * as tf from '@tensorflow/tfjs-core';
+
 import { BoundingBox, Point } from '../classes';
 import { nonMaxSuppression } from '../ops';
 import { CELL_SIZE, CELL_STRIDE } from './config';

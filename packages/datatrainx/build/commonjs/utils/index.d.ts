@@ -1,4 +1,3 @@
-import * as tf from '@tensorflow/tfjs-core';
 import { Point } from '../classes';
 import { Dimensions, IDimensions } from '../classes/Dimensions';
 export declare function isTensor(tensor: any, dim: number): boolean;

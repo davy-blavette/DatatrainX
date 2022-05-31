@@ -1,5 +1,4 @@
 import { __awaiter, __extends, __generator } from "tslib";
-import * as tf from '@tensorflow/tfjs-core';
 import { Point, Rect } from '../classes';
 import { FaceDetection } from '../classes/FaceDetection';
 import { FaceLandmarks5 } from '../classes/FaceLandmarks5';

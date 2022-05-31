@@ -1,8 +1,8 @@
 <script>
 
     import {fly } from 'svelte/transition';
-    import {fpsStore, layoutStore, layoutTrainxStore, timeStore, titleTestStore, videoStore} from "../../stores";
-    import {userToken} from "../../data";
+    import {layoutTrainxStore, titleTestStore, userIdtStore} from "../../stores";
+    import {userToken} from "../../database/data";
     import Faceapi from "../utils/Faceapi.svelte";
     import ChartStream from "../utils/ChartStream.svelte";
     import Token from "./Token.svelte";
@@ -17,16 +17,12 @@
     let layoutValue = "token";
     let viewportComponent = layoutValue;
     let titleTest;
-    let time = 0;
-    let fps = 0;
+    let userId;
 
-    timeStore.subscribe(value => {
-        time = value;
+    userIdtStore.subscribe(value => {
+        userId = value;
     });
 
-    fpsStore.subscribe(value => {
-        fps = value;
-    });
     titleTestStore.subscribe(value => {
         titleTest = value;
     });
@@ -55,12 +51,10 @@
         border-top-left-radius: 6px 6px;
         background: aliceblue;
         color: gray;
-    }
-    .hero-body{
-        padding: 0;
+        overflow: auto;
     }
     .token{
-        font-size: 0.7em;
+        font-size: .75rem;
         display: block;
     }
 
@@ -68,11 +62,13 @@
         color: #ff0000;
         animation: blink-animation 1s steps(2, start) infinite;
     }
-    @keyframes blink-animation{
-        to {
-            visibility: hidden;
-        }
+    .faceapi{
+        width: 100%;
+        overflow: hidden;
+        position: relative;
+        padding: 0;
     }
+
 
 </style>
 
@@ -88,12 +84,11 @@
             </div>
         {/if}
             <div class="column is-one-third">
-                <div class="tile is-parent">
+                <div class="faceapi">
                     <Faceapi/>
                 </div>
                 <div class="token tile is-parent has-text-right">
-                    <i class="fa-solid fa-video"></i>
-                    {time} - {fps} - {userToken} - {titleTest}
+                    {userId} - {titleTest}
                 </div>
             </div>
         </div>

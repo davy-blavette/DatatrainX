@@ -1,5 +1,5 @@
 import { __assign } from "tslib";
-import * as tf from '@tensorflow/tfjs-core';
+
 import { extractConvParamsFactory, extractFCParamsFactory, extractWeightsFactory, } from '../common';
 function extractorsFactory(extractWeights, paramMappings) {
     var extractConvParams = extractConvParamsFactory(extractWeights, paramMappings);

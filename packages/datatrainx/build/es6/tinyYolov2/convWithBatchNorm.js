@@ -1,4 +1,4 @@
-import * as tf from '@tensorflow/tfjs-core';
+
 import { leaky } from './leaky';
 export function convWithBatchNorm(x, params) {
     return tf.tidy(function () {

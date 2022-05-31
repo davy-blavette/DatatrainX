@@ -1,4 +1,4 @@
-import * as tf from '@tensorflow/tfjs-core';
+
 import { TNetInput } from '../dom';
 import { WithAge } from '../factories/WithAge';
 import { WithFaceDetection } from '../factories/WithFaceDetection';

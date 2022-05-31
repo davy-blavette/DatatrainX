@@ -1,4 +1,4 @@
-import * as tf from '@tensorflow/tfjs-core';
+
 import { Rect } from '../classes';
 import { FaceDetection } from '../classes/FaceDetection';
 /**

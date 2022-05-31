@@ -1,5 +1,5 @@
 import { __awaiter, __extends, __generator } from "tslib";
-import * as tf from '@tensorflow/tfjs-core';
+
 import { fullyConnectedLayer } from '../common/fullyConnectedLayer';
 import { seperateWeightMaps } from '../faceProcessor/util';
 import { TinyXception } from '../xception/TinyXception';

@@ -1,2 +1,2 @@
-import * as tf from '@tensorflow/tfjs-core';
+/* global tf */
 export declare function loadWeightMap(uri: string | undefined, defaultModelName: string): Promise<tf.NamedTensorMap>;

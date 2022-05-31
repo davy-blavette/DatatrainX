@@ -1,4 +1,4 @@
-import * as tf from '@tensorflow/tfjs-core';
+
 import { extractWeightsFactory } from '../common';
 function extractorsFactory(extractWeights, paramMappings) {
     function extractDepthwiseConvParams(numChannels, mappedPrefix) {

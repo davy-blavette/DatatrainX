@@ -1510,10 +1510,7 @@
           class:inactive={selectedImage !== image.file}
           class:disabled={disableControl}
           data-imageName={image.file}>
-          <img src="PUBLIC_URL/assets/img/{image.file}"
-            alt="image option"
-            title="{image.class}"
-            data-imageName={image.file}/>
+          <img src="PUBLIC_URL/assets/img/{image.file}" alt="{image.class}" title="{image.class}" data-imageName={image.file}/>
         </div>
       {/each}
 

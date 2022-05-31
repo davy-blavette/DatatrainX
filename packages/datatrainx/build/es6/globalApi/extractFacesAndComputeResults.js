@@ -1,5 +1,5 @@
 import { __awaiter, __generator } from "tslib";
-import * as tf from '@tensorflow/tfjs-core';
+
 import { extractFaces, extractFaceTensors } from '../dom';
 import { isWithFaceLandmarks } from '../factories/WithFaceLandmarks';
 export function extractAllFacesAndComputeResults(parentResults, input, computeResults, extractedFaces, getRectForAlignment) {

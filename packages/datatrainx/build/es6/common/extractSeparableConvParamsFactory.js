@@ -1,4 +1,4 @@
-import * as tf from '@tensorflow/tfjs-core';
+
 import { SeparableConvParams } from './types';
 export function extractSeparableConvParamsFactory(extractWeights, paramMappings) {
     return function (channelsIn, channelsOut, mappedPrefix) {

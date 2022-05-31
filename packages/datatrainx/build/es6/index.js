@@ -1,7 +1,6 @@
-import * as tf from '@tensorflow/tfjs-core';
 import * as draw from './draw';
 import * as utils from './utils';
-export { draw, utils, tf };
+export { draw, utils };
 export * from './ageGenderNet/index';
 export * from './classes/index';
 export * from './dom/index';

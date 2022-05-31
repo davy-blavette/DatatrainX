@@ -1,5 +1,6 @@
 const dataExpressionSchema = require("./DataExpression");
-const resultatSchema = require("./resultats/Kolb");
+const dataConditionSchema = require("./DataCondition");
+const dataProfilSchema = require("./DataProfil");
 const mongoose = require("mongoose");
 const { Schema } = require("mongoose");
 
@@ -8,18 +9,9 @@ const trainerSchema = new Schema({
     type: String,
     required: true
   },
-  kolb: {
-    dataExpression: dataExpressionSchema,
-    reponse: {
-      type: Array,
-      required: false
-    },
-    resultat: [resultatSchema],
-    created: {
-      type: Date,
-      default: Date.now()
-    }
-  },
+  dataExpression: [dataExpressionSchema],
+  dataCondition: [dataConditionSchema],
+  dataProfil: dataProfilSchema,
   created: {
     type: Date,
     default: Date.now()

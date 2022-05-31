@@ -1,5 +1,5 @@
 import { __awaiter, __extends, __generator } from "tslib";
-import * as tf from '@tensorflow/tfjs-core';
+
 import { extractFaces, extractFaceTensors } from '../dom';
 import { extendWithFaceLandmarks } from '../factories/WithFaceLandmarks';
 import { ComposableTask } from './ComposableTask';

@@ -1,4 +1,3 @@
-import * as tf from '@tensorflow/tfjs-core';
 import { IDimensions } from '../classes';
 import { FaceLandmarks68 } from '../classes/FaceLandmarks68';
 import { NetInput, TNetInput } from '../dom';

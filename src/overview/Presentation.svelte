@@ -2,11 +2,6 @@
 
     import * as animateScroll from "svelte-scrollto";
     import {leftStartStore} from "../stores";
-    let innerWidth;
-    let innerHeight;
-    let clientHeight;
-    let top = 50;
-
     let leftStartValue;
 
     leftStartStore.subscribe(value => {
@@ -40,11 +35,9 @@
         margin-bottom: 8px;
     }
 </style>
-<svelte:window bind:innerHeight bind:innerWidth   />
-
-<div id="home" class="start jumbotron text-center"  style="height: {innerHeight - top}px; left:{leftStartValue}px">
+<div id="home" class="start jumbotron text-center">
   <div class="container">
-      <div class="tile is-ancestor"  style="height: {innerHeight - top}px;">
+      <div class="tile is-ancestor">
           <div class="tile is-vertical is-8">
               <div class="tile">
                   <div class="tile is-parent is-vertical">

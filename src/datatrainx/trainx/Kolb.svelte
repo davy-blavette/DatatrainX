@@ -1,50 +1,48 @@
 <script>
     import {fly } from 'svelte/transition';
-    import {kolbStore, userIdtStore, layoutStore} from "../../stores";
-    import {questions} from "../../kolb";
-    import {baseUrl, dataExpression, kolbReponse} from "../../data";
+    import {kolbStore, userIdtStore, layoutStore, videoStore, loadingStore, dataExpressionStore} from "../../stores";
+    import {questions} from "../../database/kolb2";
+    import {updatePush} from "../../database/update";
+    import {dataProfil} from "../../database/data";
 
-    let method = "PUT";
     let userId;
+    let playVideo;
+    let loading;
+    let dataExpression;
 
-    let updateKolb = async () => {
-
-        kolbReponse.push(checked);
-        URL = `${baseUrl}/kolb/${userId}`;
-
-        let data = {
-            kolb:{
-                dataExpression:{
-                    colere:dataExpression.colere,
-                    degout:dataExpression.degout,
-                    peur:dataExpression.peur,
-                    joie:dataExpression.joie,
-                    triste:dataExpression.triste,
-                    surprise:dataExpression.surprise,
-                    neutre:dataExpression.neutre
-                },
-                reponse:kolbReponse
-            }
-        };
-
-        const res = await fetch(URL, {
-            method,
-            headers: {
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify(data)
-        });
-        const trainer = res.json();
-
-    };
-
+    videoStore.subscribe(value => {
+        playVideo = value;
+    });
+    loadingStore.subscribe(value => {
+        loading = value;
+    });
 
     let checked = null;
     let question;
 
-    function reset() {
-        updateKolb();
+    function updateProfil() {
+        updatePush('dataProfil', {
+                activist:dataProfil.activist,
+                reflector:dataProfil.reflector,
+                theorist:dataProfil.theorist,
+                pragmatist:dataProfil.pragmatist,
+                created:Date.now()
+        });
+    }
+
+    function update() {
+
+        let type = questions[question].type;
+        updatePush('dataCondition', {
+            ref:question,
+            dataProfil:{
+                [type]:parseInt(checked)
+            },
+            created:Date.now()
+            });
+        dataProfil[type] += parseInt(checked);
         checked = null;
+        console.log(dataProfil);
     }
 
     kolbStore.subscribe(value => {
@@ -68,36 +66,41 @@
 <div class="">
     {#key question}
     <article class="tile is-child is-info" in:fly="{{ y: 200, duration: 1000 }}">
-        {#if question + 1 < questions.length}
+        {#if question + 1 <= questions.length}
             <p class="title">Question {question + 1} / {questions.length}</p>
-            <p class="subtitle">{questions[question][0]} :</p>
+            <p class="subtitle">{questions[question].question} :</p>
             <div class="container">
                 <div class="field">
                     <label class="b-radio radio">
-                        <input type="radio" checked={checked==="A"} name="group_1" value="A" bind:group={checked}>
+                        <input type="radio" checked={checked==="1"} name="group_1" value="1" bind:group={checked}>
                         <span class="check is-success"></span>
-                        <span class="control-label">{questions[question][1]}</span>
+                        <span class="control-label">Je suis d’accord</span>
                     </label>
                 </div>
 
                 <div class="field">
                     <label class="b-radio radio">
-                        <input type="radio" checked={checked==="B"}  name="group_1" value="B" bind:group={checked}>
+                        <input type="radio" checked={checked==="0"}  name="group_1" value="0" bind:group={checked}>
                         <span class="check is-success"></span>
-                        <span class="control-label">{questions[question][2]}</span>
+                        <span class="control-label">Je ne suis pas d’accord</span>
                     </label>
                 </div>
             </div>
-            <div class="buttons are-medium">
-                <button class="button are-medium center is-success is-rounded" disabled={!checked} on:click={reset} on:click ={() => kolbStore.update(n => n + 1)}>
+            {#if loading || playVideo == false}
+                <button class="button are-medium center is-warning is-loading is-rounded">Détection émotion...</button>
+                <p class="help">Vérifier que votre webcam est active...</p>
+            {:else}
+                <div class="buttons are-medium">
+                    <button class="button are-medium center is-success is-rounded" disabled={!checked} on:click={update} on:click ={() => kolbStore.update(n => n + 1)}>
                     <span class="icon">
                         <i class="fa-solid fa-check"></i>
                     </span>
-                    <span>Valider</span>
-                </button>
-            </div>
+                        <span>Valider</span>
+                    </button>
+                </div>
+            {/if}
         {:else}
-            <button class="button are-medium center is-success is-rounded" on:click ={() => layoutStore.setLayout("resultatKolb")}>
+            <button class="button are-medium center is-success is-rounded" on:click ={() => updateProfil()} on:click ={() => layoutStore.setLayout("resultatKolb")}>
                     <span class="icon">
                         <i class="fa-solid fa-check"></i>
                     </span>

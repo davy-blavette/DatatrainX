@@ -1,5 +1,5 @@
 import { __awaiter, __extends, __generator } from "tslib";
-import * as tf from '@tensorflow/tfjs-core';
+
 import { Point } from '../classes';
 import { FaceLandmarks68 } from '../classes/FaceLandmarks68';
 import { toNetInput } from '../dom';

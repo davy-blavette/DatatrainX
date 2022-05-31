@@ -1,4 +1,4 @@
-import * as tf from '@tensorflow/tfjs-core';
+
 import { convLayer } from '../common';
 import { prelu } from './prelu';
 export function sharedLayer(x, params, isPnet) {

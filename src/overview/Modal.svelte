@@ -221,11 +221,6 @@
   </div>
 
   <!-- An invisible image to check if the user input URL is valid -->
-  <img style="display: none"
-    id="vali-image"
-    alt="hidden image"
-    bind:this={valiImg}
-    on:error={errorCallback}
-    on:load={loadCallback} />
+  <img style="display: none" id="vali-image" alt="hidden image" aria-hidden="true" bind:this={valiImg} on:error={errorCallback} on:load={loadCallback} />
 
 </div>

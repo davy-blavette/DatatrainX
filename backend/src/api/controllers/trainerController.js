@@ -4,7 +4,7 @@ const Trainer = require("../models/Trainer");
 //list all trainer
 exports.allTrainer = async (req, res) => {
   try {
-    let posts = await Trainer.find();
+    let posts = await Trainer.find().limit(1);
     res.status(200).json(posts);
   } catch (err) {
     res.status(500).json(err);
@@ -26,6 +26,7 @@ exports.assTrainer = async (req, res) => {
 };
 
 //delete trainer
+/*
 exports.deleteTrainer = async (req, res) => {
   try {
     const id = req.params.trainerId; //params yg di routes :trainerId
@@ -35,9 +36,7 @@ exports.deleteTrainer = async (req, res) => {
     res.status(500).json(err);
   }
 };
-
-//update trainer
-exports.updateTrainer = async (req, res) => {
+exports.pushOneTrainer = async (req, res) => {
   try {
     const id = req.params.trainerId;
     let result = await Trainer.findByIdAndUpdate(id, req.body);
@@ -46,13 +45,31 @@ exports.updateTrainer = async (req, res) => {
     res.status(500).json(err);
   }
 };
-
-//update kolb expressions
-exports.updateTrainerKolb = async (req, res) => {
+*/
+//update trainer
+exports.pushExpressionTrainer = async (req, res) => {
   try {
     const id = req.params.trainerId;
-    let result = await Trainer.findByIdAndUpdate(id, req.body);
-    res.status(200).json(result);
+    await Trainer.findByIdAndUpdate(id, { $push: { dataExpression:req.body }});
+    res.status(200).json({response:"pushExpressionTrainer, ok"});
+  } catch (err) {
+    res.status(500).json(err);
+  }
+};
+exports.pushConditionTrainer = async (req, res) => {
+  try {
+    const id = req.params.trainerId;
+    await Trainer.findByIdAndUpdate(id, { $push : { dataCondition: req.body }});
+    res.status(200).json({response:"pushConditionTrainer, ok"});;
+  } catch (err) {
+    res.status(500).json(err);
+  }
+};
+exports.updateProfilTrainer = async (req, res) => {
+  try {
+    const id = req.params.trainerId;
+    await Trainer.findByIdAndUpdate(id, { dataProfil: req.body });
+    res.status(200).json({response:"updateProfilTrainer, ok"});;
   } catch (err) {
     res.status(500).json(err);
   }

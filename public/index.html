@@ -4,30 +4,26 @@
 	<meta charset='utf-8'>
 	<meta name='viewport' content='width=device-width'>
 
-	<!-- Primary Meta Tags -->
-	<meta name="title" content="DataTrainX">
-	<meta name="description"
-		  content="Outil de recherche des singularités cognitives d’un étudiant, basé sur le deep-learning en vue d’améliorer la neuropédagogie.">
 
-	<!-- Open Graph / Facebook -->
-	<meta property="og:type" content="website">
-	<meta property="og:url" content="https://datatrainx.akairnet.fr/">
-	<meta property="og:title" content="DataTrainX">
-	<meta property="og:description"
-		  content="Outil de recherche des singularités cognitives d’un étudiant, basé sur le deep-learning en vue d’améliorer la neuropédagogie.">
-	<meta property="og:image" content="https://poloclub.github.io/cnn-explainer/assets/figures/preview.png">
-
-	<!-- Twitter -->
-	<meta property="twitter:card" content="summary_large_image">
-	<meta property="twitter:url" content="https://poloclub.github.io/cnn-explainer/">
-	<meta property="twitter:title" content="DataTrainX">
-	<meta property="twitter:description"
-		  content="Outil de recherche des singularités cognitives d’un étudiant, basé sur le deep-learning en vue d’améliorer la neuropédagogie.">
-	<meta property="twitter:image" content="https://poloclub.github.io/cnn-explainer/assets/figures/preview.png">
-	<meta property="twitter:site" content="@akairnet">
-	<meta property="twitter:creator" content="@akairnet">
-
+	<!-- HTML Meta Tags -->
 	<title>DataTrainX</title>
+	<meta name="description" content="Outil de recherche des singularités cognitives d’un étudiant, basé sur le deep-learning en vue d’améliorer la neuropédagogie.">
+
+	<!-- Facebook Meta Tags -->
+	<meta property="og:url" content="https://datatrainx.akairnet.fr">
+	<meta property="og:type" content="website">
+	<meta property="og:title" content="DataTrainX">
+	<meta property="og:description" content="Outil de recherche des singularités cognitives d’un étudiant, basé sur le deep-learning en vue d’améliorer la neuropédagogie.">
+	<meta property="og:image" content="https://datatrainx.akairnet.fr/assets/figures/preview.png">
+
+	<!-- Twitter Meta Tags -->
+	<meta name="twitter:card" content="summary_large_image">
+	<meta property="twitter:domain" content="">
+	<meta property="twitter:url" content="https://datatrainx.akairnet.fr">
+	<meta name="twitter:title" content="DataTrainX">
+	<meta name="twitter:description" content="Outil de recherche des singularités cognitives d’un étudiant, basé sur le deep-learning en vue d’améliorer la neuropédagogie.">
+	<meta name="twitter:image" content="https://datatrainx.akairnet.fr/assets/figures/preview.png">
+
 
 	<link rel='icon' type='image/png' href='/assets/img/favicon.png'>
 
@@ -35,6 +31,9 @@
 	<link rel='stylesheet' href='/bundle.css'>
 	<link rel='stylesheet' href='/main.css'>
 	<link rel='stylesheet' href='/radio.min.css'>
+
+	<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.18.0/dist/tf.min.js" integrity="sha256-Yl8X8Ug0tUNf21v4ls+0vnBjPIWv3xbDs9Y0zE+9HwM=" crossorigin="anonymous"></script>
+
 
 	<script src="https://d3js.org/d3.v5.js"></script>
 	<script src="https://kit.fontawesome.com/b549804156.js" crossorigin="anonymous"></script>
@@ -256,7 +255,7 @@
 			if(progress){
 				progress.innerText = p+"%";
 				if(p!=100) {
-					setTimeout('timeout_trigger()', 400);
+					setTimeout('timeout_trigger()', 130);
 				}
 				p++;
 			}

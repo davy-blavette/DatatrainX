@@ -1,5 +1,4 @@
 import { __awaiter, __generator } from "tslib";
-import * as tf from '@tensorflow/tfjs-core';
 import { getModelUris } from './common/getModelUris';
 import { loadWeightMap } from './dom';
 import { env } from './env';

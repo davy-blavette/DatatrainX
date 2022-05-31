@@ -1,4 +1,4 @@
-import * as tf from '@tensorflow/tfjs-core';
+
 export function pointwiseConvLayer(x, params, strides) {
     return tf.tidy(function () {
         var out = tf.conv2d(x, params.filters, strides, 'same');

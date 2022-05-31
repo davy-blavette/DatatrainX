@@ -1,4 +1,4 @@
-import * as tf from '@tensorflow/tfjs-core';
+
 import { convLayer } from '../common';
 import { sharedLayer } from './sharedLayers';
 export function PNet(x, params) {

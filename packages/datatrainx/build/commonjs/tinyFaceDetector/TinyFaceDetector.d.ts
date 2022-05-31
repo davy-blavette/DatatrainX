@@ -1,4 +1,3 @@
-import * as tf from '@tensorflow/tfjs-core';
 import { FaceDetection, Point } from '../classes';
 import { ParamMapping } from '../common';
 import { TNetInput } from '../dom';

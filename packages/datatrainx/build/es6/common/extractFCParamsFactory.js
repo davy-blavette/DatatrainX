@@ -1,4 +1,4 @@
-import * as tf from '@tensorflow/tfjs-core';
+
 export function extractFCParamsFactory(extractWeights, paramMappings) {
     return function (channelsIn, channelsOut, mappedPrefix) {
         var fc_weights = tf.tensor2d(extractWeights(channelsIn * channelsOut), [channelsIn, channelsOut]);

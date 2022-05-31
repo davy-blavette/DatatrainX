@@ -1,5 +1,5 @@
 import { __awaiter, __extends, __generator } from "tslib";
-import * as tf from '@tensorflow/tfjs-core';
+
 import { depthwiseSeparableConv } from '../common';
 import { toNetInput } from '../dom';
 import { NeuralNetwork } from '../NeuralNetwork';

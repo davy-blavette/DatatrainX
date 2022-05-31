@@ -1,4 +1,3 @@
-import * as tf from '@tensorflow/tfjs-core';
 import { NetInput } from '../dom';
 import { FaceFeatureExtractorParams, IFaceFeatureExtractor, TinyFaceFeatureExtractorParams } from '../faceFeatureExtractor/types';
 import { NeuralNetwork } from '../NeuralNetwork';

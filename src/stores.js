@@ -1,4 +1,5 @@
 import {writable} from 'svelte/store';
+import {dataExpression} from "./database/data";
 
 export const cnnStore = writable([]);
 export const svgStore = writable(undefined);
@@ -30,12 +31,15 @@ export const intermediateLayerPositionStore = writable({});
 
 export const leftStartStore = writable(0);
 export const kolbStore = writable(0);
-export const fpsStore = writable("");
-export const timeStore = writable("");
+export const fpsStore = writable("0 ms");
+export const timeStore = writable("0 fps");
 export const videoStore = writable(false);
+export const loadingStore = writable(false);
 export const chartStore = writable({});
 export const titleTestStore = writable("Test de Kolb");
 export const userIdtStore = writable("");
+export const infoLoadStore = writable("");
+export const dataExpressionStore= writable([]);
 
 function createLayout() {
     const { subscribe, set } = writable("presentation");

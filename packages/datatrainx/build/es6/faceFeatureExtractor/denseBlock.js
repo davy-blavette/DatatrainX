@@ -1,4 +1,4 @@
-import * as tf from '@tensorflow/tfjs-core';
+
 import { depthwiseSeparableConv } from '../common/depthwiseSeparableConv';
 export function denseBlock3(x, denseBlockParams, isFirstLayer) {
     if (isFirstLayer === void 0) { isFirstLayer = false; }

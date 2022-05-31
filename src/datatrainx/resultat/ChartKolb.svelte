@@ -1,6 +1,8 @@
 <script>
-    import {Chart} from 'chart.js';
     import { onMount } from 'svelte';
+    import {Chart, registerables} from 'chart.js';
+    Chart.register(...registerables);
+
 
     let chartData;
     let chartValues = [20, 10, 5, 2, 20, 30, 45];
@@ -10,7 +12,7 @@
 
     onMount(async (promise) => {
         ctx = chartCanvas.getContext('2d');
-        var chart = new Chart(ctx, {
+        const chart = new Chart(ctx, {
             type: 'line',
             data: {
                 labels: chartLabels,
@@ -20,7 +22,16 @@
                     borderColor: 'rgb(255, 99, 132)',
                     data: chartValues
                 }]
-            }
+            },
+            options: {
+                responsive: true,
+                plugins: {
+                    title: {
+                        display: true,
+                        text: 'Chart.js Radar Chart'
+                    }
+                }
+            },
         });
 
     });

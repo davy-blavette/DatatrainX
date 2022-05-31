@@ -1,4 +1,4 @@
-import * as tf from '@tensorflow/tfjs-core';
+
 import { extractWeightsFactory } from '../common';
 import { isFloat } from '../utils';
 function extractorsFactory(extractWeights, paramMappings) {

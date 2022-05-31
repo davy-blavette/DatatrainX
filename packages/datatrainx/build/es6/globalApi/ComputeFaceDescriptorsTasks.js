@@ -3,7 +3,7 @@ import { extendWithFaceDescriptor } from '../factories/WithFaceDescriptor';
 import { ComposableTask } from './ComposableTask';
 import { extractAllFacesAndComputeResults, extractSingleFaceAndComputeResult } from './extractFacesAndComputeResults';
 import { nets } from './nets';
-import { PredictAllAgeAndGenderWithFaceAlignmentTask, PredictSingleAgeAndGenderWithFaceAlignmentTask, } from './PredictAgeAndGenderTask';
+//import { PredictAllAgeAndGenderWithFaceAlignmentTask, PredictSingleAgeAndGenderWithFaceAlignmentTask, } from './PredictAgeAndGenderTask';
 import { PredictAllFaceExpressionsWithFaceAlignmentTask, PredictSingleFaceExpressionsWithFaceAlignmentTask, } from './PredictFaceExpressionsTask';
 var ComputeFaceDescriptorsTaskBase = /** @class */ (function (_super) {
     __extends(ComputeFaceDescriptorsTaskBase, _super);
@@ -42,9 +42,11 @@ var ComputeAllFaceDescriptorsTask = /** @class */ (function (_super) {
     ComputeAllFaceDescriptorsTask.prototype.withFaceExpressions = function () {
         return new PredictAllFaceExpressionsWithFaceAlignmentTask(this, this.input);
     };
+    /*
     ComputeAllFaceDescriptorsTask.prototype.withAgeAndGender = function () {
         return new PredictAllAgeAndGenderWithFaceAlignmentTask(this, this.input);
     };
+    */
     return ComputeAllFaceDescriptorsTask;
 }(ComputeFaceDescriptorsTaskBase));
 export { ComputeAllFaceDescriptorsTask };
@@ -75,9 +77,11 @@ var ComputeSingleFaceDescriptorTask = /** @class */ (function (_super) {
     ComputeSingleFaceDescriptorTask.prototype.withFaceExpressions = function () {
         return new PredictSingleFaceExpressionsWithFaceAlignmentTask(this, this.input);
     };
+    /*
     ComputeSingleFaceDescriptorTask.prototype.withAgeAndGender = function () {
         return new PredictSingleAgeAndGenderWithFaceAlignmentTask(this, this.input);
     };
+    */
     return ComputeSingleFaceDescriptorTask;
 }(ComputeFaceDescriptorsTaskBase));
 export { ComputeSingleFaceDescriptorTask };

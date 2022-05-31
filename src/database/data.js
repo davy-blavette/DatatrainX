@@ -1,7 +1,37 @@
 
 export const baseUrl = "https://datatrainx.akairnet.fr:4000/trainer";
 export let kolbReponse = [];
-export let dataExpression = {
+export let dataExpression = [];
+export let dataProfil = {
+    activist:0,
+    reflector:0,
+    theorist:0,
+    pragmatist:0
+};
+export let FaceDetection = {
+    score:"",
+    box:{
+        height: "",
+        width: "",
+        x: "",
+        y: ""
+    },
+    imageDims: {
+        height: "",
+        width: ""
+    },
+    image:""
+};
+export let FaceExpression = {
+    colere:"",
+    degout:"",
+    peur:"",
+    joie:"",
+    triste:"",
+    surprise:"",
+    neutre:""
+};
+export let streamExpression = {
     colere:[],
     degout:[],
     peur:[],

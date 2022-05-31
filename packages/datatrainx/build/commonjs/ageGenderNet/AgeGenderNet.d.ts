@@ -1,4 +1,3 @@
-import * as tf from '@tensorflow/tfjs-core';
 import { TinyXception } from '../xception/TinyXception';
 import { AgeAndGenderPrediction, NetOutput, NetParams } from './types';
 import { NeuralNetwork } from '../NeuralNetwork';

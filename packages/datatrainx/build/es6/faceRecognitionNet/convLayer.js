@@ -1,4 +1,4 @@
-import * as tf from '@tensorflow/tfjs-core';
+
 import { scale } from './scaleLayer';
 function convLayer(x, params, strides, withRelu, padding) {
     if (padding === void 0) { padding = 'same'; }

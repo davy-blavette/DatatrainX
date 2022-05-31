@@ -3,7 +3,7 @@
 	--outer-shadow-sm: 0 .125rem .25rem rgba(0,0,0,.075);
 	--outer-shadow-lg: 0 1rem 3rem rgba(0,0,0,.175);
 	--red: rgb(255, 59, 48);
-	--blue: rgb(0, 122, 255);
+	--blue: rgb(50, 115, 220);
 	--green: rgb(52, 199, 89);
 	--teal: rgb(90, 200, 250);
 	--light-gray: rgb(250, 250, 250);
@@ -24,23 +24,12 @@ body {
 	margin: 0;
 	padding: 0;
 	box-sizing: border-box;
-	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen-Sans, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
-}
-
-@font-face {
-	font-family: 'Hemicube';
-	src: url('/assets/font/HeroesAssembleOutline/BRAVEEightyone-Regular.woff2') format('woff2'),
-	url('/assets/font/HeroesAssembleOutline/BRAVEEightyone-Regular.woff') format('woff');
-	font-weight: normal;
-	font-style: normal;
-	font-display: swap;
 }
 
 
 #logo-text, .logo-text {
 	font-size: 30px;
 	color: var(--light-gray);
-	font-family: 'Hemicube';
 	margin-right: 10px;
 }
 

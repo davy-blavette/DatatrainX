@@ -1,5 +1,5 @@
 import { __awaiter, __extends, __generator } from "tslib";
-import * as tf from '@tensorflow/tfjs-core';
+
 import { Rect } from '../classes';
 import { FaceDetection } from '../classes/FaceDetection';
 import { toNetInput } from '../dom';

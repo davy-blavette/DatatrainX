@@ -1,4 +1,4 @@
-import * as tf from '@tensorflow/tfjs-core';
+
 import { ConvParams } from '../common';
 import { SeparableConvParams } from '../common/types';
 export declare type BatchNorm = {

@@ -1,6 +1,6 @@
 <script>
     import { onMount } from "svelte";
-    import {baseUrl} from "../data";
+    import {baseUrl} from "../database/data";
     import JSONTree from 'svelte-json-tree';
 
     let jsonTrainers;

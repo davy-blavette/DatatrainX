@@ -3,6 +3,7 @@
     import * as animateScroll from "svelte-scrollto";
     import {layoutStore} from "../stores";
     import Faceapi from "./utils/Faceapi.svelte";
+    import Logo from "./layout/Logo.svelte";
 
 </script>
 <style>
@@ -47,7 +48,9 @@
                           </div>
                       </article>
                       <article class="tile is-child notification is-warning">
-                          <p class="title logo-text">DataTrainX</p>
+                          <p class="title logo-text">
+                              <Logo color={"000000"} />
+                          </p>
                           <p>A travers la saisie d’un questionnaire (Kolb) nous cherchons à déterminer un profil d’apprenant dans le projet DataTrainx. L’utilisateur sera enregistré en vidéo et une comparaison sera effectuée avec les émotions que vous aurez exprimées.</p>
                           <div class="buttons">
                               <button class="button are-medium right is-warning is-light" on:click={() => animateScroll.scrollTo({element: "#article"})}>

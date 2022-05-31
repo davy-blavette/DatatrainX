@@ -1,7 +1,7 @@
 "use strict";
+/* global tf */
 Object.defineProperty(exports, "__esModule", { value: true });
 var tslib_1 = require("tslib");
-var tf = require("@tensorflow/tfjs-core");
 exports.tf = tf;
 var draw = require("./draw");
 exports.draw = draw;
