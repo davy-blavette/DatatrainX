@@ -1,6 +1,5 @@
 <script>
-    import LZString from 'lz-string';
-    import {fade} from 'svelte/transition';
+    import {fly } from 'svelte/transition';
     import * as faceapi from 'datatrainX';
     import {
         layoutStore,
@@ -8,10 +7,11 @@
         timeStore,
         fpsStore,
         loadingStore,
-        infoLoadStore
+        infoLoadStore, layoutTrainxStore
     } from "../../stores";
-    import {FaceExpression, FaceDetection, streamExpression} from "../../database/data";
-    import {update, updatePush} from "../../database/update";
+    import {FaceExpression, FaceDetection, streamExpression} from "../../service-factory/data";
+    import {updatePush} from "../../service-factory/update";
+    import {fade} from 'svelte/transition';
     import Loading from "./Loading.svelte";
 
 
@@ -40,12 +40,17 @@
     let bgimage = "./assets/img/video.png";
     let time = 0;
     let fps = 0;
+    let layoutTrainx;
+    let modalFaq = false;
 
     videoStore.subscribe(value => {
         playVideo = value;
     });
     loadingStore.subscribe(value => {
         loading = value;
+    });
+    layoutTrainxStore.subscribe(value => {
+        layoutTrainx = value;
     });
     layoutStore.subscribe(value => {
         layoutValue = value;
@@ -59,7 +64,7 @@
         fps = value;
     });
 
-    const videoCam = async () => {
+    const playCam = async () => {
         loadingStore.set(true);
         //await faceapi.nets.tinyFaceDetector.load('./weights/');
         infoLoadStore.set("Chargement reconnaissance du visage...");
@@ -121,7 +126,7 @@
                 });
                 const resizedResult = faceapi.resizeResults(result, dims);
                 //console.log(resizedResult.detection._box);
-                takepicture(resizedResult);
+                takePicture(resizedResult);
                 //faceapi.draw.drawDetections(myCanvas, resizedResult);
                 //faceapi.draw.drawFaceExpressions(myCanvas, resizedResult, minConfidence);
             }
@@ -136,16 +141,11 @@
 
     }
 
-    if (layoutValue !== "presentation") {
-        videoCam();
-    }
-    ;
-
     const stateVideo = async () => {
         if (playVideo) {
             stopCam();
         } else {
-            videoCam();
+            playCam();
         }
     };
 
@@ -158,7 +158,7 @@
         });
     }
 
-    function takepicture(resizedResult) {
+    function takePicture(resizedResult) {
         loadingStore.set(false);
         let box = resizedResult.detection._box;
         snapCanvas.width = videoSource.videoWidth;
@@ -183,16 +183,7 @@
             box._height,
             0, 0, box._width, box._height
         );
-        /*
-        dataExpression.push({
-            detection:resizedResult.detection,
-            expressions:resizedResult.expressions,
-            image:finalCanvas.toDataURL('image/png'),
-            created: Date.now()
-        });
 
-
-        */
         let valide = false;
         for (const [key, value] of Object.entries(resizedResult.expressions)) {
             if(key != 'Neutre' && value > 0.2){
@@ -217,7 +208,7 @@
         FaceDetection.box.y = faceapi.utils.round(DataDetection.box.y);
         FaceDetection.imageDims.height = DataDetection.imageDims.height;
         FaceDetection.imageDims.width = DataDetection.imageDims.width;
-        FaceDetection.image = LZString.compress(DataImage);
+        FaceDetection.image = DataImage;
         FaceExpression.colere = faceapi.utils.round(DataExpression.Colère);
         FaceExpression.degout = faceapi.utils.round(DataExpression.Dégoût);
         FaceExpression.joie = faceapi.utils.round(DataExpression.Joie);
@@ -226,17 +217,20 @@
         FaceExpression.surprise = faceapi.utils.round(DataExpression.Surprise);
         FaceExpression.triste = faceapi.utils.round(DataExpression.Triste);
 
-        //console.log(LZString.decompress(FaceDetection.image));
         let data = {
             FaceDetection,
             FaceExpression,
             created: Date.now()
         }
-        updatePush('dataExpression',data);
-
+        if (layoutTrainx == "kolb") {
+            updatePush('dataExpression', data);
+        }
         //console.log(dataExpression);
     }
 
+    if (layoutValue !== "presentation") {
+        playCam();
+    };
 </script>
 
 <style>
@@ -292,6 +286,20 @@
         color: #ff0000;
         animation: blink-animation 1s steps(2, start) infinite;
     }
+    .cam-faq {
+        position: absolute;
+        bottom: 25px;
+        z-index: 99;
+        font-size: .75rem;
+        padding: 0 1em;
+        line-height: 30px;
+    }
+    .cam-faq a{
+        text-decoration: none;
+    }
+    .modal .notification{
+        color: black;
+    }
     @keyframes blink-animation{
         to {
             visibility: hidden;
@@ -317,6 +325,26 @@
             {time} - {fps}
         </div>
     </div>
+    <div class="cam-faq">
+        <a href="{'#'}" on:click ={() => modalFaq = true}>problemes FAQ ?</a>
+    </div>
+    {#key modalFaq}
+        <div class="modal {modalFaq ? 'is-active' : ''}" in:fly="{{ y: 200, duration: 1000 }}">
+            <div class="modal-background" on:click ={() => modalFaq = false}></div>
+            <div class="modal-content">
+                <div class="notification">
+                    <strong>Le loading est toujours en cours (entre 1 et 2 minutes) :</strong>
+                    <p>Le chargment du modele de reconnaissance du visage fait 5mo, le chargement peut être long. Patientez encore un peu.</p>
+                    <strong>Le loading est vraiment trés trés long (plus de 2 minutes) :</strong>
+                    <p>Il est possible que votre webcam ne se lance pas, vérifier les paramètres navigateurs, pour débloquer l'accés.</p>
+                    <strong>La vidéo clignote, il y'a des difficultés à reconnaitre mon visage :</strong>
+                    <p>Si vous êtes devant une fenêtre, il est possible qu'il y'ait trop de luminosité, essayer de changer de place ou fermer les rideaux.</p>
+                    <strong>Il ne reconnait pas mes émotions :</strong>
+                    <p>Ne soyez pas masqué, évitez de trop bouger ou encore ne soyez pas trop loin de votre caméra.</p>
+                </div>
+            </div>
+        </div>
+    {/key}
     <div class="hero-body faceCam">
         {#if playVideo || loading}
             {#if loading}

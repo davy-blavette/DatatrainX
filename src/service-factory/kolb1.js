@@ -1,3 +1,5 @@
+import {kolbReponse} from "./data";
+
 export let questions = [
     [
         "Lorsque je fais face à un problème",
@@ -121,3 +123,70 @@ export let questions = [
     ]
 ];
 
+function calcul(){
+
+    let c1 = 0;
+    let c2 = 0;
+    let c3 = 0;
+    let c4 = 0;
+    let dimension1 = 0;
+    let dimension2 = 0;
+    let profil = "";
+    let reponse = ["B","B","B","B","B","B","B","B","B","B","B","B","B","B","B","B","B","B","B","B","B","B","B","B"];
+
+
+    if(kolbReponse.length == 0){
+        reponse = ["B","B","B","B","B","B","B","B","B","B","B","B","B","B","B","B","B","B","B","B","B","B","B","B"];
+    }
+
+    for (let i = 0; i < reponse.length; i++) {
+        if (i%2 == 0) {
+            if (i < 12) {
+                if(reponse[i] == "A"){
+                    c1++;
+                }
+            } else {
+                if(reponse[i] == "B"){
+                    c3++;
+                }
+            }
+        } else{
+            if (i < 12) {
+                if(reponse[i] == "B"){
+                    c2++;
+                }
+            } else {
+                if(reponse[i] == "A"){
+                    c4++;
+                }
+            }
+        }
+
+        //console.log(`${i}${i%2}-${reponse[i]} c1 ${c1} c2 ${c2} c3 ${c3} c4 ${c4}`);
+    }
+
+    dimension1 = c1 + c2;
+    dimension2 = c3 + c4;
+
+    if(dimension1 <= 6 && dimension2 >= 6){
+        profil += "ADAPTATEUR";
+    }
+    if(dimension1 >= 6 && dimension2 >= 6){
+        if(profil.length){
+            profil += " - ";
+        }
+        profil += "DIVERGEUR";
+    }
+    if(dimension1 >= 6 && dimension2 <= 6){
+        if(profil.length){
+            profil += " - ";
+        }
+        profil += "ASSIMILATEUR";
+    }
+    if (dimension1 <= 6 && dimension2 <= 6){
+        if(profil.length){
+            profil += " - ";
+        }
+        profil = "CONVERGEUR";
+    }
+}

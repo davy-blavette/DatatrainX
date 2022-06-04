@@ -1,13 +1,22 @@
 <script>
-    import { onMount } from 'svelte';
+    import {onMount} from 'svelte';
     import {Chart, registerables} from 'chart.js';
+    import {chartLabels} from "../../service-factory/data";
+
     Chart.register(...registerables);
 
 
+    export let activist;
+    export let reflector;
+    export let theorist;
+    export let pragmatist;
+    export let userId;
+
     let chartData;
-    let chartLabels = ['Concret', 'Analytique', 'Abstrait', 'Proactif'];
+
     let ctx;
     let chartCanvas;
+
 
     onMount(async (promise) => {
         ctx = chartCanvas.getContext('2d');
@@ -17,20 +26,27 @@
                 labels: chartLabels,
                 datasets: [
                     {
-                        label: 'Profil d\'apprenant',
-                        backgroundColor: 'rgba(255, 99, 132, 0.5)',
-                        borderColor: 'rgb(255, 99, 132)',
-                        data: [20, 18, 15, 11],
+                        label: 'Profil',
+                        backgroundColor: 'rgba(241, 70, 104, 0.5)',
+                        borderColor: 'rgb(241, 70, 104)',
+                        data: [activist,
+                            reflector,
+                            theorist,
+                            pragmatist],
                         fill: true
                     }
                 ]
             },
             options: {
+
                 responsive: true,
                 plugins: {
+                    legend: {
+                        display: false
+                    },
                     title: {
-                        display: true,
-                        text: 'Chart.js Radar Chart'
+                        display: false,
+                        text: `User : ${userId}`
                     }
                 },
                 scale: {
@@ -42,12 +58,60 @@
             },
 
         });
-
     });
 
 </script>
 
 <style>
-
+    #radarKolb{
+        position: relative;
+        z-index: 95;
+    }
+.conteneur{
+    position:relative;
+    width: 100%;
+}
+.legends{
+    position:absolute;
+    top: 0px;
+    height: 100%;
+    width: 100%;
+    z-index: 1;
+}
+.legends p {
+    padding: 0.75rem;
+    color: black;
+    text-align: center;
+    font-weight: bold;
+    width: 9em;
+}
+.adaptateur{
+    top: 25%;
+    left: 15%;
+    position: absolute;
+}
+.divergeur{
+    top: 25%;
+    right: 15%;
+    position: absolute;
+}
+.assimilateur{
+    bottom: 25%;
+    right: 15%;
+    position: absolute;
+}
+.convergeur{
+    bottom: 25%;
+    left: 15%;
+    position: absolute;
+}
 </style>
-<canvas bind:this={chartCanvas} id="myChart"></canvas>
+<div class="conteneur">
+    <canvas bind:this={chartCanvas} id="radarKolb"></canvas>
+    <div class="legends">
+        <p class="adaptateur">ADAPTATEUR</p>
+        <p class="divergeur">DIVERGEUR</p>
+        <p class="assimilateur">ASSIMILATEUR</p>
+        <p class="convergeur">CONVERGEUR</p>
+    </div>
+</div>

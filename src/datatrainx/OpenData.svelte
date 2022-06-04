@@ -1,14 +1,22 @@
 <script>
-    import { onMount } from "svelte";
-    import {baseUrl} from "../database/data";
+    import {onMount} from "svelte";
+    import {baseUrl} from "../service-factory/data";
     import JSONTree from 'svelte-json-tree';
+    import Loading from "./utils/Loading.svelte";
+    import {infoLoadStore, loadingStore} from "../stores";
 
     let jsonTrainers = [];
+    let loading;
+
+    loadingStore.subscribe(value => {
+        loading = value;
+    });
+
+    infoLoadStore.set("Chargement JSON...");
 
     onMount(async () => {
         let res = await fetch(baseUrl);
         jsonTrainers = await res.json();
-        console.log(jsonTrainers);
     });
 
 
@@ -59,7 +67,7 @@
 </style>
 <section class="container is-fluid">
 {#if jsonTrainers.length === 0}
-    <p>Loading</p>
+    <Loading />
 {:else}
     <div class="columns">
         <div class="column">

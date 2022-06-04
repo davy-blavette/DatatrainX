@@ -9,7 +9,7 @@
     import ResultatKolb from "./resultat/ResultatKolb.svelte";
     import OpenData from "./OpenData.svelte";
 
-    import {chartStore, layoutStore, videoStore} from "../stores";
+    import {chartStore, layoutStore, userIdtStore, videoStore} from "../stores";
 
     //Layout DataTrainX presentation
     export const views = {
@@ -25,7 +25,6 @@
     let playChart;
     let viewportComponent = null;
 
-
     layoutStore.subscribe(value => {
         layoutValue = value;
     });
@@ -37,6 +36,7 @@
     });
 
     function updateViewportComponent() {
+        userIdtStore.set(0);
         videoStore.set(false);
         if (typeof playChart.destroy === "function") {
             playChart.destroy();

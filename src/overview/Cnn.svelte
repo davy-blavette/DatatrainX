@@ -230,7 +230,7 @@
             .selectAll('.node-image')
             .each((d, i, g) => drawOutput(d, i, g, range));
         });
- 
+
         // Hide previous legend
         svg.selectAll(`.${previousSelectedScaleLevel}-legend`)
           .classed('hidden', true);
@@ -264,12 +264,12 @@
     // Use this event to trigger the detailed view
     if (detailedViewNum === d.index) {
       // Setting this for testing purposes currently.
-      selectedNodeIndex = -1; 
+      selectedNodeIndex = -1;
       // User clicks this node again -> rewind
       detailedViewNum = undefined;
       svg.select(`rect#underneath-gateway-${d.index}`)
         .style('opacity', 0);
-    } 
+    }
     // We need to show a new detailed view (two cases: if we need to close the
     // old detailed view or not)
     else {
@@ -293,7 +293,7 @@
         svg.select(`rect#underneath-gateway-${d.index}`)
           .style('opacity', 1);
       }
-      
+
       // Dynamically position the detail view
       let wholeSvg = d3.select('#cnn-svg');
       let svgYMid = +wholeSvg.style('height').replace('px', '') / 2;
@@ -328,7 +328,7 @@
     // If detail view -> rewind to intermediate view
     if (detailedViewNum !== undefined) {
           // Setting this for testing purposes currently.
-      selectedNodeIndex = -1; 
+      selectedNodeIndex = -1;
       // User clicks this node again -> rewind
       svg.select(`rect#underneath-gateway-${detailedViewNum}`)
         .style('opacity', 0);
@@ -371,18 +371,18 @@
     svg.select(`g#cnn-layer-group-${curLayerIndex - 1}`)
       .selectAll('rect.bounding')
       .style('stroke-width', 2);
-    
+
     d3.select(g[i])
       .select('rect.bounding')
       .style('stroke-width', 2);
-    
+
     // Disable control panel UI
     // d3.select('#level-select').property('disabled', true);
     // d3.selectAll('.image-container')
     //   .style('cursor', 'not-allowed')
     //   .on('mouseclick', () => {});
     disableControl = true;
-    
+
     // Allow infinite animation loop
     shouldIntermediateAnimateStore.set(true);
 
@@ -392,7 +392,7 @@
       g#layer-label-${curLayerIndex},
       g#layer-detailed-label-${curLayerIndex}`)
       .style('font-weight', '800');
-    
+
     // Register a handler on the svg element so user can click empty space to quit
     // the intermediate view
     d3.select('#cnn-svg')
@@ -429,7 +429,7 @@
         return d.targetLayerIndex !== actPoolDetailViewLayerIndex;
       })
       .style('visibility', null);
-    
+
     // Recover control UI
     disableControl = false;
 
@@ -493,7 +493,7 @@
     let layerIndex = layerIndexDict[d.layerName];
     let nodeIndex = d.index;
     let edgeGroup = svg.select('g.cnn-group').select('g.edge-group');
-    
+
     edgeGroup.selectAll(`path.edge-${actPoolDetailViewLayerIndex}-${nodeIndex}`)
       .raise()
       .transition()
@@ -502,11 +502,11 @@
       .style('stroke', edgeHoverColor)
       .style('stroke-width', '1')
       .style('opacity', 1);
-    
+
     // Highlight its border
     d3.select(g[i]).select('rect.bounding')
       .classed('hidden', false);
-    
+
     // Highlight node's pair
     let associatedLayerIndex = layerIndex - 1;
     if (layerIndex === actPoolDetailViewLayerIndex - 1) {
@@ -531,11 +531,11 @@
       .style('stroke', edgeInitColor)
       .style('stroke-width', edgeStrokeWidth)
       .style('opacity', edgeOpacity);
-    
+
     // De-highlight its border
     d3.select(g[i]).select('rect.bounding')
       .classed('hidden', true);
-    
+
     // De-highlight node's pair
     let associatedLayerIndex = layerIndex - 1;
     if (layerIndex === actPoolDetailViewLayerIndex - 1) {
@@ -591,10 +591,10 @@
         return d.targetLayerIndex !== curLayerIndex;
       })
       .style('visibility', 'hidden');
-    
+
     // Disable UI
     disableControl = true;
-    
+
     // Hide input annotaitons
     svg.select('.input-annotation')
       .classed('hidden', true);
@@ -622,7 +622,7 @@
         {offset: '50%', color: 'rgb(250, 250, 250)', opacity: 0.9},
         {offset: '100%', color: 'rgb(250, 250, 250)', opacity: 1}];
       addOverlayGradient('overlay-gradient-right', stops);
-      
+
       let leftEndOpacity = 0.85 + (0.95 - 0.85) * (leftWidth / rightWidth);
       stops = [{offset: '0%', color: 'rgb(250, 250, 250)', opacity: leftEndOpacity},
         {offset: '100%', color: 'rgb(250, 250, 250)', opacity: 0.85}];
@@ -638,18 +638,18 @@
         {offset: '100%', color: 'rgb(250, 250, 250)', opacity: rightEndOpacity}];
       addOverlayGradient('overlay-gradient-right', stops);
     }
-    
+
     addOverlayRect('overlay-gradient-right',
       rightStart + overlayRectOffset / 2 + 0.5,
       0, rightWidth, height + svgPaddings.top);
-    
+
     addOverlayRect('overlay-gradient-left',
       nodeCoordinate[0][0].x - overlayRectOffset / 2,
       0, leftWidth, height + svgPaddings.top);
 
     svg.selectAll('rect.overlay')
       .on('click', emptySpaceClicked);
-    
+
     // Add underneath rectangles
     let underGroup = svg.select('g.underneath');
     let padding = 7;
@@ -664,7 +664,7 @@
         .attr('rx', 10)
         .style('fill', 'rgba(160, 160, 160, 0.3)')
         .style('opacity', 0);
-      
+
       // Update the event functions for these two layers
       svg.select(`g#layer-${curLayerIndex - 1}-node-${n}`)
         .style('pointer-events', 'all')
@@ -730,7 +730,7 @@
     svg.select(`g#cnn-layer-group-${curLayerIndex - 1}`)
       .selectAll('rect.bounding')
       .style('stroke-width', 1);
-    
+
     d3.select(g[i])
       .select('rect.bounding')
       .style('stroke-width', 1);
@@ -760,10 +760,10 @@
       .ease(d3.easeCubicInOut)
       .style('opacity', 0)
       .on('end', (d, i, g) => { d3.select(g[i]).remove()});
-    
+
     // Remove the output node overlay mask
     svg.selectAll('.overlay-group').remove();
-    
+
     // Remove the overlay rect
     svg.selectAll('g.intermediate-layer-overlay, g.intermediate-layer-annotation')
       .transition('remove')
@@ -774,7 +774,7 @@
         svg.selectAll('g.intermediate-layer-overlay, g.intermediate-layer-annotation').remove();
         svg.selectAll('defs.overlay-gradient').remove();
       });
-    
+
     // Recover the layer if we have drdrawn it
     if (needRedraw[0] !== undefined) {
       let redrawRange = cnnLayerRanges[selectedScaleLevel][needRedraw[0]];
@@ -788,7 +788,7 @@
           .each((d, i, g) => drawOutput(d, i, g, redrawRange));
       }
     }
-    
+
     // Move all layers to their original place
     for (let i = 0; i < numLayers; i++) {
       moveLayerX({layerIndex: i, targetX: nodeCoordinate[i][0].x,
@@ -857,9 +857,9 @@
           svg.select(`g#layer-${curLayerIndex - 1}-node-${actPoolDetailViewNodeIndex}`)
             .select('rect.bounding')
             .classed('hidden', true);
-          
+
           let edgeGroup = svg.select('g.cnn-group').select('g.edge-group');
-      
+
           edgeGroup.selectAll(`path.edge-${curLayerIndex}-${actPoolDetailViewNodeIndex}`)
             .transition()
             .ease(d3.easeCubicOut)
@@ -867,11 +867,11 @@
             .style('stroke', edgeInitColor)
             .style('stroke-width', edgeStrokeWidth)
             .style('opacity', edgeOpacity);
-          
+
           let underGroup = svg.select('g.underneath');
           underGroup.select(`#underneath-gateway-${actPoolDetailViewNodeIndex}`)
             .style('opacity', 0);
-        
+
           // Add selection effect on the new selected pair
           svg.select(`g#layer-${curLayerIndex}-node-${nodeIndex}`)
             .select('rect.bounding')
@@ -919,13 +919,13 @@
           intermediateNodeMouseOverHandler, intermediateNodeMouseLeaveHandler,
           intermediateNodeClicked);
       }
-      
+
       else if (d.layerName === 'conv_2_2') {
         drawConv4(curLayerIndex, d, nodeIndex, width, height,
           intermediateNodeMouseOverHandler, intermediateNodeMouseLeaveHandler,
           intermediateNodeClicked);
       }
-    
+
       else if (d.layerName === 'output') {
         drawFlatten(curLayerIndex, d, nodeIndex, width, height);
       }
@@ -944,7 +944,7 @@
     let layerIndex = layerIndexDict[d.layerName];
     let nodeIndex = d.index;
     let edgeGroup = svg.select('g.cnn-group').select('g.edge-group');
-    
+
     edgeGroup.selectAll(`path.edge-${layerIndex}-${nodeIndex}`)
       .raise()
       .transition()
@@ -953,11 +953,11 @@
       .style('stroke', edgeHoverColor)
       .style('stroke-width', '1')
       .style('opacity', 1);
-    
+
     // Highlight its border
     d3.select(g[i]).select('rect.bounding')
       .classed('hidden', false);
-    
+
     // Highlight source's border
     if (d.inputLinks.length === 1) {
       let link = d.inputLinks[0];
@@ -997,7 +997,7 @@
     // return;
 
     if (isInIntermediateView) { return; }
-    
+
     // Keep the highlight if user has clicked
     if (isInActPoolDetailView || (
       d.layerName !== selectedNode.layerName ||
@@ -1005,7 +1005,7 @@
       let layerIndex = layerIndexDict[d.layerName];
       let nodeIndex = d.index;
       let edgeGroup = svg.select('g.cnn-group').select('g.edge-group');
-      
+
       edgeGroup.selectAll(`path.edge-${layerIndex}-${nodeIndex}`)
         .transition()
         .ease(d3.easeCubicOut)
@@ -1070,7 +1070,7 @@
 
     let cnnGroup = svg.append('g')
       .attr('class', 'cnn-group');
-    
+
     let underGroup = svg.append('g')
       .attr('class', 'underneath');
 
@@ -1087,7 +1087,7 @@
       9 : [200, 100 + svgYMid - 220 / 2, 490, 290],
       10 : [300, 100 + svgYMid - 220 / 2, 490, 290],
     }
-    
+
     // Define global arrow marker end
     svg.append("defs")
       .append("marker")
@@ -1146,15 +1146,15 @@
       // Show the legend
       svg.selectAll(`.${selectedScaleLevel}-legend`)
         .classed('hidden', !detailedMode);
-      
+
       svg.selectAll('.input-legend').classed('hidden', !detailedMode);
       svg.selectAll('.output-legend').classed('hidden', !detailedMode);
     }
-    
+
     // Switch the layer name
     svg.selectAll('.layer-detailed-label')
       .classed('hidden', !detailedMode);
-    
+
     svg.selectAll('.layer-label')
       .classed('hidden', detailedMode);
   }
@@ -1243,7 +1243,7 @@
       detailedViewNum = undefined;
       svg.select(`rect#underneath-gateway-${selectedNodeIndex}`)
         .style('opacity', 0);
-      selectedNodeIndex = -1; 
+      selectedNodeIndex = -1;
     }
   }
 

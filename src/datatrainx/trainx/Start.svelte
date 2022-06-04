@@ -2,7 +2,7 @@
 
     import {fly } from 'svelte/transition';
     import {layoutTrainxStore, titleTestStore, userIdtStore} from "../../stores";
-    import {userToken} from "../../database/data";
+    import {userToken} from "../../service-factory/data";
     import Faceapi from "../utils/Faceapi.svelte";
     import ChartStream from "../utils/ChartStream.svelte";
     import Token from "./Token.svelte";

@@ -1,5 +1,5 @@
 import {writable} from 'svelte/store';
-import {dataExpression} from "./database/data";
+import {dataExpression} from "./service-factory/data";
 
 export const cnnStore = writable([]);
 export const svgStore = writable(undefined);

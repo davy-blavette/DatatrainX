@@ -1,3 +1,10 @@
+<script>
+    export let activist;
+    export let reflector;
+    export let theorist;
+    export let pragmatist;
+    export let userId;
+</script>
 <style>
 
 </style>

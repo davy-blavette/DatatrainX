@@ -1,11 +1,14 @@
 <script>
-    import {layoutTrainxStore, loadingStore, userIdtStore, videoStore} from "../../stores";
-    import {baseUrl, dataExpression, kolbReponse, userToken} from "../../database/data";
+    import {fly } from 'svelte/transition';
+    import {layoutTrainxStore, loadingStore, userIdtStore, videoStore, layoutStore} from "../../stores";
+    import {baseUrl, userToken} from "../../service-factory/data";
 
     let method;
     let playVideo;
     let loading;
     let userId;
+    let openModal = false;
+    let oldUserId = "";
 
     userIdtStore.subscribe(value => {
         userId = value;
@@ -18,17 +21,7 @@
     });
     //save Token
     let addToken = async () => {
-        //Data Reset
-        /*
-        kolbReponse.length = 0;
-        dataExpression.colere.length = 0;
-        dataExpression.degout.length = 0;
-        dataExpression.peur.length = 0;
-        dataExpression.joie.length = 0;
-        dataExpression.triste.length = 0;
-        dataExpression.surprise.length = 0;
-        dataExpression.neutre.length = 0;
-        */
+
         let data = {token: userToken};
         URL = `${baseUrl}`;
         method = "POST";
@@ -47,7 +40,9 @@
         });
 
     };
-    addToken();
+    if(!userId){
+        addToken();
+    }
 
 </script>
 
@@ -83,7 +78,25 @@
                       <i class="fas fa-lock"></i>
                     </span>
                 </p>
-                <p class="help">Sasir un token</p>
+                <a href="{'#'}" on:click ={() => openModal = true} class="help">Sasir un token</a>
+                {#key openModal}
+                <div class="modal {openModal ? 'is-active' : ''}" in:fly="{{ y: 200, duration: 1000 }}">
+                    <div class="modal-background" on:click ={() => openModal = false}></div>
+                    <div class="modal-content">
+                        <div class="notification">
+                            <button class="delete" on:click ={() => openModal = false}></button>
+                            <input class="m-1 input is-danger is-rounded" type="text"  bind:value={oldUserId} placeholder="Veuillez saisir votre token">
+                            <button class="m-1 button are-medium center is-success is-rounded" on:click ={userIdtStore.set(oldUserId)} on:click ={() => layoutStore.setLayout("resultatKolb")}>
+                                <span class="icon">
+                                    <i class="fa-solid fa-check"></i>
+                                </span>
+                                <span>Voir les résultats</span>
+                            </button>
+                        </div>
+                    </div>
+                    <button class="modal-close is-large" aria-label="close"></button>
+                </div>
+                {/key}
                 <div class="container m-1">
 
                 {#if loading || playVideo == false}

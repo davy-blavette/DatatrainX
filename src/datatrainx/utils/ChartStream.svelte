@@ -4,7 +4,7 @@
     import * as LuxonAdapter from "chartjs-adapter-luxon";
 
     import ChartStreaming from "chartjs-plugin-streaming";
-    import {streamExpression} from "../../database/data";
+    import {dataStream} from "../../service-factory/data";
     import {chartStore, videoStore} from "../../stores";
 
     Chart.register(...registerables);
@@ -14,71 +14,17 @@
     let ctx;
     let chartCanvas;
 
-
     onMount(async (promise) => {
         ctx = chartCanvas.getContext('2d');
-
-        let _seed = Date.now();
-
-
-        const rand = (min, max) => {
-            return Math.floor(Math.random() * (max - min + 1)) + min
-        };
 
         const onDestroy = (chart) => {
             Chart.destroy();
         };
 
-        const data = {
-            datasets: [
-                {
-                    label: "Colère",
-                    backgroundColor: "#FF6B6B",
-                    borderColor: "#FF6B6B",
-                    cubicInterpolationMode: "monotone",
-                    data: streamExpression.colere,
-                },
-                {
-                    label: "Dégoût",
-                    backgroundColor: "#FFD93D",
-                    borderColor: "#FFD93D",
-                    cubicInterpolationMode: "monotone",
-                    data: streamExpression.degout,
-                },
-                {
-                    label: "Peur",
-                    backgroundColor: "#6BCB77",
-                    borderColor: "#6BCB77",
-                    cubicInterpolationMode: "monotone",
-                    data: streamExpression.peur,
-                },
-                {
-                    label: "Joie",
-                    backgroundColor: "#4D96FF",
-                    borderColor: "#4D96FF",
-                    cubicInterpolationMode: "monotone",
-                    data: streamExpression.joie,
-                },
-                {
-                    label: "Triste",
-                    backgroundColor: "#AB46D2",
-                    borderColor: "#AB46D2",
-                    cubicInterpolationMode: "monotone",
-                    data: streamExpression.triste,
-                },
-                {
-                    label: "Surprise",
-                    backgroundColor: "#FF6FB5",
-                    borderColor: "#FF6FB5",
-                    cubicInterpolationMode: "monotone",
-                    data: streamExpression.surprise,
-                }
-            ],
-        };
 
         const dataChart = new Chart(ctx, {
             type: "line",
-            data: data,
+            data: dataStream,
             options: {
                 scales: {
                     x: {

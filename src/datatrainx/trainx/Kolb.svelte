@@ -1,9 +1,9 @@
 <script>
     import {fly } from 'svelte/transition';
     import {kolbStore, userIdtStore, layoutStore, videoStore, loadingStore, dataExpressionStore} from "../../stores";
-    import {questions} from "../../database/kolb2";
-    import {updatePush} from "../../database/update";
-    import {dataProfil} from "../../database/data";
+    import {questions} from "../../service-factory/kolb2";
+    import {updatePush} from "../../service-factory/update";
+    import {dataProfil} from "../../service-factory/data";
 
     let userId;
     let playVideo;
@@ -31,7 +31,6 @@
     }
 
     function update() {
-
         let type = questions[question].type;
         updatePush('dataCondition', {
             ref:question,
@@ -42,7 +41,6 @@
             });
         dataProfil[type] += parseInt(checked);
         checked = null;
-        console.log(dataProfil);
     }
 
     kolbStore.subscribe(value => {
@@ -91,7 +89,10 @@
                 <p class="help">Vérifier que votre webcam est active...</p>
             {:else}
                 <div class="buttons are-medium">
-                    <button class="button are-medium center is-success is-rounded" disabled={!checked} on:click={update} on:click ={() => kolbStore.update(n => n + 1)}>
+                    <button class="button are-medium center is-success is-rounded"
+                            disabled={!checked}
+                            on:click={update}
+                            on:click ={() => kolbStore.update(n => n + 1)}>
                     <span class="icon">
                         <i class="fa-solid fa-check"></i>
                     </span>
