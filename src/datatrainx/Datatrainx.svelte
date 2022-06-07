@@ -8,6 +8,8 @@
     import Start from "./trainx/Start.svelte";
     import ResultatKolb from "./resultat/ResultatKolb.svelte";
     import OpenData from "./OpenData.svelte";
+    import Calculs from "./trainx/Calculs.svelte";
+    import Test from "./trainx/Test.svelte";
 
     import {chartStore, layoutStore, userIdtStore, videoStore} from "../stores";
 
@@ -17,7 +19,9 @@
         cnn: Cnn,
         start: Start,
         opendata:OpenData,
-        resultatKolb:ResultatKolb
+        resultatKolb:ResultatKolb,
+        calculs:Calculs,
+        test:Test
     };
 
     let layoutValue;
@@ -34,9 +38,7 @@
     chartStore.subscribe(value => {
         playChart = value;
     });
-
     function updateViewportComponent() {
-        userIdtStore.set(0);
         videoStore.set(false);
         if (typeof playChart.destroy === "function") {
             playChart.destroy();

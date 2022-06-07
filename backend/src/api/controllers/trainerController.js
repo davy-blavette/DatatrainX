@@ -22,6 +22,16 @@ exports.resultTrainer = async (req, res) => {
   }
 };
 
+exports.streamTrainer = async (req, res) => {
+  try {
+    const id = req.params.trainerId;
+    let result = await Trainer.findById(id, 'dataExpression');
+    res.status(200).json(result);
+  } catch (err) {
+    res.status(500).json(err);
+  }
+};
+
 //save trainer
 exports.assTrainer = async (req, res) => {
   try {

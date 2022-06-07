@@ -1,77 +1,40 @@
 <script>
-    import Vignette from "./Vignette.svelte";
-    export let joie;
-    export let surprise;
-    export let peur;
-    export let degout;
-    export let triste;
-    export let colere;
-    export let neutre;
-
-
-
+    export let resultatExpressions;
+    export let profil;
 </script>
 <style>
     figure, img {
-        height: 150px;
+        height: 200px;
+        display: initial;
+        width: auto;
+    }
+    article.tile.is-child{
+        margin: 1em!important;
+    }
+    .subtitle{
+        margin: 0;
+    }
+    .column{
+        margin: 0.5em!important;
     }
 </style>
 
-<div class="tile is-parent">
-    {#if colere.image}
-        <Vignette
-                image="{colere.image}"
-                best="{colere.best}"
-                intensity="{Math.round(colere.total / colere.count * 100)}"
-                bg="has-background-danger"
-                label="Colère"
-        />
-    {/if}
-    {#if degout.image}
-        <Vignette
-                image="{degout.image}"
-                best="{degout.best}"
-                intensity="{Math.round(degout.total / degout.count * 100)}"
-                bg="has-background-warning"
-                label="Dégoût"
-        />
-    {/if}
-    {#if peur.image}
-        <Vignette
-                image="{peur.image}"
-                best="{peur.best}"
-                intensity="{Math.round(peur.total / peur.count * 100)}"
-                bg="has-background-success"
-                label="Peur"
-        />
-    {/if}
-    {#if joie.image}
-        <Vignette
-                image="{joie.image}"
-                best="{joie.best}"
-                intensity="{Math.round(joie.total / joie.count * 100)}"
-                bg="has-background-info"
-                label="Joie"
-        />
-    {/if}
-    {#if triste.image}
-        <Vignette
-                image="{triste.image}"
-                best="{triste.best}"
-                intensity="{Math.round(triste.total / triste.count * 100)}"
-                bg="has-background-triste"
-                label="Triste"
-        />
-    {/if}
-    {#if surprise.image}
-        <Vignette
-                image="{surprise.image}"
-                best="{surprise.best}"
-                intensity="{Math.round(surprise.total / surprise.count * 100)}"
-                bg="has-background-surprise"
-                label="Surprise"
-        />
-    {/if}
+<div class="columns tile">
+    {#each Object.entries(resultatExpressions) as [type, expression]}
+        {#if expression.count}
+            <div class="column tile is-child box" style="background-color: {expression.utils.color}">
+                <figure class="image">
+                    <img src={expression.image} alt="{expression.utils.label} {expression.best * 100} %">
+                </figure>
+                <p class="title has-text-white">{expression.utils.label} </p>
+                <p class="subtitle has-text-white">Intensité {Math.round(expression.total / expression.count * 100)} %</p>
+                <hr>
+                <p class="has-text-white">{profil.slice(0, 15)} </p>
+                <p class="subtitle has-text-white">{Math.round(expression.total / expression.count * 100)} %</p>
+                <p class="subtitle has-text-white">Ensemble {Math.round(expression.total / expression.count * 100)} %</p>
+            </div>
+        {/if}
+    {/each}
 </div>
 
 

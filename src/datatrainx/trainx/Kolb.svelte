@@ -21,25 +21,25 @@
     let question;
 
     function updateProfil() {
-        updatePush('dataProfil', {
-                activist:dataProfil.activist,
-                reflector:dataProfil.reflector,
-                theorist:dataProfil.theorist,
-                pragmatist:dataProfil.pragmatist,
-                created:Date.now()
-        });
-    }
 
-    function update() {
-        let type = questions[question].type;
-        updatePush('dataCondition', {
-            ref:question,
-            dataProfil:{
-                [type]:parseInt(checked)
+        layoutStore.setLayout("calculs");
+    }
+    let update = async (type, data) => {
+        let typeProfil = questions[question].type;
+        await updatePush('dataCondition', {
+            ref: question,
+            dataProfil: {
+                [typeProfil]: parseInt(checked)
             },
-            created:Date.now()
-            });
-        dataProfil[type] += parseInt(checked);
+            created: Date.now()
+        });
+        dataProfil.apprenant.dim1[typeProfil].scoreRacine += parseInt(checked);
+
+        await updatePush('dataProfil', {
+            apprenant: dataProfil.apprenant,
+            created: Date.now()
+        });
+
         checked = null;
     }
 
@@ -101,12 +101,7 @@
                 </div>
             {/if}
         {:else}
-            <button class="button are-medium center is-success is-rounded" on:click ={() => updateProfil()} on:click ={() => layoutStore.setLayout("resultatKolb")}>
-                    <span class="icon">
-                        <i class="fa-solid fa-check"></i>
-                    </span>
-                <span>Voir les résultats</span>
-            </button>
+            {layoutStore.setLayout("calculs")}
         {/if}
     </article>
     {/key}

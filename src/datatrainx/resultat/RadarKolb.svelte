@@ -6,17 +6,18 @@
     Chart.register(...registerables);
 
 
-    export let activist;
-    export let reflector;
-    export let theorist;
-    export let pragmatist;
+    export let data;
     export let userId;
 
     let chartData;
 
     let ctx;
     let chartCanvas;
+    let dataTab = [];
 
+    for (const [profil, value] of Object.entries(data)) {
+        dataTab.push(value.scoreRacine);
+    }
 
     onMount(async (promise) => {
         ctx = chartCanvas.getContext('2d');
@@ -29,10 +30,7 @@
                         label: 'Profil',
                         backgroundColor: 'rgba(241, 70, 104, 0.5)',
                         borderColor: 'rgb(241, 70, 104)',
-                        data: [activist,
-                            reflector,
-                            theorist,
-                            pragmatist],
+                        data: dataTab,
                         fill: true
                     }
                 ]
@@ -66,6 +64,7 @@
     #radarKolb{
         position: relative;
         z-index: 95;
+        max-height: 320px;
     }
 .conteneur{
     position:relative;

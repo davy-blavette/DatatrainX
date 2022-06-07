@@ -1,18 +1,19 @@
 <script>
     import { onMount } from 'svelte';
     import {Chart, registerables} from 'chart.js';
-    import {chartLabels} from "../../service-factory/data";
+    import {chartLabels, dataProfil} from "../../service-factory/data";
     Chart.register(...registerables);
 
-    export let tabActivist;
-    export let tabReflector;
-    export let tabTheorist;
-    export let tabPragmatist;
+    export let data;
     export let userId;
 
     let ctx;
     let chartCanvas;
+    let dataTab = [];
 
+    for (const [profil, value] of Object.entries(data)) {
+        dataTab.push(value.tab);
+    }
 
 
     onMount(async (promise) => {
@@ -24,10 +25,7 @@
                 datasets: [
                     {
                         label: 'Force du profil',
-                        data: [tabActivist,
-                            tabReflector,
-                            tabTheorist,
-                            tabPragmatist],
+                        data: dataTab,
                         fill: true
                     }
                 ]
@@ -75,6 +73,8 @@
 </script>
 
 <style>
-
+    #barKolb{
+        max-height: 320px;
+    }
 </style>
 <canvas bind:this={chartCanvas} id="barKolb"></canvas>

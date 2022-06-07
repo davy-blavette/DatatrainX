@@ -1,11 +1,10 @@
 <script>
-    import {layoutStore} from "../../stores";
+    import {layoutStore, userIdtStore} from "../../stores";
     import Sidebar from "./menu/Sidebar.svelte";
     import Navbar from "./menu/Navbar.svelte";
     import Logo from "./Logo.svelte";
 
     export let open = false;
-
 
 </script>
 

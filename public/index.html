@@ -77,7 +77,11 @@
 			position: absolute;
 			left: 0;
 		}
-
+		@media print {
+			body {
+				transform: scale(0.6);
+			}
+		}
 		.loading {
 			width: 100%;
 			height: 100%;

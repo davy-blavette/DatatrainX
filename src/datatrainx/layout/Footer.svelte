@@ -1,7 +1,12 @@
 <script>
     import * as animateScroll from "svelte-scrollto";
-    import {layoutStore} from "../../stores";
+    import {layoutStore, userIdtStore} from "../../stores";
     import Logo from "./Logo.svelte";
+    let userId;
+    userIdtStore.subscribe(value => {
+        userId = value;
+    });
+
 </script>
 <style>
 
@@ -50,7 +55,8 @@
         <span class="logo-text">
             <Logo color={"ffffff"} />
         </span>
-        <span class="version">Version 0.9.0</span>
+        <span class="version">Version 1.0.0</span>
+        <span class="version">{userId}</span>
         <span class="link" on:click={() => animateScroll.scrollTo({element: "#header", onDone: (element, offset) => {layoutStore.setLayout("opendata")}})}>OpenData</span>
         <p>
             By <a href="https://fr.linkedin.com/in/davy-blavette-8876b952">Davy Blavette</a>. The source code is licensed
