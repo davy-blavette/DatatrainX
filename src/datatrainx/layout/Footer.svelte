@@ -55,7 +55,7 @@
         <span class="logo-text">
             <Logo color={"ffffff"} />
         </span>
-        <span class="version">Version 1.0.0</span>
+        <span class="version">Version 1.0.1</span>
         <span class="version">{userId}</span>
         <span class="link" on:click={() => animateScroll.scrollTo({element: "#header", onDone: (element, offset) => {layoutStore.setLayout("opendata")}})}>OpenData</span>
         <p>
