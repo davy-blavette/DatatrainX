@@ -60,7 +60,7 @@ which was the result of a research collaboration between CNAM IRIT Toulouse
 
 ## License
 
-The software is available under the [MIT License](https://github.com/poloclub/cnn-explainer/blob/master/LICENSE).
+The software is available under the [MIT License](https://github.com/davy-blavette/DatatrainX/blob/main/LICENSE).
 
 ## Contact
 
