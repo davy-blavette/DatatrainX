@@ -60,7 +60,7 @@
         <span class="link" on:click={() => animateScroll.scrollTo({element: "#header", onDone: (element, offset) => {layoutStore.setLayout("opendata")}})}>OpenData</span>
         <p>
             By <a href="https://fr.linkedin.com/in/davy-blavette-8876b952">Davy Blavette</a>. The source code is licensed
-            <a href="https://github.com/davy-blavette/DatatrainX/blob/main/LICENSE">MIT</a>. The website content
+            <a href="https://github.com/davy-blavette/DatatrainX/blob/main/LICENSE">MIT</a>.<br>The website content
             is licensed <a href="http://creativecommons.org/licenses/by-nc-sa/4.0/">CC BY NC SA 4.0</a>.
         </p>
         <div class="icon" title="Open-source code"><a target="_blank" href="https://github.com/davy-blavette/DatatrainX"><i class="fa-brands fa-github"></i></a></div>
