@@ -3,7 +3,7 @@
 [![GitHub release](https://img.shields.io/static/v1?label=Release&message=v1.0-alpha&color=blue)](https://github.com/gitshanks/fer2013/releases)
 [![PyPI pyversions](https://img.shields.io/static/v1?label=Python&message=3.6&color=green)](https://pypi.python.org/pypi/ansicolortags/)
 [![PyKeras pyversions](https://img.shields.io/static/v1?label=Keras&message=2.3&color=red)](https://pypi.python.org/pypi/ansicolortags/)
-
+[![Tensorflow Tensorflow](https://img.shields.io/static/v1?label=Tensorflow&message=2.1&color=orange)](https://www.tensorflow.org/?hl=fr)
 
 Reconnaissance des émotions faciales sur l'ensemble de données FER2013 à l'aide d'un réseau neuronal convolutif (CNN).
 
