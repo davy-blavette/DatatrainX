@@ -9,7 +9,7 @@
     } from "../../service-factory/data";
     import {infoLoadStore, layoutStore, userIdtStore} from "../../stores";
     import {onMount} from "svelte";
-    import Loading from "../utils/Loading.svelte";
+    import Loading from "./Loading.svelte";
     import LogoHead from "../layout/LogoHead.svelte";
 
     infoLoadStore.set("Calcul des resultats...");
@@ -47,27 +47,21 @@
 
         let score = 0;
         let totalScore = 0;
-        //On boucle les objects du profil dim1 récupéré sur la collection trainer
         for (const [profil, value] of Object.entries(data.dataProfil.apprenant.dim1)) {
             try {
-                //on se refere au serviceFactory de preferenceProfil
                 Object.entries(preferenceProfil[profil]).forEach(([type, forceValue], index) => {
                     if (value.scoreRacine >= forceValue) {
-                        //on se refere au serviceFactory de scoreTab
                         dataProfil.apprenant.dim1[profil].tab = scoreTab[index].tab;
                         score = scoreTab[index].score;
                         totalScore += score;
-                        //stop la boucle en levant exception
                         throw Break;
                     }
                 });
             } catch (e) {
-                //on ajoute au serviceFactory dataProfil les valeurs de score
                 dataProfil.apprenant.dim1[profil].scoreRacine = value.scoreRacine;
                 dataProfil.apprenant.dim1[profil].score = score;
             }
         }
-        //score global
         dataProfil.apprenant.score = Math.round(totalScore / Object.keys(data.dataProfil.apprenant.dim1).length);
 
     }
