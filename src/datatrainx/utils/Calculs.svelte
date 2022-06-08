@@ -1,5 +1,5 @@
 <script>
-    import {updatePush} from "../../service-factory/update";
+    import {getTrainer, updatePush} from "../../service-factory/crud";
     import {
         baseUrl,
         chartExpressions,
@@ -7,10 +7,11 @@
         resultatExpressions, scoreTab,
         streamExpression
     } from "../../service-factory/data";
-    import {infoLoadStore, layoutStore, userIdtStore} from "../../stores";
+    import {infoLoadStore, kolbStore, layoutStore, userIdtStore, userTokenStore} from "../../stores";
     import {onMount} from "svelte";
     import Loading from "./Loading.svelte";
     import LogoHead from "../layout/LogoHead.svelte";
+    import {questions} from "../../service-factory/kolb2";
 
     infoLoadStore.set("Calcul des resultats...");
 
@@ -18,16 +19,25 @@
     let data;
     let userId;
     let Break = {};
-
+    let token;
     userIdtStore.subscribe(value => {
         userId = value;
     });
-
+    userTokenStore.subscribe(value => {
+        token = value;
+    });
     function updateProfil() {
 
-        //userIdtStore.set("629de5a2f270c4e2011ba0c1");
         onMount(async () => {
-            let res = await fetch(`${baseUrl}/dataProfil/${userId}`);
+            let method = "GET";
+            URL = `${baseUrl}/dataProfil/${userId}`;
+            const res = await fetch(URL, {
+                method,
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization":`Bearer ${token}`
+                }
+            });
             jsonTrainer = [await res.json()];
             data = Object.values(jsonTrainer)[0];
             preferences();
@@ -40,6 +50,8 @@
                 created: Date.now()
             });
         });
+
+        kolbStore.set(questions.length);
     }
 
 

@@ -8,8 +8,8 @@
     import Start from "./trainx/Start.svelte";
     import ResultatKolb from "./resultat/ResultatKolb.svelte";
     import OpenData from "./OpenData.svelte";
-    import Calculs from "./trainx/Calculs.svelte";
-    import Test from "./trainx/Test.svelte";
+    import Calculs from "./utils/Calculs.svelte";
+    import Test from "./trainx/DebugTest.svelte";
 
     import {chartStore, layoutStore, userIdtStore, videoStore} from "../stores";
 

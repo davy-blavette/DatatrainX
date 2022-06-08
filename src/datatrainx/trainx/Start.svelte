@@ -10,11 +10,11 @@
 
     //Layout DataTrainX profile
     export const views = {
-        token: Token,
+        presentation: Token,
         kolb: Kolb
     };
 
-    let layoutValue = "token";
+    let layoutValue;
     let viewportComponent = layoutValue;
     let titleTest;
     let userId;
@@ -26,13 +26,10 @@
     titleTestStore.subscribe(value => {
         titleTest = value;
     });
-
-    layoutTrainxStore.setLayout(layoutValue);
-
-
     layoutTrainxStore.subscribe(value => {
         layoutValue = value;
     });
+
 
     function updateViewportComponent() {
         viewportComponent = views[layoutValue];

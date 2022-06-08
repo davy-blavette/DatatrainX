@@ -1,6 +1,14 @@
 <script>
     import {fly } from 'svelte/transition';
-    import {layoutTrainxStore, loadingStore, userIdtStore, videoStore, layoutStore} from "../../stores";
+    import {
+        layoutTrainxStore,
+        loadingStore,
+        userIdtStore,
+        videoStore,
+        layoutStore,
+        userTokenStore,
+        kolbStore
+    } from "../../stores";
     import {baseUrl, userToken} from "../../service-factory/data";
 
     let method;
@@ -9,6 +17,11 @@
     let userId;
     let openModal = false;
     let oldUserId = "";
+    let question;
+
+    kolbStore.subscribe(value => {
+        question = value;
+    });
 
     userIdtStore.subscribe(value => {
         userId = value;
@@ -19,6 +32,7 @@
     loadingStore.subscribe(value => {
         loading = value;
     });
+
     //save Token
     let addToken = async () => {
 
@@ -36,12 +50,15 @@
         const trainer = res.json();
 
         trainer.then(function(result) {
-            userIdtStore.set(result.data._id);
+            userIdtStore.set(result.userId);
+            userTokenStore.set(result.token);
         });
 
     };
-    if(!userId){
+    if(!userId && question == 0){
         addToken();
+    }else{
+        layoutTrainxStore.setLayout("kolb");
     }
 
 </script>

@@ -10,7 +10,7 @@
         infoLoadStore, layoutTrainxStore
     } from "../../stores";
     import {FaceExpression, FaceDetection, streamExpression} from "../../service-factory/data";
-    import {updatePush} from "../../service-factory/update";
+    import {updatePush} from "../../service-factory/crud";
     import {fade} from 'svelte/transition';
     import Loading from "./Loading.svelte";
 

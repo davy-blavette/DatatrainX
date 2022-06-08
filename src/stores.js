@@ -38,6 +38,7 @@ export const loadingStore = writable(false);
 export const chartStore = writable({});
 export const titleTestStore = writable("Test de Kolb");
 export const userIdtStore = writable("");
+export const userTokenStore = writable("");
 export const infoLoadStore = writable("");
 export const dataExpressionStore= writable([]);
 

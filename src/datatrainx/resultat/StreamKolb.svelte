@@ -2,11 +2,10 @@
     import {onMount} from 'svelte';
     import {Chart, Decimation, registerables} from 'chart.js';
     import {infoLoadStore} from "../../stores";
-    import {baseUrl, dataStream, streamExpression} from "../../service-factory/data";
-    import Loading from "../utils/Loading.svelte";
+    import {dataStream, streamExpression} from "../../service-factory/data";
 
     Chart.register(...registerables);
-    export let userId;
+    export let dataExpression;
 
     let ctx;
     let chartCanvas;
@@ -21,22 +20,22 @@
 
     infoLoadStore.set("Chargement Resultats...");
 
-    onMount(async (promise) => {
-        let res = await fetch(`${baseUrl}/dataProfil/stream/${userId}`);
-        jsonTrainer = [await res.json()];
-        data = Object.values(jsonTrainer)[0].dataExpression;
-        data.forEach(function (expressions) {
-            for (const [expression, value] of Object.entries(expressions.FaceExpression)) {
-                for (const [expressionLabel, valueData] of Object.entries(streamExpression)) {
-                    if (expression ==expressionLabel && value > 0) {
-                        streamExpression[expressionLabel].push({
-                            x: expressions.created,
-                            y: value,
-                        });
-                    }
+    dataExpression.forEach(function (expressions) {
+        for (const [expression, value] of Object.entries(expressions.FaceExpression)) {
+            for (const [expressionLabel, valueData] of Object.entries(streamExpression)) {
+                if (expression ==expressionLabel && value > 0) {
+                    streamExpression[expressionLabel].push({
+                        x: expressions.created,
+                        y: value,
+                    });
                 }
             }
-        });
+        }
+    });
+
+    onMount(async (promise) => {
+
+
         ctx = chartCanvas.getContext('2d');
         const chart = new Chart(ctx, {
             type: 'line',
@@ -87,7 +86,4 @@
         max-height: 300px;
     }
 </style>
-{#if jsonTrainer.length === 0}
-    <Loading />
-{/if}
-    <canvas bind:this={chartCanvas} id="myChart"></canvas>
+<canvas bind:this={chartCanvas} id="myChart"></canvas>

@@ -2,7 +2,7 @@
     import {fly } from 'svelte/transition';
     import {kolbStore, userIdtStore, layoutStore, videoStore, loadingStore, dataExpressionStore} from "../../stores";
     import {questions} from "../../service-factory/kolb2";
-    import {updatePush} from "../../service-factory/update";
+    import {updatePush} from "../../service-factory/crud";
     import {dataProfil} from "../../service-factory/data";
 
     let userId;

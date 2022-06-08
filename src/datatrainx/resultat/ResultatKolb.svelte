@@ -1,8 +1,15 @@
 <script>
     import {onMount} from "svelte";
-    import {infoLoadStore, layoutTrainxStore, loadingStore, userIdtStore} from "../../stores";
+    import {
+        infoLoadStore,
+        kolbStore,
+        layoutTrainxStore,
+        loadingStore,
+        userIdtStore,
+        userTokenStore
+    } from "../../stores";
     import RadarKolb from "./RadarKolb.svelte";
-    import {baseUrl, chartExpressions, streamExpression} from "../../service-factory/data";
+    import {baseUrl, chartExpressions, kolbReponse, streamExpression} from "../../service-factory/data";
     import Loading from "../utils/Loading.svelte";
     import BarKolb from "./BarKolb.svelte";
 
@@ -19,13 +26,15 @@
     import StreamKolb from "./StreamKolb.svelte";
     import RadarExpression from "./RadarExpression.svelte";
     import BarExpression from "./BarExpression.svelte";
+    import {questions} from "../../service-factory/kolb2";
 
-    //fin enregistrement
-    layoutTrainxStore.setLayout("");
     let userId;
     let jsonTrainer = [];
     let loading;
     let data;
+    let question;
+    let token;
+
     let composants = [
         {
             label:"adaptateur",
@@ -52,21 +61,36 @@
             icon:'fa-guitar'
         }
     ];
-
+    userTokenStore.subscribe(value => {
+        token = value;
+    });
     userIdtStore.subscribe(value => {
         userId = value;
     });
-
-    if (!userId) {
-        userId = "629d0c575f399943f104558b";
-    }
-
+    kolbStore.subscribe(value => {
+        question = value;
+    });
     infoLoadStore.set("Chargement Resultats...");
 
     onMount(async () => {
-        let res = await fetch(`${baseUrl}/dataProfil/${userId}`);
-        jsonTrainer = [await res.json()];
-        data = Object.values(jsonTrainer)[0].dataProfil;
+
+        if (!userId || question < questions.length) {
+            let res = await fetch(baseUrl);
+            jsonTrainer =[await res.json()];
+        }else {
+            let method = "GET";
+            URL = `${baseUrl}/dataProfil/${userId}`;
+            const res = await fetch(URL, {
+                method,
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization":`Bearer ${token}`
+                }
+            });
+            jsonTrainer = [await res.json()];
+        }
+
+        data = Object.values(jsonTrainer)[0];
     });
 
 </script>
@@ -94,9 +118,9 @@
             <div class="column is-half">
                 <div class="tile">
                     <article class="tile is-child is-info">
-                        <p class="title">Votre profil d'apprenant est : {data.apprenant.profil}</p>
-                        {#each Object.entries(data.apprenant.dim2) as [type, score], i}
-                            {#if data.apprenant.profil.toLowerCase().includes(type)}
+                        <p class="title">Votre profil d'apprenant est : {data.dataProfil.apprenant.profil}</p>
+                        {#each Object.entries(data.dataProfil.apprenant.dim2) as [type, score], i}
+                            {#if data.dataProfil.apprenant.profil.toLowerCase().includes(type)}
                                 <svelte:component this={composants[i].simple} score={score}/>
                             {/if}
                         {/each}
@@ -107,12 +131,12 @@
                 <div class="container is-parent">
                     <RadarKolb
                             userId={userId}
-                            data={data.apprenant.dim1}
+                            data={data.dataProfil.apprenant.dim1}
                     />
                     <div class="container is-parent">
                         <BarKolb
                                 userId={userId}
-                                data={data.apprenant.dim1}
+                                data={data.dataProfil.apprenant.dim1}
                         />
                     </div>
                 </div>
@@ -122,7 +146,7 @@
                     <div class="card is-shady">
                         <div class="card-content">
                             <div class="" >
-                                <Accordion isOpen="{data.apprenant.profil.toLowerCase().includes(value.label)}">
+                                <Accordion isOpen="{data.dataProfil.apprenant.profil.toLowerCase().includes(value.label)}">
                                     <div class="slot" slot="head">
                                         <h4>{value.label.toUpperCase()}</h4>
                                         <i class="fa-solid {value.icon}"></i>
@@ -131,14 +155,14 @@
                                         <div class="columns">
                                             <div class="column is-three-quarters">
                                                 <svelte:component this={value.full}
-                                                                  activist={data.apprenant.dim1.activist.score}
-                                                                  reflector={data.apprenant.dim1.reflector.score}
-                                                                  theorist={data.apprenant.dim1.theorist.score}
-                                                                  pragmatist={data.apprenant.dim1.pragmatist.score}
+                                                                  activist={data.dataProfil.apprenant.dim1.activist.score}
+                                                                  reflector={data.dataProfil.apprenant.dim1.reflector.score}
+                                                                  theorist={data.dataProfil.apprenant.dim1.theorist.score}
+                                                                  pragmatist={data.dataProfil.apprenant.dim1.pragmatist.score}
                                                 />
                                             </div>
                                             <div class="column">
-                                                <svelte:component this={value.simple} score={data.apprenant.dim2[value.label]}/>
+                                                <svelte:component this={value.simple} score={data.dataProfil.apprenant.dim2[value.label]}/>
                                             </div>
                                         </div>
                                     </div>
@@ -154,8 +178,8 @@
                 <div class="container has-text-centered">
                     <h2 class="title">Votre profil émotionnel</h2>
                     <Vignettes
-                            profil={data.apprenant.profil}
-                            resultatExpressions={data.expressions.resultatExpressions}
+                            profil={data.dataProfil.apprenant.profil}
+                            resultatExpressions={data.dataProfil.expressions.resultatExpressions}
                     />
                     </div>
             </div>
@@ -164,7 +188,7 @@
                 <div class="tile">
                     <article class="tile is-child is-info">
                         <StreamKolb
-                                userId={userId}
+                                dataExpression={data.dataExpression}
                         />
                     </article>
                 </div>
@@ -172,16 +196,16 @@
             <div class="column is-half">
                 <div class="tile is-parent">
                     <RadarExpression
-                            profil={data.apprenant.profil}
-                            expressions={data.expressions.resultatExpressions}
+                            profil={data.dataProfil.apprenant.profil}
+                            expressions={data.dataProfil.expressions.resultatExpressions}
                     />
                 </div>
             </div>
             <div class="column is-half">
                 <div class="tile is-parent">
                     <BarExpression
-                            profil={data.apprenant.profil}
-                            total={data.expressions.score}
+                            profil={data.dataProfil.apprenant.profil}
+                            total={data.dataProfil.expressions.score}
                     />
                 </div>
             </div>

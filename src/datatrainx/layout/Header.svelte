@@ -45,7 +45,7 @@
             <Logo color={"ffffff"} />
         </div>
         <div id="svg-logo-tagline" class="is-hidden-mobile">
-            Outil de recherche des singularités cognitives d’un étudiant!
+            Outil de recherche des singularités cognitives d’un apprenant!
         </div>
     </div>
 
