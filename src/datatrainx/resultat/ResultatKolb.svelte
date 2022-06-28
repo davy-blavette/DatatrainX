@@ -3,13 +3,11 @@
     import {
         infoLoadStore,
         kolbStore,
-        layoutTrainxStore,
-        loadingStore,
         userIdtStore,
         userTokenStore
     } from "../../stores";
     import RadarKolb from "./RadarKolb.svelte";
-    import {baseUrl, chartExpressions, kolbReponse, streamExpression} from "../../service-factory/data";
+    import {baseUrl} from "../../service-factory/data";
     import Loading from "../utils/Loading.svelte";
     import BarKolb from "./BarKolb.svelte";
 

@@ -35,6 +35,7 @@ export const fpsStore = writable("0 ms");
 export const timeStore = writable("0 fps");
 export const videoStore = writable(false);
 export const loadingStore = writable(false);
+export const faqStore = writable(false);
 export const chartStore = writable({});
 export const titleTestStore = writable("Test de Kolb");
 export const userIdtStore = writable("");

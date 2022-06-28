@@ -37,12 +37,11 @@
             <a href="{'#'}" class="dropdown-item {layoutValue == 'start' ? 'is-active' : ''}" on:click ={() => layoutStore.setLayout("start")} on:click ={() => open = false}>
                 Faire le test
             </a>
-
+            <!--
             <a href="{'#'}" class="dropdown-item {layoutValue == 'start' ? 'is-active' : ''}" on:click ={() => layoutStore.setLayout("calculs")} on:click ={() => open = false}>
                 Debug Test
             </a>
-
-
+            -->
         </div>
     </div>
 </div>

@@ -3,9 +3,12 @@
     import {baseUrl} from "../service-factory/data";
     import JSONTree from 'svelte-json-tree';
     import Loading from "./utils/Loading.svelte";
-    import {infoLoadStore, loadingStore} from "../stores";
+    import {infoLoadStore, loadingStore, userIdtStore, userTokenStore} from "../stores";
 
     let jsonTrainers = [];
+    let jsonTreedataProfil;
+    let jsonTreedataExpression;
+    let jsonTreedataCondition;
     let loading;
 
     loadingStore.subscribe(value => {
@@ -16,8 +19,20 @@
 
     onMount(async () => {
         let res = await fetch(baseUrl);
-        jsonTrainers = await res.json();
+
+        const trainer = res.json();
+        trainer.then(function(result) {
+            jsonTrainers.push(result);
+            jsonTreedataProfil = jsonTrainers[0]["dataProfil"];
+            jsonTreedataExpression = jsonTrainers[0]["dataExpression"];
+            jsonTreedataCondition = jsonTrainers[0]["dataCondition"];
+
+            //jsonTrainers.push(result.dataCondition.json());
+            //jsonTrainers.push(result.dataProfil.json());
+        });
     });
+
+
 
 
 </script>
@@ -66,7 +81,7 @@
     }
 </style>
 <section class="container is-fluid">
-{#if jsonTrainers.length === 0}
+{#if jsonTrainers.length === 1}
     <Loading />
 {:else}
     <div class="columns">
@@ -116,41 +131,44 @@
                     <tr>
                         <th>#</th>
                         <th>Completed</th>
-                        <th>Deadline</th>
+                        <th>Date</th>
                         <th>Status</th>
+                        <th>DataProfil</th>
+                        <th>DataCondition</th>
+                        <th>DataExpression</th>
                     </tr>
                     </thead>
                     <tbody>
-                        {#each jsonTrainers as jsonTrainer, i}
                             <tr>
                                 <td class="light-cell">
-                                    <span>{i + 1}</span>
+                                    <span>{1}</span>
                                 </td>
                                 <td>
                                     <div class="circle-container">
                                         <svg class="circle-chart" viewBox="0 0 33.83098862 33.83098862" width="44" height="44" xmlns="http://www.w3.org/2000/svg">
                                             <circle class="circle-chart-background" stroke="#efefef" stroke-width="2" fill="none" cx="16.91549431" cy="16.91549431" r="15.91549431"></circle>
-                                            <circle class="circle-chart-circle" stroke="#7F00FF" stroke-width="2" stroke-dasharray="3,100" stroke-linecap="round" fill="none" cx="16.91549431" cy="16.91549431" r="15.91549431"></circle>
+                                            <circle class="circle-chart-circle" stroke="#7F00FF" stroke-width="2" stroke-dasharray="100,100" stroke-linecap="round" fill="none" cx="16.91549431" cy="16.91549431" r="15.91549431"></circle>
                                         </svg>
                                         <div class="circle-icon">
-                                            <span>3%</span>
+                                            <span>100%</span>
                                         </div>
                                     </div>
                                 </td>
-                                <td class="light-cell">Jun 31 2021</td>
+                                <td class="light-cell">Jun 22 2022</td>
                                 <td>
                                     <span class="tag is-curved">Canceled</span>
                                     <span class="tag is-curved">Assimilateur</span>
                                 </td>
-                            </tr>
-                            <tr>
-                                <td colspan="4" class="">
-                                    <div class="">
-                                        <JSONTree value={jsonTrainer} />
-                                    </div>
+                                <td class="">
+                                    <JSONTree value={jsonTreedataProfil} />
+                                </td>
+                                <td class="">
+                                    <JSONTree value={jsonTreedataCondition} />
+                                </td>
+                                <td class="">
+                                    <JSONTree value={jsonTreedataExpression} />
                                 </td>
                             </tr>
-                        {/each}
                     </tbody>
                 </table>
             </div>

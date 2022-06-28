@@ -1,5 +1,4 @@
 <script>
-    import {fly } from 'svelte/transition';
     import * as faceapi from 'datatrainX';
     import {
         layoutStore,
@@ -7,13 +6,13 @@
         timeStore,
         fpsStore,
         loadingStore,
-        infoLoadStore, layoutTrainxStore
+        infoLoadStore, layoutTrainxStore, faqStore
     } from "../../stores";
     import {FaceExpression, FaceDetection, streamExpression} from "../../service-factory/data";
     import {updatePush} from "../../service-factory/crud";
     import {fade} from 'svelte/transition';
     import Loading from "./Loading.svelte";
-
+    import Faq from "./Faq.svelte";
 
     // ssd_mobilenetv1 options
     const minConfidence = 0.05;
@@ -23,7 +22,7 @@
     let inputSize = 512;
     let scoreThreshold = 0.5;
     //const options = new faceapi.TinyFaceDetectorOptions({inputSize, scoreThreshold})
-    const options = new faceapi.SsdMobilenetv1Options({ minConfidence });
+    const options = new faceapi.SsdMobilenetv1Options({minConfidence});
 
     let myCanvas;
     let snapCanvas;
@@ -41,7 +40,11 @@
     let time = 0;
     let fps = 0;
     let layoutTrainx;
-    let modalFaq = false;
+    let modalFaq;
+
+    faqStore.subscribe(value => {
+        modalFaq = value;
+    });
 
     videoStore.subscribe(value => {
         playVideo = value;
@@ -130,7 +133,7 @@
                 //faceapi.draw.drawDetections(myCanvas, resizedResult);
                 //faceapi.draw.drawFaceExpressions(myCanvas, resizedResult, minConfidence);
             }
-        }else{
+        } else {
             loadingStore.set(true);
         }
         if (playVideo) {
@@ -186,20 +189,20 @@
 
         let valide = false;
         for (const [key, value] of Object.entries(resizedResult.expressions)) {
-            if(key != 'Neutre' && value > 0.2){
+            if (key != 'Neutre' && value > 0.2) {
                 valide = true;
                 break;
             }
         }
 
-        if(valide){
+        if (valide) {
             pushData(Object.values(resizedResult)[1], Object.values(resizedResult)[0], finalCanvas.toDataURL('image/jpeg'));
         }
         faceapi.draw.drawFaceExpressions(finalCanvas, resizedResult, minConfidence);
 
     }
 
-    function pushData(DataExpression, DataDetection, DataImage){
+    function pushData(DataExpression, DataDetection, DataImage) {
 
         FaceDetection.score = faceapi.utils.round(DataDetection.score);
         FaceDetection.box.height = faceapi.utils.round(DataDetection.box.height);
@@ -230,7 +233,8 @@
 
     if (layoutValue !== "presentation") {
         playCam();
-    };
+    }
+    ;
 </script>
 
 <style>
@@ -297,9 +301,7 @@
     .cam-faq a{
         text-decoration: none;
     }
-    .modal .notification{
-        color: black;
-    }
+
     @keyframes blink-animation{
         to {
             visibility: hidden;
@@ -326,24 +328,10 @@
         </div>
     </div>
     <div class="cam-faq">
-        <a href="{'#'}" on:click ={() => modalFaq = true}>problemes FAQ ?</a>
+        <a href="{'#'}" on:click ={() => faqStore.set(true)}>problemes FAQ ?</a>
     </div>
     {#key modalFaq}
-        <div class="modal {modalFaq ? 'is-active' : ''}" in:fly="{{ y: 200, duration: 1000 }}">
-            <div class="modal-background" on:click ={() => modalFaq = false}></div>
-            <div class="modal-content">
-                <div class="notification">
-                    <strong>Le loading est toujours en cours (entre 1 et 2 minutes) :</strong>
-                    <p>Le chargment du modele de reconnaissance du visage fait 5mo, le chargement peut être long. Patientez encore un peu.</p>
-                    <strong>Le loading est vraiment trés trés long (plus de 2 minutes) :</strong>
-                    <p>Il est possible que votre webcam ne se lance pas, vérifier les paramètres navigateurs, pour débloquer l'accés.</p>
-                    <strong>La vidéo clignote, il y'a des difficultés à reconnaitre mon visage :</strong>
-                    <p>Si vous êtes devant une fenêtre, il est possible qu'il y'ait trop de luminosité, essayer de changer de place ou fermer les rideaux.</p>
-                    <strong>Il ne reconnait pas mes émotions :</strong>
-                    <p>Ne soyez pas masqué, évitez de trop bouger ou encore ne soyez pas trop loin de votre caméra.</p>
-                </div>
-            </div>
-        </div>
+        <Faq />
     {/key}
     <div class="hero-body faceCam">
         {#if playVideo || loading}
